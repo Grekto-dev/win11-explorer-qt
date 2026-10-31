@@ -18,7 +18,7 @@ while (($#)); do
             (($# >= 2)) || { printf '%s requires a path\n' "$1" >&2; exit 2; }
             requested_prefix="$2"
             [[ "$requested_prefix" = /* ]] || requested_prefix="$repo/$requested_prefix"
-            overlay_prefix="$(realpath -m -- "$requested_prefix")"
+            overlay_prefix="$requested_prefix"
             shift 2 ;;
         *) printf 'Unknown option: %s\nUsage: %s [Debug|RelWithDebInfo] [--overlay-prefix PATH]\n' "$1" "$0" >&2; exit 2 ;;
     esac
@@ -49,9 +49,12 @@ if ! "$python" -c 'import PIL, Xlib' >/dev/null 2>&1; then
     printf 'CTest suite needs a Python interpreter with Pillow and python-xlib; /usr/bin/python3 is missing one. Install those dependencies or set a checked interpreter in CMake configuration.\n' >&2
     exit 1
 fi
+# Validate app mutation paths too, before rebuilding the dependency.
+"$python" "$repo/scripts/fidelity/overlay-preflight.py" "$repo" "$repo/.deps/src/libfm-qt" \
+    "$repo/.state/build" "$repo/.state/install" "$overlay_prefix"
 export LIBFMQT_OVERLAY_PREFIX="$overlay_prefix"
 "$repo/scripts/fidelity/build-libfm-overlay.sh"
-overlay_source="$repo/.state/overlay-source/libfm-qt/src"
+overlay_source="$overlay_prefix/include/libfm-qt6"
 if [[ ! -f "$overlay_source/core/filetransferjob.h" || ! -f "$overlay_prefix/include/libfm-qt6/fm-qt6_export.h" ]]; then
     printf 'Private libfm-qt overlay is incomplete; refusing ABI-mismatched application build.\n' >&2
     exit 1

@@ -8,13 +8,11 @@ SDK_SOURCE="$ROOT/.deps/src/libfm-qt"
 OVERLAY_SOURCE="$ROOT/.state/overlay-source/libfm-qt"
 BUILD_DIR="$ROOT/.state/libfm-overlay-build"
 PREFIX="${LIBFMQT_OVERLAY_PREFIX:-$ROOT/.state/libfm-overlay-prefix}"
-PREFIX="$(realpath -m -- "$PREFIX")"
 TEST_BUILD="$ROOT/.state/transfer-overlay-build"
-case "$PREFIX" in
-    "$ROOT"/.state/*) ;;
-    *) echo "Refusing to remove/build outside this worktree .state/: $PREFIX" >&2; exit 2 ;;
-esac
-mkdir -p "$PREFIX"
+# Validate ALL mutation targets before mkdir/rm/archive extraction, even when
+# the source checkout is absent. Never canonicalize away evidence of symlinks.
+/usr/bin/python3 "$ROOT/scripts/fidelity/overlay-preflight.py" "$ROOT" "$SDK_SOURCE" \
+    "$OVERLAY_SOURCE" "$BUILD_DIR" "$PREFIX" "$TEST_BUILD"
 EXPECTED_REV="4294f29ed314388f1f6d051ae0128320354e417a"
 
 if [[ ! -d "$SDK_SOURCE/.git" ]]; then
@@ -29,7 +27,7 @@ fi
 
 check_hash() {
     local path="$1" expected="$2" actual
-    actual="$(sha256sum "$SDK_SOURCE/src/$path" | cut -d' ' -f1)"
+    actual="$(git -C "$SDK_SOURCE" show "$EXPECTED_REV:src/$path" | sha256sum | cut -d' ' -f1)"
     if [[ "$actual" != "$expected" ]]; then
         echo "Unexpected upstream source hash for $path: $actual" >&2
         exit 2
@@ -43,16 +41,17 @@ check_hash core/job.cpp e4783407320e82211b420118664e4df8bf76cbc016944df5176ac461
 check_hash core/filetransferjob.h 600ab7c6eb2fd5cb3e42fb92f46d37875b650f1f14848b90db4ebc23e0a9bda1
 check_hash core/filetransferjob.cpp 49992c168502c59958a961432de5ee1fd5b126b6d0a566dc9a9793e820b1edaa
 check_hash libfmqtglobals.h 4997bfe58f1ffcccdeae40ad3c96481c4ccf97a7dfd0835e9f1c30186fad9424
-license_hash="$(sha256sum "$SDK_SOURCE/LICENSE" | cut -d' ' -f1)"
+license_hash="$(git -C "$SDK_SOURCE" show "$EXPECTED_REV:LICENSE" | sha256sum | cut -d' ' -f1)"
 if [[ "$license_hash" != "b3aa400aca6d2ba1f0bd03bd98d03d1fe7489a3bbb26969d72016360af8a5c9d" ]]; then
     echo "Unexpected upstream license text hash: $license_hash" >&2
     exit 2
 fi
 
 rm -rf "$OVERLAY_SOURCE" "$BUILD_DIR" "$PREFIX" "$TEST_BUILD"
-mkdir -p "$(dirname "$OVERLAY_SOURCE")"
-cp -a "$SDK_SOURCE" "$OVERLAY_SOURCE"
-rm -rf "$OVERLAY_SOURCE/.git"
+mkdir -p "$OVERLAY_SOURCE"
+# Only committed files from the exact pin: no ignored/untracked/dirty checkout
+# files, and the original LGPL LICENSE and AUTHORS remain in the archive.
+git -C "$SDK_SOURCE" archive --format=tar "$EXPECTED_REV" | tar -xf - -C "$OVERLAY_SOURCE"
 patch --directory="$OVERLAY_SOURCE" -p1 --forward < "$ROOT/patches/libfm-qt/0001-opt-in-progress-dialog.patch"
 patch --directory="$OVERLAY_SOURCE" -p1 --forward < "$ROOT/patches/libfm-qt/0002-cooperative-local-copy-pause.patch"
 
@@ -69,7 +68,9 @@ cmake --install "$BUILD_DIR"
 
 cmake -S "$ROOT/tests/transfer" -B "$TEST_BUILD" \
     -DCMAKE_PREFIX_PATH="$PREFIX;$SDK_PREFIX;$QT_ROOT" \
-    -DLIBFMQT_SOURCE_DIR="$OVERLAY_SOURCE/src" \
+    -DLIBFMQT_OVERLAY_PREFIX="$PREFIX" \
+    -DCMAKE_PROJECT_transfer-controller-tests_INCLUDE="$ROOT/cmake/PrivateLibfm.cmake" \
+    -DLIBFMQT_SOURCE_DIR="$PREFIX/include/libfm-qt6" \
     -DLIBFMQT_INCLUDE_DIR="$PREFIX/include/libfm-qt6"
 cmake --build "$TEST_BUILD" --parallel 2
 LD_LIBRARY_PATH="$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \

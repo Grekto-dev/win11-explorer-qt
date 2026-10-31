@@ -21,15 +21,12 @@ set(QT_MINIMUM_VERSION "6.6.0")
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 
-if(NOT EXISTS "${LIBFMQT_OVERLAY_PREFIX}/lib/libfm-qt6.so.17")
-    message(FATAL_ERROR "LIBFMQT_OVERLAY_PREFIX must name the private libfm-qt ABI overlay; run scripts/fidelity/build-libfm-overlay.sh first")
-endif()
 list(PREPEND CMAKE_PREFIX_PATH "${LIBFMQT_OVERLAY_PREFIX}")
 
 find_package(Qt6DBus ${QT_MINIMUM_VERSION} REQUIRED)
 find_package(Qt6LinguistTools ${QT_MINIMUM_VERSION} REQUIRED)
 find_package(Qt6Widgets ${QT_MINIMUM_VERSION} REQUIRED)
-find_package(fm-qt6 ${LIBFMQT_MINIMUM_VERSION} REQUIRED)
+include(PrivateLibfm)
 find_package(lxqt2-build-tools ${LXQTBT_MINIMUM_VERSION} REQUIRED)
 
 
