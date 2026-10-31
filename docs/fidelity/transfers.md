@@ -1,33 +1,38 @@
-# Transferências: núcleo verificável e seam de apresentação
+# Transferências: apresentação opt-in sobre o motor libfm-qt
 
-## Estado da evidência
+## Evidência visual disponível
 
-Na worktree não havia `.state/fidelity/reference/phase2/<run-id>/TRANSFER_READY.json` na inspeção de 31/10/2026. Portanto esta entrega não escolhe layout, tempos, animação, cores nem estados visuais do Explorer da VM. Progresso nativo observado no Linux não é evidência de aparência Windows.
+A referência Windows está em `.state/fidelity/reference/phase2/20261031T0003-0300/TRANSFER_READY.json` (fora do Git). O diálogo real apareceu em amostras aos ~2,984 s e já não estava visível aos ~6,259 s; a cópia de 2 GiB terminou e o SHA-256 coincidiu. O estado observado em `paste_2s.png` estava recolhido, indicava 100%, barra verde, “Copiando 1 item”, “Mais detalhes” e ícones de pausa/cancelamento. O intervalo de desaparecimento é amostrado, não um tempo exato. Os controles não foram exercitados; nenhuma animação ou semântica de pause/resume é inferida.
 
-## APIs observadas no libfm-qt 2.4.0
+## Seam opt-in versionada
 
-- `Fm::FileTransferJob` é o motor de cópia real baseado em GIO (`g_file_copy`), preservando flags/metadados, consulta de conflitos e erros. Ele expõe `FileOperationJob` com totais, bytes concluídos, arquivo atual/progresso, `progress()`, sinais `finished`, `cancelled`, `error` e `fileExists`.
-- `Fm::Job::cancel()` é implementado e aciona `GCancellable`; o trabalho é assíncrono por `runAsync()`. `pause()`/`resume()` estão declarados no header, mas não há implementação no source/build libfm-qt disponível, e `FileTransferJob` não tem checkpoints cooperativos. O controlador retorna `false` para ambas as ações; nenhuma pausa/retomada é simulada.
-- `Fm::FileOperation` cria o mesmo `FileTransferJob`, mas conecta erro e conflito ao seu `FileOperationDialog`. O diálogo é campo privado (`dlg_`) sem setter nem API pública para trocar sua apresentação. `FileOperation::job()` oferece acesso de observação ao `FileOperationJob`, mas não transfere propriedade.
-- `runAsync()` inicia thread sobre o objeto Job. Não destruir nem apropriar-se do job em execução: nesta implementação o controlador só observa ponteiro Qt guardado via `QPointer`, emite snapshots, e só solicita cancelamento. A lógica de vida útil continua do lado do proprietário do Job.
-- Erros/conflitos são perguntas síncronas com parâmetros de resposta por referência e exigem política de UI conectada adequadamente (incluindo `Qt::BlockingQueuedConnection`). Não substituir o `FileOperationDialog` apenas por cima dele: isso duplicaria/esconderia os prompts ou poderia mudar `SKIP`/`OVERWRITE`/`RENAME`/`RETRY`/`ABORT`. Uma futura troca de apresentação requer uma composição explícita que mantenha esses handlers e ownership, após a evidência da VM.
+`patches/libfm-qt/0001-opt-in-progress-dialog.patch` adiciona à `Fm::FileOperation` um `DialogFactory` opt-in. Sem `setDialogFactory()`, o construtor de diálogo permanece o padrão upstream. Um consumidor pode registrar uma subclasse de `Fm::FileOperationDialog` que controla sua apresentação; os métodos de progresso, source/dest, conflito e erro são virtuais. O `FileOperation` continua sendo dono do job e continua roteando `fileExists` e erro à mesma instância do diálogo. Portanto não há segundo motor, duplicação do prompt nem mudança na política `SKIP`/`OVERWRITE`/`RENAME`/`RETRY`/`ABORT`.
 
-## Núcleo implementado
+A API original de erro usa `ErrorAction&`; no Qt 6.8 a conexão `BlockingQueuedConnection` não conseguia enfileirar essa referência (aviso observado em execução e handler não chamado). O overlay acrescenta o sinal `Job::errorRequested(..., ErrorAction*)`, preserva o sinal antigo para consumidores existentes e conecta o fluxo de `FileOperation` ao novo sinal com `BlockingQueuedConnection`. O ponteiro é válido durante a chamada bloqueante e permite a resposta síncrona no mesmo contrato. Isso adiciona/alterar símbolos C++; reconstrua consumidores contra o overlay e não misture headers/ABI do SDK base com a biblioteca overlay.
 
-`pcmanfm/explorertransfercontroller.*` é um observador fino para um `Fm::FileOperationJob` emprestado; amostra a cada 100 ms valores do motor sob seus locks e não calcula velocidade/ETA, não altera progresso, não cria outro motor e não toma ownership. É uma seam para integrar mais tarde o estado verdadeiro. Não está ligado ao aplicativo nesta onda: a apresentação substituta está bloqueada pela falta de referência e pelo encapsulamento/roteamento de erros do `FileOperation`.
+A fábrica é estática/global e deve ser instalada uma vez na inicialização, antes de iniciar operações, e limpa apenas quando não houver operação pendente. O default é `nullptr`. O patch mantém o motor GIO e as rotinas upstream de erro/conflito.
 
-## Teste nativo
+## Build overlay isolado
 
-Build independente, sem tocar CMake compartilhado:
+`./scripts/fidelity/build-libfm-overlay.sh`:
 
-```sh
-source /home/pedro/win11-explorer-qt/.deps/env.sh
-cmake -S tests/transfer -B .state/transfer-build \
-  -DCMAKE_PREFIX_PATH="$SDK_PREFIX;$QT_ROOT" \
-  -DLIBFMQT_SOURCE_DIR=/home/pedro/win11-explorer-qt/.deps/src/libfm-qt/src \
-  -DLIBFMQT_INCLUDE_DIR=/home/pedro/win11-explorer-qt/.deps/prefix/include/libfm-qt6
-cmake --build .state/transfer-build --parallel 2
-QT_QPA_PLATFORM=offscreen .state/transfer-build/tst_explorertransfercontroller
-```
+1. exige o checkout local libfm-qt no revision `4294f29` e verifica SHA-256 dos arquivos upstream listados no script;
+2. copia a fonte, incluindo a licença LGPL-2.1-or-later, para `.state/overlay-source/libfm-qt` e aplica o patch versionado;
+3. compila/instala exclusivamente em `.state/libfm-overlay-build` e `.state/libfm-overlay-prefix`;
+4. compila e executa `tests/transfer` usando a biblioteca privada.
 
-O teste de integração gera uma fixture regular de 2 GiB escrevendo todos os bytes (não sparse), verifica alocação via `st_blocks`, confere espaço livre antes da geração, executa o `FileTransferJob` real em COPY, mede timestamps/tempo, SHA-256 de ambos os lados e preservação da origem. Há ainda teste de cancelamento via `GCancellable` no job real e teste de conflito que responde `SKIP` usando `BlockingQueuedConnection`, confirmando preservação de origem e destino existente; não simula pausa. Erros genéricos não foram exercitados nesta fatia porque exigem política de resposta/UI distinta. Durações observadas são do host Linux e não são alvo de paridade com VM. O teste de cópia não promete observar pausa/retomada ou UI: a taxa deste host foi alta e `pause/resume` não estão implementados no libfm-qt testado.
+O script não escreve em `.deps`, no prefixo SDK compartilhado nem na instalação do sistema. Os paths CMake exportados são absolutos ao worktree local, como o SDK existente.
+
+## Observer e lifecycle
+
+`ExplorerTransferController` é um observer emprestado, não dono do `Fm::FileOperationJob`. Estados: `Idle` antes de `markStarted()`, `Preparing` quando o proprietário declara que chamará `runAsync()`, `Running` após `preparedToRun`, `Cancelling` após pedido/sinal de `GCancellable`, `Finished` somente no sinal real `Job::finished`, ou `Detached` se o job é destruído sem conclusão observada. `cancelled`/`cancellationRequested` descreve pedido de cancelamento, não terminalidade. O cancelamento não para timer nem conclui a operação.
+
+`Fm::Job` não fornece sinal de início separado de `preparedToRun`; o chamador do observer deve chamar `markStarted()` imediatamente antes de `runAsync()`. A conclusão captura contadores no handler direto de `finished` antes do auto-delete do job; o encaminhamento de UI e stop do timer ocorre na thread do controller. Destruir o observer não destrói nem cancela o job. Uso concorrente exige respeitar a thread-affinity do controller e o proprietário continua responsável por manter o job vivo até seu sinal terminal.
+
+## Testes/evidência
+
+O teste usa `FileOperation` real e verifica factory opt-in, conflito com resposta `SKIP`, erro de destino inválido por `BlockingQueuedConnection`, preservação do conteúdo do destino, cópia real/hash de 2 GiB, cancelamento durante cópia, estados idle/preparing/running/cancelling/finished, snapshot final e destruição precoce do job/observer. Erro de origem ausente não produziu o fluxo de erro neste libfm-qt; o teste usa destino que é arquivo regular, não diretório. Teste de permissão foi omitido para não depender de execução não-root nem de permissões de host variáveis.
+
+## Pausa cooperativa: não implementada
+
+`Job::pause()`/`resume()` ainda não têm implementação no libfm-qt 2.4.0. `g_file_copy()` síncrono fornece callback de progresso, mas os outros caminhos (move same-filesystem, operações de diretório/metadados e provedores GIO) não compartilham checkpoints regulares. Esperar dentro do callback não garante latência ou semântica geral, e precisaria de wake/cancel verificado em todos os caminhos para não deixar job travado. Não foi adicionada implementação especulativa nem botão de pausa placebo; `pause()`/`resume()` do observer continuam retornando `false`. Assim, a paridade dos controles Windows não está concluída.

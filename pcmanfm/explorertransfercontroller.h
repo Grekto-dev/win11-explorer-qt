@@ -4,6 +4,8 @@
 #include <QPointer>
 #include <QTimer>
 #include <QElapsedTimer>
+#include <QMutex>
+#include <atomic>
 #include <cstdint>
 
 namespace Fm { class FileOperationJob; }
@@ -11,6 +13,9 @@ namespace Fm { class FileOperationJob; }
 class ExplorerTransferController final : public QObject {
     Q_OBJECT
 public:
+    enum class State { Idle, Preparing, Running, Cancelling, Finished, Detached };
+    Q_ENUM(State)
+
     struct Snapshot {
         QString source;
         quint64 totalBytes = 0;
@@ -18,8 +23,11 @@ public:
         quint64 currentFileBytes = 0;
         quint64 currentFileTotalBytes = 0;
         double elapsedSeconds = 0.0;
+        State state = State::Idle;
         bool hasTotals = false;
         bool running = false;
+        bool cancellationRequested = false;
+        // Compatibility field; true means cancellation was requested, not finished.
         bool cancelled = false;
     };
 
@@ -27,6 +35,8 @@ public:
     ~ExplorerTransferController() override;
 
     Snapshot snapshot() const;
+    // The owner must call immediately before runAsync(); Fm::Job exposes no started signal.
+    bool markStarted();
     void cancel();
     // libfm-qt 2.4 declares Job::pause/resume but ships no definitions;
     // FileTransferJob also has no pause checkpoints. Never pretend it paused.
@@ -36,16 +46,23 @@ public:
 Q_SIGNALS:
     void telemetryUpdated();
     void finished();
-    void cancelled();
+    void cancellationRequested();
 
 private Q_SLOTS:
     void sample();
+    void onPrepared();
+    void onFinishedObserved();
+    void onJobDestroyed();
 
 private:
+    Snapshot readJobSnapshot() const;
     QPointer<Fm::FileOperationJob> job_;
     QTimer timer_;
     QElapsedTimer elapsed_;
-    bool started_ = false;
-    bool running_ = true;
-    bool cancelled_ = false;
+    std::atomic<State> state_{State::Idle};
+    std::atomic_bool cancellationRequested_{false};
+    mutable QMutex finalSnapshotMutex_;
+    Snapshot finalSnapshot_;
+    bool hasFinalSnapshot_ = false;
+    std::atomic_bool started_{false};
 };

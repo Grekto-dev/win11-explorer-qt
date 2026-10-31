@@ -1,0 +1,142 @@
+--- a/src/fileoperation.h
++++ b/src/fileoperation.h
+@@ -36,6 +36,11 @@
+ class LIBFM_QT_API FileOperation : public QObject {
+     Q_OBJECT
+ public:
++    using DialogFactory = FileOperationDialog* (*)(FileOperation*);
++
++    // Opt-in presentation seam. nullptr retains the upstream dialog unchanged.
++    static void setDialogFactory(DialogFactory factory);
++
+     enum Type {
+         Copy,
+         Move,
+@@ -132,7 +137,7 @@
+     void onJobPrepared();
+     void onJobFinish();
+     void onJobCancalled();
+-    void onJobError(const GErrorPtr& err, Fm::Job::ErrorSeverity severity, Fm::Job::ErrorAction& response);
++    void onJobError(const GErrorPtr& err, Fm::Job::ErrorSeverity severity, Fm::Job::ErrorAction* response);
+     void onJobFileExists(const FileInfo& src, const FileInfo& dest, Fm::FileOperationJob::FileExistsAction& response, FilePath& newDest);
+ 
+ private:
+--- a/src/fileoperation.cpp
++++ b/src/fileoperation.cpp
+@@ -36,6 +36,10 @@
+ 
+ #define SHOW_DLG_DELAY  1000
+ 
++namespace {
++Fm::FileOperation::DialogFactory dialogFactory = nullptr;
++}
++
+ FileOperation::FileOperation(Type type, Fm::FilePathList srcPaths, QObject* parent):
+     QObject(parent),
+     type_{type},
+@@ -81,7 +85,7 @@
+         // new C++ jobs
+         connect(job_, &Fm::Job::finished, this, &Fm::FileOperation::onJobFinish);
+         connect(job_, &Fm::Job::cancelled, this, &Fm::FileOperation::onJobCancalled);
+-        connect(job_, &Fm::Job::error, this, &Fm::FileOperation::onJobError, Qt::BlockingQueuedConnection);
++        connect(job_, &Fm::Job::errorRequested, this, &Fm::FileOperation::onJobError, Qt::BlockingQueuedConnection);
+         connect(job_, &Fm::FileOperationJob::fileExists, this, &Fm::FileOperation::onJobFileExists, Qt::BlockingQueuedConnection);
+ 
+         // we block the job deliberately until we prepare to start (initiailize the timer) so we can calculate elapsed time correctly.
+@@ -93,7 +97,7 @@
+     if(job_) {
+         disconnect(job_, &Fm::Job::finished, this, &Fm::FileOperation::onJobFinish);
+         disconnect(job_, &Fm::Job::cancelled, this, &Fm::FileOperation::onJobCancalled);
+-        disconnect(job_, &Fm::Job::error, this, &Fm::FileOperation::onJobError);
++        disconnect(job_, &Fm::Job::errorRequested, this, &Fm::FileOperation::onJobError);
+         disconnect(job_, &Fm::FileOperationJob::fileExists, this, &Fm::FileOperation::onJobFileExists);
+         disconnect(job_, &Fm::FileOperationJob::preparedToRun, this, &Fm::FileOperation::onJobPrepared);
+     }
+@@ -240,9 +244,16 @@
+     }
+ }
+ 
++void FileOperation::setDialogFactory(DialogFactory factory) {
++    dialogFactory = factory;
++}
++
+ void FileOperation::showDialog() {
+     if(!dlg_) {
+-        dlg_ = new FileOperationDialog(this);
++        dlg_ = dialogFactory ? dialogFactory(this) : nullptr;
++        if(!dlg_) {
++            dlg_ = new FileOperationDialog(this);
++        }
+         dlg_->setSourceFiles(srcPaths_);
+ 
+         if(destPath_) {
+@@ -270,10 +281,12 @@
+     qDebug("file operation is cancelled!");
+ }
+ 
+-void FileOperation::onJobError(const GErrorPtr& err, Fm::Job::ErrorSeverity severity, Fm::Job::ErrorAction& response) {
++void FileOperation::onJobError(const GErrorPtr& err, Fm::Job::ErrorSeverity severity, Fm::Job::ErrorAction* response) {
+     pauseElapsedTimer();
+     showDialog();
+-    response = Fm::Job::ErrorAction(dlg_->error(err.get(), severity));
++    if(response) {
++        *response = Fm::Job::ErrorAction(dlg_->error(err.get(), severity));
++    }
+     resumeElapsedTimer();
+ }
+ 
+--- a/src/fileoperationdialog.h
++++ b/src/fileoperationdialog.h
+@@ -42,20 +42,20 @@
+     explicit FileOperationDialog(FileOperation* _operation);
+     ~FileOperationDialog() override;
+ 
+-    void setSourceFiles(const Fm::FilePathList& srcFiles);
+-    void setDestPath(const Fm::FilePath& dest);
++    virtual void setSourceFiles(const Fm::FilePathList& srcFiles);
++    virtual void setDestPath(const Fm::FilePath& dest);
+ 
+     int ask(QString question, char* const* options);
+ 
+-    FileOperationJob::FileExistsAction askRename(const FileInfo& src, const FileInfo& dest, FilePath& newDest);
++    virtual FileOperationJob::FileExistsAction askRename(const FileInfo& src, const FileInfo& dest, FilePath& newDest);
+ 
+-    Job::ErrorAction error(GError* err, Job::ErrorSeverity severity);
+-    void setPrepared();
+-    void setCurFile(QString cur_file);
+-    void setPercent(unsigned int percent);
+-    void setDataTransferred(std::uint64_t finishedSize, std::uint64_t totalSize);
+-    void setFilesProcessed(std::uint64_t finishedCount, std::uint64_t totalCount);
+-    void setRemainingTime(unsigned int sec);
++    virtual Job::ErrorAction error(GError* err, Job::ErrorSeverity severity);
++    virtual void setPrepared();
++    virtual void setCurFile(QString cur_file);
++    virtual void setPercent(unsigned int percent);
++    virtual void setDataTransferred(std::uint64_t finishedSize, std::uint64_t totalSize);
++    virtual void setFilesProcessed(std::uint64_t finishedCount, std::uint64_t totalCount);
++    virtual void setRemainingTime(unsigned int sec);
+ 
+     void reject() override;
+ 
+--- a/src/core/job.h
++++ b/src/core/job.h
+@@ -86,6 +86,9 @@
+     // this signal should be connected with Qt::BlockingQueuedConnection
+     void error(const GErrorPtr& err, ErrorSeverity severity, ErrorAction& response);
+ 
++    // Pointer-based companion supports BlockingQueuedConnection for mutable responses.
++    void errorRequested(const GErrorPtr& err, ErrorSeverity severity, ErrorAction* response);
++
+ public Q_SLOTS:
+ 
+     void cancel();
+--- a/src/core/job.cpp
++++ b/src/core/job.cpp
+@@ -40,6 +40,7 @@
+     if(err.domain() == G_IO_ERROR && err.code() == G_IO_ERROR_FAILED_HANDLED) {
+         return response;
+     }
++    Q_EMIT errorRequested(err, severity, &response);
+     Q_EMIT error(err, severity, response);
+ 
+     if(severity == ErrorSeverity::CRITICAL || response == ErrorAction::ABORT) {

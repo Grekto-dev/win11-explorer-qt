@@ -11,14 +11,205 @@
 #include "../../pcmanfm/explorertransfercontroller.h"
 #include "core/filetransferjob.h"
 #include "core/job.h"
+#include <fileoperation.h>
+#include <fileoperationdialog.h>
+
+namespace {
+int dialogFactoryCalls = 0;
+int conflictDialogCalls = 0;
+int errorDialogCalls = 0;
+
+class ProbeTransferDialog final : public Fm::FileOperationDialog {
+public:
+    explicit ProbeTransferDialog(Fm::FileOperation* operation) : FileOperationDialog(operation) {}
+    Fm::FileOperationJob::FileExistsAction askRename(const Fm::FileInfo&, const Fm::FileInfo&, Fm::FilePath&) override {
+        ++conflictDialogCalls;
+        return Fm::FileOperationJob::SKIP;
+    }
+    Fm::Job::ErrorAction error(GError*, Fm::Job::ErrorSeverity) override {
+        ++errorDialogCalls;
+        return Fm::Job::ErrorAction::CONTINUE;
+    }
+};
+
+Fm::FileOperationDialog* createProbeDialog(Fm::FileOperation* operation) {
+    ++dialogFactoryCalls;
+    return new ProbeTransferDialog(operation);
+}
+}
 
 class ExplorerTransferControllerTest final : public QObject {
     Q_OBJECT
 private Q_SLOTS:
     void cancellationForwardsToLiveLibfmJob();
+    void observerLifecycleTracksRealJobSignals();
+    void observerDetachesWhenBorrowedJobIsDestroyedEarly();
+    void destroyingObserverDoesNotDestroyBorrowedJob();
+    void destroyingObserverDuringIoLeavesJobRunning();
+    void optInDialogFactoryKeepsConflictRoutingOnRealFileOperation();
+    void optInDialogFactoryKeepsErrorRoutingOnRealFileOperation();
     void preservesExplicitConflictResponseOnLiveJob();
     void reportsRealTwoGiBCopyProgressAndIntegrity();
 };
+
+void ExplorerTransferControllerTest::observerLifecycleTracksRealJobSignals() {
+    ExplorerTransferController missingJob(nullptr);
+    QCOMPARE(missingJob.snapshot().state, ExplorerTransferController::State::Detached);
+    QVERIFY(!missingJob.snapshot().running);
+    QVERIFY(!missingJob.markStarted());
+
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString source = root.filePath(QStringLiteral("lifecycle.txt"));
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write("ok"), qint64(2));
+    file.close();
+    const QString destination = root.filePath(QStringLiteral("dest"));
+    QVERIFY(QDir().mkpath(destination));
+    Fm::FilePathList sources{Fm::FilePath::fromLocalPath(source.toLocal8Bit().constData())};
+    auto* job = new Fm::FileTransferJob(sources,
+        Fm::FilePath::fromLocalPath(destination.toLocal8Bit().constData()), Fm::FileTransferJob::Mode::COPY);
+    ExplorerTransferController controller(job);
+    QSignalSpy telemetry(&controller, &ExplorerTransferController::telemetryUpdated);
+    QCOMPARE(controller.snapshot().state, ExplorerTransferController::State::Idle);
+    QVERIFY(!controller.snapshot().running);
+    QTest::qWait(150);
+    QCOMPARE(telemetry.count(), 0);
+    QVERIFY(controller.markStarted());
+    QCOMPARE(controller.snapshot().state, ExplorerTransferController::State::Preparing);
+    QVERIFY(controller.snapshot().running);
+    QTRY_VERIFY_WITH_TIMEOUT(telemetry.count() > 0, 2000);
+    QSignalSpy finished(&controller, &ExplorerTransferController::finished);
+    job->runAsync();
+    QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 10000);
+    const auto final = controller.snapshot();
+    QCOMPARE(final.state, ExplorerTransferController::State::Finished);
+    QVERIFY(!final.running);
+    QVERIFY(final.hasTotals);
+    QCOMPARE(final.totalBytes, quint64(2));
+    const int terminalSamples = telemetry.count();
+    QTest::qWait(250);
+    QCOMPARE(telemetry.count(), terminalSamples);
+}
+
+void ExplorerTransferControllerTest::observerDetachesWhenBorrowedJobIsDestroyedEarly() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    Fm::FilePathList sources;
+    auto* job = new Fm::FileTransferJob(sources, Fm::FilePath::fromLocalPath(root.path().toLocal8Bit().constData()), Fm::FileTransferJob::Mode::COPY);
+    ExplorerTransferController controller(job);
+    delete job;
+    QTRY_COMPARE_WITH_TIMEOUT(controller.snapshot().state, ExplorerTransferController::State::Detached, 1000);
+    QVERIFY(!controller.snapshot().running);
+}
+
+void ExplorerTransferControllerTest::destroyingObserverDoesNotDestroyBorrowedJob() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    Fm::FilePathList sources;
+    auto* job = new Fm::FileTransferJob(sources, Fm::FilePath::fromLocalPath(root.path().toLocal8Bit().constData()), Fm::FileTransferJob::Mode::COPY);
+    QPointer<Fm::FileOperationJob> borrowed(job);
+    {
+        ExplorerTransferController controller(job);
+        QCOMPARE(controller.snapshot().state, ExplorerTransferController::State::Idle);
+    }
+    QVERIFY(borrowed);
+    delete job;
+    QVERIFY(borrowed.isNull());
+}
+
+void ExplorerTransferControllerTest::destroyingObserverDuringIoLeavesJobRunning() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString source = root.filePath(QStringLiteral("observer-destroy.bin"));
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    const QByteArray block(1024 * 1024, 'X');
+    for(int i = 0; i < 8; ++i)
+        QCOMPARE(file.write(block), qint64(block.size()));
+    file.close();
+    const QString destination = root.filePath(QStringLiteral("dest"));
+    QVERIFY(QDir().mkpath(destination));
+    Fm::FilePathList sources{Fm::FilePath::fromLocalPath(source.toLocal8Bit().constData())};
+    auto* job = new Fm::FileTransferJob(sources,
+        Fm::FilePath::fromLocalPath(destination.toLocal8Bit().constData()), Fm::FileTransferJob::Mode::COPY);
+    job->setAutoDelete(false);
+    QPointer<Fm::FileOperationJob> borrowed(job);
+    auto* controller = new ExplorerTransferController(job);
+    QVERIFY(controller->markStarted());
+    QSignalSpy finished(job, &Fm::Job::finished);
+    job->runAsync();
+    delete controller;
+    QVERIFY(borrowed);
+    QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 10000);
+    QVERIFY(QFileInfo(QDir(destination).filePath(QStringLiteral("observer-destroy.bin"))).exists());
+    delete job;
+}
+
+void ExplorerTransferControllerTest::optInDialogFactoryKeepsConflictRoutingOnRealFileOperation() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString source = root.filePath(QStringLiteral("conflict.txt"));
+    QFile src(source);
+    QVERIFY(src.open(QIODevice::WriteOnly));
+    QCOMPARE(src.write("new"), qint64(3));
+    src.close();
+    const QString destinationDir = root.filePath(QStringLiteral("dest"));
+    QVERIFY(QDir().mkpath(destinationDir));
+    QFile dest(QDir(destinationDir).filePath(QStringLiteral("conflict.txt")));
+    QVERIFY(dest.open(QIODevice::WriteOnly));
+    QCOMPARE(dest.write("old"), qint64(3));
+    dest.close();
+
+    dialogFactoryCalls = conflictDialogCalls = errorDialogCalls = 0;
+    Fm::FileOperation::setDialogFactory(&createProbeDialog);
+    Fm::FilePathList sources{Fm::FilePath::fromLocalPath(source.toLocal8Bit().constData())};
+    Fm::FileOperation operation(Fm::FileOperation::Copy, sources);
+    operation.setAutoDestroy(false);
+    operation.setDestination(Fm::FilePath::fromLocalPath(destinationDir.toLocal8Bit().constData()));
+    QSignalSpy finished(&operation, &Fm::FileOperation::finished);
+    QVERIFY(operation.run());
+    QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 10000);
+    Fm::FileOperation::setDialogFactory(nullptr);
+
+    QCOMPARE(dialogFactoryCalls, 1);
+    QCOMPARE(conflictDialogCalls, 1);
+    QCOMPARE(errorDialogCalls, 0);
+    QVERIFY(src.exists());
+    QVERIFY(dest.open(QIODevice::ReadOnly));
+    QCOMPARE(dest.readAll(), QByteArray("old"));
+}
+
+void ExplorerTransferControllerTest::optInDialogFactoryKeepsErrorRoutingOnRealFileOperation() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString sourcePath = root.filePath(QStringLiteral("existing-source.txt"));
+    QFile sourceFile(sourcePath);
+    QVERIFY(sourceFile.open(QIODevice::WriteOnly));
+    QCOMPARE(sourceFile.write("data"), qint64(4));
+    sourceFile.close();
+    const QString invalidDestination = root.filePath(QStringLiteral("not-a-directory"));
+    QFile destinationFile(invalidDestination);
+    QVERIFY(destinationFile.open(QIODevice::WriteOnly));
+    QCOMPARE(destinationFile.write("destination"), qint64(11));
+    destinationFile.close();
+    Fm::FilePathList sources{Fm::FilePath::fromLocalPath(sourcePath.toLocal8Bit().constData())};
+    dialogFactoryCalls = conflictDialogCalls = errorDialogCalls = 0;
+    Fm::FileOperation::setDialogFactory(&createProbeDialog);
+    Fm::FileOperation operation(Fm::FileOperation::Copy, sources);
+    operation.setAutoDestroy(false);
+    operation.setDestination(Fm::FilePath::fromLocalPath(invalidDestination.toLocal8Bit().constData()));
+    QSignalSpy finished(&operation, &Fm::FileOperation::finished);
+    QVERIFY(operation.run());
+    QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 10000);
+    Fm::FileOperation::setDialogFactory(nullptr);
+
+    QCOMPARE(dialogFactoryCalls, 1);
+    QCOMPARE(conflictDialogCalls, 0);
+    QCOMPARE(errorDialogCalls, 1);
+    QVERIFY(!operation.isRunning());
+}
 
 void ExplorerTransferControllerTest::preservesExplicitConflictResponseOnLiveJob() {
     QTemporaryDir root;
@@ -74,13 +265,19 @@ void ExplorerTransferControllerTest::cancellationForwardsToLiveLibfmJob() {
     auto* job = new Fm::FileTransferJob(sources, destination, Fm::FileTransferJob::Mode::COPY);
     job->setAutoDelete(false);
     ExplorerTransferController controller(job);
-    QSignalSpy cancelled(&controller, &ExplorerTransferController::cancelled);
+    QSignalSpy cancellationRequested(&controller, &ExplorerTransferController::cancellationRequested);
     QSignalSpy finished(job, &Fm::Job::finished);
+    QVERIFY(controller.markStarted());
     job->runAsync();
     controller.cancel();
-    QTRY_COMPARE_WITH_TIMEOUT(cancelled.count(), 1, 10000);
+    QCOMPARE(controller.snapshot().state, ExplorerTransferController::State::Cancelling);
+    QVERIFY(controller.snapshot().running);
+    QVERIFY(controller.snapshot().cancellationRequested);
+    QTRY_VERIFY_WITH_TIMEOUT(cancellationRequested.count() > 0, 10000);
     QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 10000);
-    QVERIFY(controller.snapshot().cancelled);
+    QCOMPARE(controller.snapshot().state, ExplorerTransferController::State::Finished);
+    QVERIFY(controller.snapshot().cancellationRequested);
+    QVERIFY(!controller.snapshot().running);
     QVERIFY(QFileInfo(source).exists());
     delete job;
 }
@@ -120,6 +317,7 @@ void ExplorerTransferControllerTest::reportsRealTwoGiBCopyProgressAndIntegrity()
     job->setAutoDelete(false);
     ExplorerTransferController controller(job);
     QSignalSpy finished(job, &Fm::Job::finished);
+    QSignalSpy controllerFinished(&controller, &ExplorerTransferController::finished);
     quint64 maxObservedBytes = 0;
     int telemetrySamples = 0;
     QObject::connect(&controller, &ExplorerTransferController::telemetryUpdated, &controller, [&] {
@@ -130,8 +328,10 @@ void ExplorerTransferControllerTest::reportsRealTwoGiBCopyProgressAndIntegrity()
     const auto startedAt = QDateTime::currentDateTimeUtc();
     QElapsedTimer elapsed;
     elapsed.start();
+    QVERIFY(controller.markStarted());
     job->runAsync();
     QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 180000);
+    QTRY_COMPARE_WITH_TIMEOUT(controllerFinished.count(), 1, 10000);
     const auto endedAt = QDateTime::currentDateTimeUtc();
     const auto elapsedMs = elapsed.elapsed();
     const auto sample = controller.snapshot();
@@ -164,5 +364,5 @@ void ExplorerTransferControllerTest::reportsRealTwoGiBCopyProgressAndIntegrity()
     delete job;
 }
 
-QTEST_GUILESS_MAIN(ExplorerTransferControllerTest)
+QTEST_MAIN(ExplorerTransferControllerTest)
 #include "tst_explorertransfercontroller.moc"
