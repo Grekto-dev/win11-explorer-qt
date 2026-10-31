@@ -14,9 +14,9 @@ Na imagem da referência, os popups são superfícies claras quase brancas, text
 
 Não foi introduzida animação temporizada: os frames não sustentam duração/curva de hover, pressão, abertura ou fechamento abaixo da resolução de captura, e parte dos deltas ocorre em um único frame. Os estados mudam imediatamente e cancelam hover/pressed pelo mecanismo normal de eventos Qt ao sair/soltar.
 
-## Integração pendente
+## Integração e verificação
 
-A frente não alterou CMake compartilhado conforme contrato. Integrador deve adicionar `pcmanfm/exploreranimation.cpp` à lista de fontes do target `pcmanfm-core` (ou target comum que compila `explorerchrome.cpp`) e incluir `exploreranimation.h` nos headers do target. Teste standalone:
+`pcmanfm/exploreranimation.cpp` já integra `pcmanfm-core`; o aplicativo foi recompilado e executado em XCB isolado. A suíte standalone abaixo foi repetida em 2026-10-31: quatro casos QtTest passaram, contando init/cleanup. Não prova paridade temporal. Teste standalone:
 
 ```sh
 source /home/pedro/win11-explorer-qt/.deps/env.sh

@@ -219,10 +219,14 @@ private Q_SLOTS:
 
     void nativeXTestSelectionGestures() {
         if(!qEnvironmentVariableIsSet("EXPLORER_ENABLE_XTEST")) {
-            QSKIP("Set EXPLORER_ENABLE_XTEST=1 on isolated Xephyr :12 to run native XTEST gestures");
+            QSKIP("Set EXPLORER_ENABLE_XTEST=1 on an isolated owned Xephyr display to run native XTEST gestures");
         }
-        if(qEnvironmentVariable("DISPLAY") != QStringLiteral(":12")) {
-            QFAIL("Native XTEST selection test is restricted to isolated Xephyr :12");
+        const auto target = qEnvironmentVariable("EXPLORER_XTEST_DISPLAY", QStringLiteral(":12"));
+        bool validNumber = false;
+        const auto number = target.mid(1).toInt(&validNumber);
+        if(!target.startsWith(QLatin1Char(':')) || !validNumber || number < 2
+           || target != QStringLiteral(":%1").arg(number) || qEnvironmentVariable("DISPLAY") != target) {
+            QFAIL("Native XTEST selection test requires the explicitly configured isolated display (never :0/:1)");
         }
         QLibrary xtst(QStringLiteral("libXtst.so.6"));
         QVERIFY2(xtst.load(), "libXtst is required for the native XTEST selection test");

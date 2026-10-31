@@ -19,6 +19,7 @@ set_tests_properties(cli-boundary PROPERTIES TIMEOUT 60 ENVIRONMENT "LD_LIBRARY_
 add_subdirectory(icons)
 add_test(NAME fidelity-harness COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${PROJECT_SOURCE_DIR}/tests/fidelity -v)
 add_test(NAME reference-capture-unit COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${PROJECT_SOURCE_DIR}/scripts/fidelity/reference -p test_capture.py -v)
+add_test(NAME selection-wrapper-safety COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_selection_wrapper.py)
 add_test(NAME selection-baseline COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/selection/probe_baseline.py)
 set_tests_properties(fidelity-harness reference-capture-unit selection-baseline PROPERTIES TIMEOUT 60)
 

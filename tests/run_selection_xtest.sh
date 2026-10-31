@@ -11,8 +11,13 @@ repo=$(cd "$(dirname "$0")/.." && pwd)
 artifacts=${EXPLORER_TEST_ARTIFACTS:-"$repo/.state/selection-xtest"}
 mkdir -p "$artifacts"
 
-if DISPLAY=:12 xdpyinfo >/dev/null 2>&1; then
-    echo "Refusing to use pre-existing display :12; this test owns its Xephyr display" >&2
+target=${EXPLORER_XTEST_DISPLAY-:12}
+if [[ ! "$target" =~ ^:([2-9]|[1-9][0-9]+)$ ]]; then
+    echo "Unsafe isolated display: $target" >&2
+    exit 2
+fi
+if DISPLAY="$target" xdpyinfo >/dev/null 2>&1; then
+    echo "Refusing to use pre-existing display $target; this test owns its Xephyr display" >&2
     exit 2
 fi
 if ! DISPLAY=:0 xdpyinfo >/dev/null 2>&1; then
@@ -20,7 +25,7 @@ if ! DISPLAY=:0 xdpyinfo >/dev/null 2>&1; then
     exit 2
 fi
 
-Xephyr :12 -screen 1280x800 -ac -br -noreset -nolisten tcp >"$artifacts/xephyr.log" 2>&1 &
+DISPLAY=:0 Xephyr "$target" -screen 1280x800 -ac -br -noreset -nolisten tcp >"$artifacts/xephyr.log" 2>&1 &
 xephyr_pid=$!
 wm_pid=
 cleanup() {
@@ -33,17 +38,17 @@ trap cleanup EXIT INT TERM
 
 ready=0
 for _ in $(seq 1 100); do
-    if DISPLAY=:12 xdpyinfo >/dev/null 2>&1; then ready=1; break; fi
+    if DISPLAY="$target" xdpyinfo >/dev/null 2>&1; then ready=1; break; fi
     sleep 0.1
 done
 if [[ $ready -ne 1 ]]; then
-    echo "Xephyr :12 did not become ready" >&2
+    echo "Xephyr $target did not become ready" >&2
     exit 1
 fi
-DISPLAY=:12 metacity --replace >"$artifacts/metacity.log" 2>&1 &
+DISPLAY="$target" metacity --replace >"$artifacts/metacity.log" 2>&1 &
 wm_pid=$!
 sleep 1
 
-DISPLAY=:12 QT_QPA_PLATFORM=xcb NO_AT_BRIDGE=1 \
-    EXPLORER_ENABLE_XTEST=1 EXPLORER_TEST_ARTIFACTS="$artifacts" \
+DISPLAY="$target" QT_QPA_PLATFORM=xcb NO_AT_BRIDGE=1 \
+    EXPLORER_ENABLE_XTEST=1 EXPLORER_XTEST_DISPLAY="$target" EXPLORER_TEST_ARTIFACTS="$artifacts" \
     "$binary" nativeXTestSelectionGestures
