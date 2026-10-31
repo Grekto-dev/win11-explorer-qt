@@ -4,8 +4,8 @@
 #include <QPointer>
 #include <QTimer>
 #include <QElapsedTimer>
-#include <QMutex>
-#include <atomic>
+#include "core/fileoperationjob.h"
+#include <chrono>
 #include <cstdint>
 
 namespace Fm { class FileOperationJob; }
@@ -62,13 +62,15 @@ private Q_SLOTS:
 
 private:
     Snapshot readJobSnapshot() const;
+    bool terminalSnapshot(Snapshot& result) const;
     QPointer<Fm::FileOperationJob> job_;
     QTimer timer_;
     QElapsedTimer elapsed_;
-    std::atomic<State> state_{State::Idle};
-    std::atomic_bool cancellationRequested_{false};
-    mutable QMutex finalSnapshotMutex_;
-    Snapshot finalSnapshot_;
-    bool hasFinalSnapshot_ = false;
-    std::atomic_bool started_{false};
+    // All controller state is confined to its QObject (GUI) thread. Workers
+    // publish only the backend-owned, independently shared Completion value.
+    State state_ = State::Idle;
+    bool cancellationRequested_ = false;
+    bool started_ = false;
+    std::chrono::steady_clock::time_point startedAt_;
+    std::shared_ptr<const Fm::FileOperationJob::Completion> completion_;
 };

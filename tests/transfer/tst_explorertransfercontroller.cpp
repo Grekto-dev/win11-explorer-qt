@@ -17,6 +17,7 @@
 #include "../../pcmanfm/explorertransferdialog.h"
 #include "core/filetransferjob.h"
 #include "core/job.h"
+#include "core/jobpausegate_p.h"
 #include <fileoperation.h>
 #include <fileoperationdialog.h>
 
@@ -53,6 +54,10 @@ Fm::FileOperationDialog* createProbeDialog(Fm::FileOperation* operation) {
 class ExplorerTransferControllerTest final : public QObject {
     Q_OBJECT
 private Q_SLOTS:
+    void backendControlsCannotReopenCompletion();
+    void cancellationCannotPassPredicateWaitGap();
+    void completionPrecedesDestructiveFinishedHandlers();
+    void cancellationBeforeGuiDispatchIsInTerminalSnapshot_data();
     void cancellationBeforeGuiDispatchIsInTerminalSnapshot();
     void cancellationForwardsToLiveLibfmJob();
     void observerLifecycleTracksRealJobSignals();
@@ -72,11 +77,113 @@ private Q_SLOTS:
     void directCancellableCancellationWakesPausedCopy();
 };
 
+void ExplorerTransferControllerTest::backendControlsCannotReopenCompletion() {
+    class TerminalJob final : public Fm::FileOperationJob {
+    public:
+        bool supportsCooperativePause() const override { return true; }
+        void exec() override { setTotalAmount(7, 1); setFinishedAmount(7, 1); }
+    } job;
+    job.setAutoDelete(false);
+    ExplorerTransferController controller(&job);
+    QVERIFY(controller.markStarted());
+    std::thread worker([&] { job.run(); });
+    worker.join();
+    const bool accepted = job.pause();
+    job.resume();
+    job.cancel();
+    QCOMPARE(controller.snapshot().state, ExplorerTransferController::State::Finished);
+    QVERIFY(!accepted);
+    QVERIFY(!job.pauseRequested());
+    QVERIFY(!job.isCancelled());
+    QVERIFY(!controller.snapshot().cancellationRequested);
+}
+
+void ExplorerTransferControllerTest::cancellationCannotPassPredicateWaitGap() {
+    Fm::JobPauseGate gate;
+    gate.requested = true;
+    std::promise<void> inGap, cancelStarted, cancelDone, workerDone;
+    auto cancellationDone = cancelDone.get_future();
+    auto completed = workerDone.get_future();
+    std::atomic_bool cancelledBeforeWait{false};
+    std::thread worker([&] {
+        gate.wait([&] {
+            inGap.set_value();
+            cancelStarted.get_future().wait();
+            // Deadline is only for observing blocked cancellation. The old
+            // implementation is forced to finish its notify BEFORE wait().
+            cancelledBeforeWait = cancellationDone.wait_for(std::chrono::milliseconds(200)) == std::future_status::ready;
+        });
+        workerDone.set_value();
+    });
+    inGap.get_future().wait();
+    std::thread canceller([&] {
+        cancelStarted.set_value();
+        gate.cancel();
+        cancelDone.set_value();
+    });
+    const bool woke = completed.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+    if(!woke) gate.resume(); // deterministic rescue: never leave a hung test thread
+    worker.join();
+    canceller.join();
+    QVERIFY2(!cancelledBeforeWait, "cancel publication escaped the predicate mutex");
+    QVERIFY2(woke, "cancellation notification was lost in the predicate/wait gap");
+}
+
+// Connect the destructive owner first, as FileOperation does. Hold the
+// worker inside that handler while the GUI reads terminal data and deletes
+// its child observer. No queued observer notification has run yet.
+void ExplorerTransferControllerTest::completionPrecedesDestructiveFinishedHandlers() {
+    class CountingJob final : public Fm::FileOperationJob {
+        void exec() override { setTotalAmount(29, 1); setFinishedAmount(29, 1); }
+    } job;
+    job.setAutoDelete(false);
+    std::promise<void> entered, release;
+    auto released = release.get_future();
+    QObject owner;
+    QObject::connect(&job, &Fm::Job::finished, &owner, [&] {
+        entered.set_value();
+        released.wait();
+    }, Qt::DirectConnection);
+    auto* controller = new ExplorerTransferController(&job);
+    QVERIFY(controller->markStarted());
+    std::thread worker([&] { job.run(); });
+    entered.get_future().wait();
+    const auto terminal = controller->snapshot();
+    controller->cancel();
+    const bool pauseAccepted = controller->pause();
+    const bool resumeAccepted = controller->resume();
+    const auto afterControls = controller->snapshot();
+    delete controller;
+    release.set_value();
+    worker.join();
+    QCOMPARE(terminal.state, ExplorerTransferController::State::Finished);
+    QCOMPARE(terminal.finishedBytes, quint64(29));
+    QCOMPARE(afterControls.state, ExplorerTransferController::State::Finished);
+    QVERIFY(!afterControls.cancellationRequested);
+    QVERIFY(!pauseAccepted);
+    QVERIFY(!resumeAccepted);
+    QVERIFY(!job.isCancelled());
+}
+
+void ExplorerTransferControllerTest::cancellationBeforeGuiDispatchIsInTerminalSnapshot_data() {
+    QTest::addColumn<bool>("directCancellable");
+    QTest::newRow("Job-cancel") << false;
+    QTest::newRow("external-GCancellable") << true;
+}
+
 // Real Job::run(), no event loop dispatch until the worker has returned.
 void ExplorerTransferControllerTest::cancellationBeforeGuiDispatchIsInTerminalSnapshot() {
+    QFETCH(bool, directCancellable);
     class CancelJob final : public Fm::FileOperationJob {
-        void exec() override { setTotalAmount(17, 1); cancel(); }
+    public:
+        bool direct = false;
+        void exec() override {
+            setTotalAmount(17, 1);
+            if(direct) g_cancellable_cancel(cancellable().get());
+            else cancel();
+        }
     } job;
+    job.direct = directCancellable;
     job.setAutoDelete(false);
     ExplorerTransferController controller(&job);
     QSignalSpy notices(&controller, &ExplorerTransferController::cancellationRequested);
