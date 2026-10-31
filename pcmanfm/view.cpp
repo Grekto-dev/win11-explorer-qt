@@ -30,6 +30,12 @@
 #include <QPainter>
 #include <QProxyStyle>
 #include <QStyleOption>
+#include <QDropEvent>
+#include <QMimeData>
+#include <QTimer>
+#include <libfm-qt6/fileoperation.h>
+#include <libfm-qt6/proxyfoldermodel.h>
+#include <sys/stat.h>
 
 namespace PCManFM {
 namespace {
@@ -79,11 +85,59 @@ void View::applyRubberBandStyle() {
     auto* localStyle = new ExplorerSelectionStyle(baseStyleName);
     localStyle->setParent(child);
     child->setStyle(localStyle);
+    child->viewport()->installEventFilter(this);
 }
 
 void View::setViewMode(Fm::FolderView::ViewMode mode) {
     Fm::FolderView::setViewMode(mode);
     applyRubberBandStyle();
+}
+
+bool View::eventFilter(QObject* watched, QEvent* event) {
+    // libfm-qt asks which action to use for an unmodified drop. Explorer instead
+    // moves local files on the same filesystem. Keep other drops upstream,
+    // including explicit Ctrl-copy and nonlocal/unknown filesystem cases.
+    if(childView() && watched == childView()->viewport()
+       && (event->type() == QEvent::Drop || event->type() == QEvent::DragMove)) {
+        auto* drop = static_cast<QDropEvent*>(event);
+        if(drop->modifiers() == Qt::NoModifier && drop->possibleActions().testFlag(Qt::MoveAction)
+           && drop->mimeData()->hasUrls()) {
+            auto destination = path();
+            const auto index = childView()->indexAt(drop->position().toPoint());
+            const auto info = model()->fileInfoFromIndex(index);
+            if(index.isValid() && (!info || !info->isDir())) {
+                return Fm::FolderView::eventFilter(watched, event);
+            }
+            if(info) destination = info->path();
+            const auto destinationName = destination.localPath();
+            struct stat destinationStat;
+            bool sameFilesystem = destinationName && ::stat(destinationName.get(), &destinationStat) == 0
+                                  && S_ISDIR(destinationStat.st_mode);
+            Fm::FilePathList sources;
+            for(const auto& url : drop->mimeData()->urls()) {
+                const auto sourceName = url.toLocalFile().toUtf8();
+                struct stat sourceStat;
+                if(!url.isLocalFile() || ::lstat(sourceName.constData(), &sourceStat) != 0
+                   || !sameFilesystem || sourceStat.st_dev != destinationStat.st_dev) {
+                    sameFilesystem = false;
+                    break;
+                }
+                sources.emplace_back(Fm::FilePath::fromLocalPath(sourceName.constData()));
+            }
+            if(sameFilesystem && !sources.empty()) {
+                drop->setDropAction(Qt::MoveAction);
+                drop->accept();
+                if(event->type() == QEvent::Drop) {
+                    QTimer::singleShot(0, this, [this, sources, destination] {
+                        Q_EMIT dropIsDecided(true);
+                        Fm::FileOperation::moveFiles(sources, destination);
+                    });
+                }
+                return true;
+            }
+        }
+    }
+    return Fm::FolderView::eventFilter(watched, event);
 }
 
 void View::onFileClicked(int type, const std::shared_ptr<const Fm::FileInfo>& fileInfo) {

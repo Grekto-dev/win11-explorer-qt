@@ -58,6 +58,7 @@ protected Q_SLOTS:
     void onSearch();
 
 protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
     virtual void onFileClicked(int type, const std::shared_ptr<const Fm::FileInfo>& fileInfo);
     virtual void prepareFileMenu(Fm::FileMenu* menu);
     virtual void prepareFolderMenu(Fm::FolderMenu* menu);

@@ -21,6 +21,12 @@
 #include <QDir>
 #include <QFile>
 #include <QScopedPointer>
+#include <QCryptographicHash>
+#include <X11/Xlib.h>
+#include <X11/keysym.h>
+#include <QTimer>
+#include <QScopeGuard>
+#include <QJsonArray>
 #include <libfm-qt6/core/folderconfig.h>
 #include <QColor>
 #include <QAbstractItemView>
@@ -28,7 +34,6 @@
 #include <QImage>
 #include <QStringList>
 #include <memory>
-#include <X11/Xlib.h>
 
 class ExplorerTest : public QObject {
     Q_OBJECT
@@ -239,6 +244,10 @@ private Q_SLOTS:
         QVERIFY(display);
         struct DisplayCloser { void operator()(Display* d) const { if(d) XCloseDisplay(d); } };
         std::unique_ptr<Display, DisplayCloser> xdisplay(display);
+        const auto releaseButton = qScopeGuard([&] {
+            fakeButton(display, 1, False, 0);
+            XFlush(display);
+        });
 
         QTemporaryDir fixture;
         QVERIFY(fixture.isValid());
@@ -252,6 +261,8 @@ private Q_SLOTS:
         window->resize(1104, 642);
         window->show();
         QVERIFY(QTest::qWaitForWindowExposed(window.data()));
+        QVERIFY(QTest::qWaitForWindowActive(window.data()));
+        QTest::qWait(200);
         auto* folderView = window->currentPage()->folderView();
         QTRY_COMPARE(folderView->model()->rowCount(), 2);
         auto injectReverseMarquee = [&](Fm::FolderView::ViewMode mode) {
@@ -299,6 +310,159 @@ private Q_SLOTS:
         injectReverseMarquee(Fm::FolderView::DetailedListMode);
         injectReverseMarquee(Fm::FolderView::IconMode);
     }
+
+    void nativeExplorerGesturesMatchWindows() {
+        if(!qEnvironmentVariableIsSet("EXPLORER_ENABLE_XTEST")) QSKIP("Run with EXPLORER_ENABLE_XTEST=1 on isolated Xephyr :12");
+        QCOMPARE(qEnvironmentVariable("DISPLAY"), QStringLiteral(":12"));
+        QLibrary xtst(QStringLiteral("libXtst.so.6"));
+        QVERIFY(xtst.load());
+        using Motion=int(*)(Display*,int,int,int,unsigned long);
+        using Button=int(*)(Display*,unsigned int,int,unsigned long);
+        using Key=int(*)(Display*,unsigned int,int,unsigned long);
+        auto motion=reinterpret_cast<Motion>(xtst.resolve("XTestFakeMotionEvent"));
+        auto button=reinterpret_cast<Button>(xtst.resolve("XTestFakeButtonEvent"));
+        auto key=reinterpret_cast<Key>(xtst.resolve("XTestFakeKeyEvent"));
+        QVERIFY(motion && button && key);
+        Display* d=XOpenDisplay(nullptr);
+        QVERIFY(d);
+        struct Close { void operator()(Display* p) const { XCloseDisplay(p);
+            } };
+        std::unique_ptr<Display,Close> xd(d);
+        QTemporaryDir fixture;
+        QVERIFY(fixture.isValid());
+        QDir root(fixture.path());
+        QVERIFY(root.mkdir(QStringLiteral("Target")));
+        const QMap<QString,QByteArray> content{{QStringLiteral("Alpha.txt"),"Alpha test bytes\n"},{QStringLiteral("Bravo.txt"),"Bravo test bytes\n"},{QStringLiteral("Charlie.txt"),"C"},{QStringLiteral("Delta.txt"),"D"},{QStringLiteral("Echo.txt"),"E"},{QStringLiteral("Gamma.txt"),"G"}};
+        for(auto it=content.cbegin();it!=content.cend();++it){ QFile f(root.filePath(it.key()));
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            QCOMPARE(f.write(it.value()),qint64(it.value().size()));
+        }
+        auto digest=[](const QByteArray& bytes){ return QString::fromLatin1(QCryptographicHash::hash(bytes,QCryptographicHash::Sha256).toHex());
+        };
+        auto fileHash=[&](const QString& path){ QFile f(path);
+            if(!f.open(QIODevice::ReadOnly)) return QString();
+            return digest(f.readAll());
+        };
+        QScopedPointer<PCManFM::MainWindow> window(new PCManFM::MainWindow(Fm::FilePath::fromLocalPath(fixture.path().toUtf8().constData())));
+        window->resize(1104,642);
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window.data()));
+        auto* v=window->currentPage()->folderView();
+        QTRY_COMPARE_WITH_TIMEOUT(v->model()->rowCount(),7,5000);
+        auto names=[&](){ QStringList out;
+            for(const auto& ix:v->selectionModel()->selectedRows(0)) out<<ix.data().toString();
+            out.sort();
+            return out;
+        };
+        auto point=[&](const QString& name){ for(int i=0;i<v->model()->rowCount();++i){ auto ix=v->model()->index(i,0);
+                if(ix.data().toString()==name) return v->childView()->viewport()->mapToGlobal(v->childView()->visualRect(ix).center());
+            } return QPoint();
+        };
+        const auto ctrl=XKeysymToKeycode(d,XK_Control_L), shift=XKeysymToKeycode(d,XK_Shift_L);
+        const auto releaseInput = qScopeGuard([&] {
+            button(d,1,False,0); key(d,ctrl,False,0); key(d,shift,False,0); XFlush(d);
+        });
+        QJsonObject observations;
+        const QString artifacts=qEnvironmentVariable("EXPLORER_TEST_ARTIFACTS");
+        auto record = [&](const QString& stage) {
+            observations.insert(stage, QJsonArray::fromStringList(names()));
+            if(!artifacts.isEmpty()) {
+                QDir().mkpath(artifacts);
+                if(!window->grab().save(QDir(artifacts).filePath(stage + QStringLiteral(".png"))))
+                QTest::qFail("Could not save gesture screenshot", __FILE__, __LINE__);
+            }
+        };
+        auto wait=[&](int ms){ QElapsedTimer t;
+            t.start();
+            while(t.elapsed()<ms){QCoreApplication::processEvents(QEventLoop::AllEvents,20);
+                QThread::msleep(5);
+            } };
+        auto click=[&](const QString& name,bool c=false,bool s=false){ const auto p=point(name);
+            QVERIFY(!p.isNull());
+            if(c)key(d,ctrl,True,0);
+            if(s)key(d,shift,True,0);
+            motion(d,DefaultScreen(d),p.x(),p.y(),0);
+            button(d,1,True,0);
+            button(d,1,False,0);
+            XFlush(d);
+            wait(300);
+            if(s)key(d,shift,False,0);
+            if(c)key(d,ctrl,False,0);
+            wait(250);
+        };
+        click(QStringLiteral("Alpha.txt"));
+        record(QStringLiteral("ctrl-after-alpha"));
+        QCOMPARE(names(),QStringList{QStringLiteral("Alpha.txt")});
+        click(QStringLiteral("Bravo.txt"),true);
+        record(QStringLiteral("ctrl-after-bravo"));
+        QCOMPARE(names(),QStringList({QStringLiteral("Alpha.txt"),QStringLiteral("Bravo.txt")}));
+        click(QStringLiteral("Alpha.txt"),true);
+        record(QStringLiteral("ctrl-after-toggle-alpha"));
+        QCOMPARE(names(),QStringList{QStringLiteral("Bravo.txt")});
+        click(QStringLiteral("Alpha.txt"));
+        click(QStringLiteral("Gamma.txt"),false,true);
+        record(QStringLiteral("shift-after-gamma"));
+        QCOMPARE(names(),QStringList({QStringLiteral("Alpha.txt"),QStringLiteral("Bravo.txt"),QStringLiteral("Charlie.txt"),QStringLiteral("Delta.txt"),QStringLiteral("Echo.txt"),QStringLiteral("Gamma.txt")}));
+        auto vp=v->childView()->viewport();
+        auto p=vp->mapToGlobal(QPoint(100,vp->height()-60));
+        motion(d,DefaultScreen(d),p.x(),p.y(),0);
+        button(d,1,True,0);
+        button(d,1,False,0);
+        XFlush(d);
+        wait(300);
+        record(QStringLiteral("empty-clears"));
+        QVERIFY(names().isEmpty());
+        // Queue the complete gesture BEFORE dispatching events: QDrag::exec()
+        // enters a nested loop, so synchronous processEvents-driven input hangs.
+        auto drag=[&](const QString& name,bool copy) {
+            const auto a=point(name), b=point(QStringLiteral("Target"));
+            QVERIFY(!a.isNull() && !b.isNull());
+            if(copy) key(d,ctrl,True,0);
+            motion(d,DefaultScreen(d),a.x(),a.y(),0);
+            button(d,1,True,0);
+            XFlush(d);
+            for(int i=1;i<=12;++i) {
+                QTimer::singleShot(200+i*50, window.data(), [=] {
+                    motion(d,DefaultScreen(d),a.x()+(b.x()-a.x())*i/12,a.y()+(b.y()-a.y())*i/12,0);
+                    XFlush(d);
+                });
+            }
+            QTimer::singleShot(1100, window.data(), [=] { button(d,1,False,0); XFlush(d); });
+            QTimer::singleShot(1250, window.data(), [=] { key(d,ctrl,False,0); XFlush(d); });
+            QTimer::singleShot(1400, window.data(), [=] {
+                // A regression to the upstream action menu must fail, not hang.
+                if(QApplication::activePopupWidget()) {
+                    qWarning("Unexpected popup after drop; cancelling for bounded failure");
+                    const auto escape = XKeysymToKeycode(d, XK_Escape);
+                    key(d,escape,True,0); key(d,escape,False,0); XFlush(d);
+                }
+            });
+            wait(1600);
+        };
+        const auto alpha=digest(content.value(QStringLiteral("Alpha.txt"))), bravo=digest(content.value(QStringLiteral("Bravo.txt")));
+        drag(QStringLiteral("Alpha.txt"),false);
+        QTRY_VERIFY_WITH_TIMEOUT(!QFile::exists(root.filePath(QStringLiteral("Alpha.txt"))),5000);
+        QCOMPARE(fileHash(root.filePath(QStringLiteral("Target/Alpha.txt"))),alpha);
+        record(QStringLiteral("move-complete"));
+        drag(QStringLiteral("Bravo.txt"),true);
+        QTRY_VERIFY_WITH_TIMEOUT(QFile::exists(root.filePath(QStringLiteral("Target/Bravo.txt"))),5000);
+        QVERIFY(QFile::exists(root.filePath(QStringLiteral("Bravo.txt"))));
+        QCOMPARE(fileHash(root.filePath(QStringLiteral("Bravo.txt"))),bravo);
+        QCOMPARE(fileHash(root.filePath(QStringLiteral("Target/Bravo.txt"))),bravo);
+        record(QStringLiteral("copy-complete"));
+        if(!artifacts.isEmpty()){QDir().mkpath(artifacts);
+            QJsonObject report;
+            report.insert(QStringLiteral("reference"),QStringLiteral("20261031T0147-0300/INTERACTIONS_READY.json"));
+            report.insert(QStringLiteral("cases"),QJsonObject{{QStringLiteral("ctrl-toggle"),true},{QStringLiteral("shift-range-empty"),true},{QStringLiteral("dnd-default-move"),true},{QStringLiteral("dnd-ctrl-copy"),true}});
+            report.insert(QStringLiteral("selectedNames"),observations);
+            report.insert(QStringLiteral("filesystem"), QJsonObject{{QStringLiteral("moveSourceExists"),QFile::exists(root.filePath(QStringLiteral("Alpha.txt")))},{QStringLiteral("moveDestinationSHA256"),fileHash(root.filePath(QStringLiteral("Target/Alpha.txt")))},{QStringLiteral("copySourceSHA256"),fileHash(root.filePath(QStringLiteral("Bravo.txt")))},{QStringLiteral("copyDestinationSHA256"),fileHash(root.filePath(QStringLiteral("Target/Bravo.txt")))}});
+            report.insert(QStringLiteral("sha256"),QJsonObject{{QStringLiteral("Alpha.txt"),alpha},{QStringLiteral("Bravo.txt"),bravo}});
+            QFile f(QDir(artifacts).filePath(QStringLiteral("native-gesture-comparison.json")));
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(QJsonDocument(report).toJson(QJsonDocument::Indented));
+        }
+    }
+
 
     void chromeHasWindowsStructure() {
         QTemporaryDir fixture;
