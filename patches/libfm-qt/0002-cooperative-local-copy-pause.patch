@@ -135,3 +135,10 @@
 +
 +// ABI/API marker for the optional cooperative local-copy checkpoint API.
 +#define LIBFM_QT_COOPERATIVE_COPY_PAUSE_API 1
+--- a/src/core/job.h
++++ b/src/core/job.h
+@@ -106,3 +106,4 @@
+     void onCancellableCancelled(GCancellable* /*cancellable*/) {
++        pauseCondition_.notify_all();
+         Q_EMIT cancelled();
+     }

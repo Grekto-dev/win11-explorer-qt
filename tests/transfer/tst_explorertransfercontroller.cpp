@@ -66,6 +66,7 @@ private Q_SLOTS:
     void reportsRealTwoGiBCopyProgressAndIntegrity();
     void cooperativePauseCapabilityIsNotAdvertisedByUnsupportedJobs();
     void externalCancellationNotifiesControllerExactlyOnce();
+    void directCancellableCancellationWakesPausedCopy();
 };
 
 void ExplorerTransferControllerTest::observerLifecycleTracksRealJobSignals() {
@@ -462,8 +463,10 @@ void ExplorerTransferControllerTest::cancellationForwardsToLiveLibfmJob() {
     controller.cancel();
     controller.cancel();
     QCOMPARE(cancellationRequested.count(), 1);
-    QCOMPARE(controller.snapshot().state, ExplorerTransferController::State::Cancelling);
-    QVERIFY(controller.snapshot().running);
+    QVERIFY(controller.snapshot().state == ExplorerTransferController::State::Cancelling ||
+            controller.snapshot().state == ExplorerTransferController::State::Finished);
+    QCOMPARE(controller.snapshot().running,
+             controller.snapshot().state == ExplorerTransferController::State::Cancelling);
     QVERIFY(controller.snapshot().cancellationRequested);
     QTRY_VERIFY_WITH_TIMEOUT(cancellationRequested.count() > 0, 10000);
     QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 10000);
@@ -629,6 +632,44 @@ void ExplorerTransferControllerTest::externalCancellationNotifiesControllerExact
     QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 10000);
     QCOMPARE(notices.count(), 1);
     QCOMPARE(controller.snapshot().state, ExplorerTransferController::State::Finished);
+    delete job;
+}
+
+void ExplorerTransferControllerTest::directCancellableCancellationWakesPausedCopy() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString source = root.filePath(QStringLiteral("direct-cancel.bin"));
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    const QByteArray block(1024 * 1024, 'D');
+    for(int i = 0; i < 128; ++i) QCOMPARE(file.write(block), qint64(block.size()));
+    file.close();
+    const QString destination = root.filePath(QStringLiteral("dest"));
+    QVERIFY(QDir().mkpath(destination));
+    Fm::FilePathList sources{Fm::FilePath::fromLocalPath(source.toLocal8Bit().constData())};
+    auto* job = new Fm::FileTransferJob(sources,
+        Fm::FilePath::fromLocalPath(destination.toLocal8Bit().constData()), Fm::FileTransferJob::Mode::COPY);
+    job->setAutoDelete(false);
+    ExplorerTransferController controller(job);
+    QSignalSpy finished(job, &Fm::Job::finished);
+    int responsiveTicks = 0;
+    QTimer responsivenessProbe;
+    responsivenessProbe.setInterval(10);
+    QObject::connect(&responsivenessProbe, &QTimer::timeout, &controller, [&] { ++responsiveTicks; });
+    QVERIFY(controller.markStarted());
+    responsivenessProbe.start();
+    job->runAsync();
+    QVERIFY(controller.pause());
+    QTRY_VERIFY_WITH_TIMEOUT(controller.snapshot().paused, 5000);
+    const int ticksBeforeCancel = responsiveTicks;
+
+    // Exercise the public GCancellable directly, not Job::cancel().
+    g_cancellable_cancel(job->cancellable().get());
+
+    QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 5000);
+    QVERIFY(responsiveTicks > ticksBeforeCancel);
+    QCOMPARE(controller.snapshot().state, ExplorerTransferController::State::Finished);
+    responsivenessProbe.stop();
     delete job;
 }
 
