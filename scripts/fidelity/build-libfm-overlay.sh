@@ -9,8 +9,8 @@ OVERLAY_SOURCE="$ROOT/.state/overlay-source/libfm-qt"
 BUILD_DIR="$ROOT/.state/libfm-overlay-build"
 PREFIX="${LIBFMQT_OVERLAY_PREFIX:-$ROOT/.state/libfm-overlay-prefix}"
 TEST_BUILD="$ROOT/.state/transfer-overlay-build"
-# Validate ALL mutation targets before mkdir/rm/archive extraction, even when
-# the source checkout is absent. Never canonicalize away evidence of symlinks.
+# Validate ALL mutation targets before mkdir/rm/archive extraction.
+# Never canonicalize away evidence of symlinks.
 /usr/bin/python3 "$ROOT/scripts/fidelity/overlay-preflight.py" "$ROOT" "$SDK_SOURCE" \
     "$OVERLAY_SOURCE" "$BUILD_DIR" "$PREFIX" "$TEST_BUILD"
 EXPECTED_REV="4294f29ed314388f1f6d051ae0128320354e417a"

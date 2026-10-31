@@ -50,6 +50,15 @@ add_subdirectory(pcmanfm)
 
 if(BUILD_TESTING)
     add_subdirectory(tests)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME overlay-path-safety COMMAND ${Python3_EXECUTABLE}
+        ${PROJECT_SOURCE_DIR}/tests/test_overlay_safety.py -v)
+    add_test(NAME private-libfm-package-guards COMMAND ${Python3_EXECUTABLE}
+        ${PROJECT_SOURCE_DIR}/tests/test_private_libfm_guards.py -v)
+    add_test(NAME private-libfm-cache-selection COMMAND ${Python3_EXECUTABLE}
+        ${PROJECT_SOURCE_DIR}/tests/test_private_libfm_cmake.py -v)
+    set_tests_properties(overlay-path-safety private-libfm-package-guards
+        private-libfm-cache-selection PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
 endif()
 
 
