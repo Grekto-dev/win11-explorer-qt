@@ -25,9 +25,10 @@ regions. Add `--heatmap /abs/heatmap` and/or `--overlay /abs/overlay` for
 optional per-region derived PNGs.
 
 Without `--criteria`, the report remains `status: not_evaluated` and
-`equivalence: not_evaluated`. Criteria are JSON, for example
-`{"status":"measured","source":"repeatability measurements in run X","max_mae_rgb":1.2}`.
-Every limit must be justified externally by observed capture precision and
+`equivalence: not_evaluated`. Criteria are JSON and must cite a real evidence
+file by path and SHA-256, for example
+`{"status":"measured","source":{"path":"repeatability.json","sha256":"<computed-sha256>"},"max_mae_rgb":1.2}`.
+Every limit must be finite, non-negative, and justified externally by observed capture precision and
 repeatability; no default exists. This is not a claim of global or semantic
 visual equivalence.
 
@@ -35,15 +36,28 @@ visual equivalence.
 
 ```sh
 python3 tools/fidelity/measure.py validate /abs/run/manifest.json
-python3 tools/fidelity/measure.py timeline /abs/run/manifest.json \
-  --report /abs/timeline-report.json
+python3 tools/fidelity/measure.py timeline /abs/run/INTERACTIONS_READY.json \
+  --report /abs/interactions-timeline.json
+python3 tools/fidelity/measure.py timeline /abs/run/transfer-ui-timeline.json \
+  --report /abs/transfer-timeline.json
 ```
 
-Validation checks schema v1, statuses, required environment metadata, unique
-case IDs, strictly increasing finite frame timestamps, frame regions, path
-containment, and referenced evidence-file existence. The timeline report
-contains actual elapsed timestamps and observed intervals, without FPS
-interpolation. A manifest with zero frames cannot produce a timeline report.
+Validation checks schema v1, statuses, unique case IDs, nonempty evidence and
+measurements for `measured` cases, finite increasing frame timestamps, integer
+local-image ROIs, path containment (including symlink resolution), and
+referenced evidence-file existence. It adapts producer aliases/measurement
+objects in a normalized copy while retaining source provenance. A manifest can
+be structurally `valid` while reporting environment `quality_gaps`; in that
+case `equality_eligible` is false and no parity conclusion is available.
+
+Timeline output compares adjacent captured ROI pixels (RGB MAE and changed
+pixel fraction) at the original timestamps, and brackets first/last visible
+change by the sampled frame times. These are not exact onset/completion times.
+The existing `transfer-ui-timeline.json` adapter explicitly preserves its real
+`elapsed_ms`; when that producer log has no ROI, whole-frame bounds are read
+from actual image dimensions and labeled as such, not treated as an Explorer
+client rectangle. No interpolation or FPS is inferred. A timeline with zero
+frames cannot be measured.
 Only the designated evidence-collection operator publishes Windows manifests;
 this harness does not create replacement reference evidence.
 
