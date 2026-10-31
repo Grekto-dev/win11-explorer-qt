@@ -22,6 +22,12 @@ namespace {
 int dialogFactoryCalls = 0;
 int conflictDialogCalls = 0;
 int errorDialogCalls = 0;
+QPointer<ExplorerTransferDialog> capturedTransferDialog;
+
+Fm::FileOperationDialog* captureExplorerTransferDialog(Fm::FileOperation* operation) {
+    capturedTransferDialog = qobject_cast<ExplorerTransferDialog*>(createExplorerTransferDialog(operation));
+    return capturedTransferDialog;
+}
 
 class ProbeTransferDialog final : public Fm::FileOperationDialog {
 public:
@@ -47,6 +53,7 @@ class ExplorerTransferControllerTest final : public QObject {
 private Q_SLOTS:
     void cancellationForwardsToLiveLibfmJob();
     void observerLifecycleTracksRealJobSignals();
+    void lateAttachStartsObservingAnAlreadyRunningJob();
     void observerDetachesWhenBorrowedJobIsDestroyedEarly();
     void destroyingObserverDoesNotDestroyBorrowedJob();
     void destroyingObserverDuringIoLeavesJobRunning();
@@ -54,6 +61,7 @@ private Q_SLOTS:
     void optInDialogFactoryKeepsErrorRoutingOnRealFileOperation();
     void defaultDialogFactoryReceivesPointerBasedErrorWithoutTestRegistration();
     void transferDialogFactoryBuildsCollapsedRealProgressUi();
+    void liveOperationPauseButtonWaitsForBackendAck();
     void preservesExplicitConflictResponseOnLiveJob();
     void reportsRealTwoGiBCopyProgressAndIntegrity();
     void cooperativePauseCapabilityIsNotAdvertisedByUnsupportedJobs();
@@ -99,6 +107,34 @@ void ExplorerTransferControllerTest::observerLifecycleTracksRealJobSignals() {
     const int terminalSamples = telemetry.count();
     QTest::qWait(250);
     QCOMPARE(telemetry.count(), terminalSamples);
+}
+
+void ExplorerTransferControllerTest::lateAttachStartsObservingAnAlreadyRunningJob() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString source = root.filePath(QStringLiteral("late-attach.bin"));
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    const QByteArray block(1024 * 1024, 'L');
+    for(int i = 0; i < 64; ++i) QCOMPARE(file.write(block), qint64(block.size()));
+    file.close();
+    const QString destination = root.filePath(QStringLiteral("dest"));
+    QVERIFY(QDir().mkpath(destination));
+    Fm::FilePathList sources{Fm::FilePath::fromLocalPath(source.toLocal8Bit().constData())};
+    Fm::FileOperation operation(Fm::FileOperation::Copy, sources);
+    operation.setAutoDestroy(false);
+    operation.setDestination(Fm::FilePath::fromLocalPath(destination.toLocal8Bit().constData()));
+    QSignalSpy operationFinished(&operation, &Fm::FileOperation::finished);
+    QVERIFY(operation.run());
+    QVERIFY(operation.isRunning());
+
+    ExplorerTransferController controller(operation.job());
+    QVERIFY(controller.attachLate());
+    QCOMPARE(controller.snapshot().state, ExplorerTransferController::State::Running);
+    QVERIFY(controller.snapshot().running);
+    QSignalSpy telemetry(&controller, &ExplorerTransferController::telemetryUpdated);
+    QTRY_VERIFY_WITH_TIMEOUT(telemetry.count() > 0, 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(operationFinished.count(), 1, 10000);
 }
 
 void ExplorerTransferControllerTest::observerDetachesWhenBorrowedJobIsDestroyedEarly() {
@@ -251,7 +287,8 @@ void ExplorerTransferControllerTest::transferDialogFactoryBuildsCollapsedRealPro
     QVERIFY(!summary->text().contains(root.path()));
     QVERIFY(dialog->findChild<QPushButton*>(QStringLiteral("transferDetailsButton")));
     QVERIFY(dialog->findChild<QPushButton*>(QStringLiteral("transferCancelButton")));
-    QVERIFY(!dialog->findChild<QWidget*>(QStringLiteral("pauseButton")));
+    QVERIFY(dialog->findChild<QPushButton*>(QStringLiteral("pauseButton")));
+    QVERIFY(!dialog->findChild<QPushButton*>(QStringLiteral("pauseButton"))->isVisible());
     QVERIFY(dialog->minimumWidth() >= 440);
     dialog->show();
     QCoreApplication::processEvents();
@@ -270,6 +307,59 @@ void ExplorerTransferControllerTest::transferDialogFactoryBuildsCollapsedRealPro
     QFile copied(QDir(destination).filePath(QStringLiteral("visible-source.bin")));
     QVERIFY(copied.open(QIODevice::ReadOnly));
     QCOMPARE(copied.readAll(), QByteArray("live-bytes"));
+}
+
+void ExplorerTransferControllerTest::liveOperationPauseButtonWaitsForBackendAck() {
+    constexpr quint64 fixtureBytes = 4ULL * 1024 * 1024 * 1024;
+    constexpr qsizetype chunkBytes = 4 * 1024 * 1024;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QStorageInfo storage(root.path());
+    QVERIFY2(storage.isValid() && storage.bytesAvailable() >= qint64(3 * fixtureBytes),
+             "live pause UI test requires >= 12 GiB free for a materialized 4 GiB source, destination, and safety margin");
+    const QString source = root.filePath(QStringLiteral("ui-live-source-4GiB.bin"));
+    const QString destination = root.filePath(QStringLiteral("destination"));
+    QVERIFY(QDir().mkpath(destination));
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    const QByteArray block(chunkBytes, 'U');
+    for(quint64 written = 0; written < fixtureBytes; written += chunkBytes)
+        QCOMPARE(file.write(block), qint64(block.size()));
+    QVERIFY(file.flush());
+    file.close();
+
+    const Fm::FilePathList sources{Fm::FilePath::fromLocalPath(source.toLocal8Bit().constData())};
+    Fm::FileOperation::setDialogFactory(&captureExplorerTransferDialog);
+    capturedTransferDialog = nullptr;
+    Fm::FileOperation operation(Fm::FileOperation::Copy, sources);
+    operation.setAutoDestroy(false);
+    operation.setDestination(Fm::FilePath::fromLocalPath(destination.toLocal8Bit().constData()));
+    QSignalSpy finished(&operation, &Fm::FileOperation::finished);
+    QVERIFY(operation.run());
+    QTRY_VERIFY_WITH_TIMEOUT(capturedTransferDialog, 10000);
+    auto* pause = capturedTransferDialog->findChild<QPushButton*>(QStringLiteral("pauseButton"));
+    QVERIFY(pause);
+    QVERIFY(pause->isVisible());
+    QTest::mouseClick(pause, Qt::LeftButton);
+    QTRY_COMPARE_WITH_TIMEOUT(pause->text(), QStringLiteral("Retomar"), 5000);
+    const QString copiedPath = QDir(destination).filePath(QFileInfo(source).fileName());
+    const qint64 pausedBytes = QFileInfo(copiedPath).size();
+    QVERIFY(pausedBytes > 0);
+    QVERIFY(pausedBytes < qint64(fixtureBytes));
+    QTest::qWait(300);
+    QCOMPARE(QFileInfo(copiedPath).size(), pausedBytes);
+    const QString capture = qEnvironmentVariable("EXPLORER_TRANSFER_UI_SCREENSHOT");
+    if(!capture.isEmpty()) QVERIFY(capturedTransferDialog->grab().save(capture));
+    QTest::mouseClick(pause, Qt::LeftButton);
+    QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 180000);
+    QCOMPARE(QFileInfo(copiedPath).size(), qint64(fixtureBytes));
+    qInfo().noquote() << "LIVE_TRANSFER_UI"
+                      << "fixture_bytes=" << fixtureBytes
+                      << "paused_bytes=" << pausedBytes
+                      << "pause_button_ack_label=" << QStringLiteral("Retomar")
+                      << "completed_bytes=" << QFileInfo(copiedPath).size()
+                      << "screenshot=" << (capture.isEmpty() ? QStringLiteral("not-requested") : capture);
+    Fm::FileOperation::setDialogFactory(nullptr);
 }
 
 void ExplorerTransferControllerTest::defaultDialogFactoryReceivesPointerBasedErrorWithoutTestRegistration() {

@@ -1,4 +1,5 @@
 #include "explorertransferdialog.h"
+#include "explorertransfercontroller.h"
 #include <fileoperation.h>
 
 #include <QFileInfo>
@@ -11,6 +12,7 @@ ExplorerTransferDialog::ExplorerTransferDialog(Fm::FileOperation* operation)
       summary_(new QLabel(this)), currentFile_(new QLabel(this)),
       progressText_(new QLabel(this)), detail_(new QLabel(this)), progress_(new QProgressBar(this)),
       detailsButton_(new QPushButton(tr("⌄  Mais detalhes"), this)),
+      pauseButton_(new QPushButton(tr("Pausar"), this)),
       cancelButton_(new QPushButton(tr("Cancelar"), this)) {
     // Match the verb to the actual operation; don't label moves/deletes as copies.
     switch(operation->type()) {
@@ -26,7 +28,7 @@ ExplorerTransferDialog::ExplorerTransferDialog(Fm::FileOperation* operation)
     // its presentation. Base error/conflict methods remain fully functional.
     for(QWidget* child : findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly)) {
         if(child != summary_ && child != currentFile_ && child != progressText_ && child != detail_
-           && child != progress_ && child != detailsButton_ && child != cancelButton_)
+           && child != progress_ && child != detailsButton_ && child != pauseButton_ && child != cancelButton_)
             child->hide();
     }
     auto* content = new QWidget(this);
@@ -39,6 +41,7 @@ ExplorerTransferDialog::ExplorerTransferDialog(Fm::FileOperation* operation)
     detail_->setParent(content);
     progress_->setParent(content);
     detailsButton_->setParent(content);
+    pauseButton_->setParent(content);
     cancelButton_->setParent(content);
     summary_->setObjectName(QStringLiteral("transferSummary"));
     layout->addWidget(summary_);
@@ -49,6 +52,7 @@ ExplorerTransferDialog::ExplorerTransferDialog(Fm::FileOperation* operation)
     auto* buttons = new QHBoxLayout;
     buttons->addWidget(detailsButton_, 0, Qt::AlignLeft);
     buttons->addStretch(1);
+    buttons->addWidget(pauseButton_);
     buttons->addWidget(cancelButton_);
     layout->addLayout(buttons);
     if(this->layout()) this->layout()->addWidget(content);
@@ -57,7 +61,9 @@ ExplorerTransferDialog::ExplorerTransferDialog(Fm::FileOperation* operation)
     detail_->setObjectName(QStringLiteral("transferDetails"));
     progress_->setObjectName(QStringLiteral("transferProgress"));
     detailsButton_->setObjectName(QStringLiteral("transferDetailsButton"));
+    pauseButton_->setObjectName(QStringLiteral("pauseButton"));
     cancelButton_->setObjectName(QStringLiteral("transferCancelButton"));
+    pauseButton_->hide();
     summary_->setText(tr("Copiando 1 item"));
     summary_->setTextFormat(Qt::RichText);
     summary_->setWordWrap(true);
@@ -76,7 +82,20 @@ ExplorerTransferDialog::ExplorerTransferDialog(Fm::FileOperation* operation)
     setMinimumSize(440, 166);
     resize(448, 166);
     connect(detailsButton_, &QPushButton::clicked, this, &ExplorerTransferDialog::toggleDetails);
+    connect(pauseButton_, &QPushButton::clicked, this, &ExplorerTransferDialog::togglePause);
     connect(cancelButton_, &QPushButton::clicked, this, &ExplorerTransferDialog::reject);
+    if(operation && operation->isRunning() && operation->job()) {
+        controller_ = new ExplorerTransferController(operation->job(), this);
+        if(controller_->attachLate() && controller_->supportsPause()) {
+            pauseButton_->show();
+            connect(controller_, &ExplorerTransferController::telemetryUpdated,
+                    this, &ExplorerTransferDialog::refreshPauseState);
+            refreshPauseState();
+        } else {
+            delete controller_;
+            controller_ = nullptr;
+        }
+    }
 }
 
 void ExplorerTransferDialog::setSourceFiles(const Fm::FilePathList& files) {
@@ -131,6 +150,40 @@ void ExplorerTransferDialog::toggleDetails() {
     detailsButton_->setText(show ? tr("⌃  Menos detalhes") : tr("⌄  Mais detalhes"));
     adjustSize();
 }
+
+void ExplorerTransferDialog::togglePause() {
+    if(!controller_) return;
+    const auto state = controller_->snapshot().state;
+    if(state == ExplorerTransferController::State::Paused)
+        controller_->resume();
+    else if(state == ExplorerTransferController::State::Running)
+        controller_->pause();
+    refreshPauseState();
+}
+
+void ExplorerTransferDialog::refreshPauseState() {
+    if(!controller_) return;
+    const auto snapshot = controller_->snapshot();
+    switch(snapshot.state) {
+    case ExplorerTransferController::State::Running:
+        pauseButton_->setText(tr("Pausar"));
+        pauseButton_->setEnabled(true);
+        break;
+    case ExplorerTransferController::State::Pausing:
+        // Keep the UI honest: do not offer Resume until the backend ACKs pause.
+        pauseButton_->setText(snapshot.paused ? tr("Retomar") : tr("Pausando…"));
+        pauseButton_->setEnabled(snapshot.paused);
+        break;
+    case ExplorerTransferController::State::Paused:
+        pauseButton_->setText(tr("Retomar"));
+        pauseButton_->setEnabled(true);
+        break;
+    default:
+        pauseButton_->setEnabled(false);
+        break;
+    }
+}
+
 Fm::FileOperationDialog* createExplorerTransferDialog(Fm::FileOperation* operation) {
     return new ExplorerTransferDialog(operation);
 }

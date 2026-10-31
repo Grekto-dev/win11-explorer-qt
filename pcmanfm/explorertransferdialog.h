@@ -6,8 +6,10 @@
 #include <QPushButton>
 #include <QWidget>
 
+class ExplorerTransferController;
+
 // Presentation-only subclass: libfm-qt still owns the operation and its
-// conflict/error handlers. Pause is intentionally not exposed until supported.
+// conflict/error handlers. Pause is exposed only when the live job confirms support.
 class ExplorerTransferDialog final : public Fm::FileOperationDialog {
     Q_OBJECT
 public:
@@ -23,6 +25,8 @@ public:
 
 private Q_SLOTS:
     void toggleDetails();
+    void togglePause();
+    void refreshPauseState();
 
 private:
     QLabel* summary_;
@@ -31,7 +35,9 @@ private:
     QLabel* detail_;
     QProgressBar* progress_;
     QPushButton* detailsButton_;
+    QPushButton* pauseButton_;
     QPushButton* cancelButton_;
+    ExplorerTransferController* controller_ = nullptr;
     QString sourceName_;
     QString destinationName_;
     QString currentFileName_;

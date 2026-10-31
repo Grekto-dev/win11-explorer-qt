@@ -1,4 +1,6 @@
 #include "application.h"
+#include "explorertransferdialog.h"
+#include <libfm-qt6/fileoperation.h>
 #include <libfm-qt6/libfmqt.h>
 
 int main(int argc, char** argv) {
@@ -7,6 +9,7 @@ int main(int argc, char** argv) {
     qunsetenv("QT_NO_GLIB");
 
     PCManFM::Application app(argc, argv);
+    Fm::FileOperation::setDialogFactory(&createExplorerTransferDialog);
 
     app.init();
     return app.exec();

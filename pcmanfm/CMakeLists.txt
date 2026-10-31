@@ -3,6 +3,9 @@ set(pcmanfm_CORE_SRCS
     mainwindow.cpp
     explorerchrome.cpp
     explorericons.cpp
+    exploreranimation.cpp
+    explorertransfercontroller.cpp
+    explorertransferdialog.cpp
     tabpage.cpp
     tabbar.cpp
     statusbar.cpp
@@ -68,7 +71,13 @@ install(FILES "${PROJECT_SOURCE_DIR}/icons/explorer/scalable/places/folder.svg"
 target_include_directories(pcmanfm-core PUBLIC
     ${CMAKE_CURRENT_BINARY_DIR}
     ${CMAKE_CURRENT_BINARY_DIR}/pcmanfm-core_autogen/include
-    ${CMAKE_CURRENT_SOURCE_DIR})
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    "${LIBFMQT_SOURCE_DIR}"
+    "${LIBFMQT_INCLUDE_DIR}"
+)
+if(NOT EXISTS "${LIBFMQT_SOURCE_DIR}/core/filetransferjob.h" OR NOT EXISTS "${LIBFMQT_INCLUDE_DIR}/fm-qt6_export.h")
+    message(FATAL_ERROR "LIBFMQT_SOURCE_DIR and LIBFMQT_INCLUDE_DIR must point to the matching libfm-qt overlay")
+endif()
 target_compile_definitions(pcmanfm-core
     PRIVATE
         PCMANFM_DATA_DIR="${CMAKE_INSTALL_PREFIX}/share/win11-explorer-qt"

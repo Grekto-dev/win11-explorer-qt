@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 cd "$ROOT"
 source "$ROOT/.deps/env.sh"
 SDK_SOURCE="$ROOT/.deps/src/libfm-qt"
 OVERLAY_SOURCE="$ROOT/.state/overlay-source/libfm-qt"
 BUILD_DIR="$ROOT/.state/libfm-overlay-build"
-PREFIX="$ROOT/.state/libfm-overlay-prefix"
+PREFIX="${LIBFMQT_OVERLAY_PREFIX:-$ROOT/.state/libfm-overlay-prefix}"
+PREFIX="$(realpath -m -- "$PREFIX")"
 TEST_BUILD="$ROOT/.state/transfer-overlay-build"
+case "$PREFIX" in
+    "$ROOT"/.state/*) ;;
+    *) echo "Refusing to remove/build outside this worktree .state/: $PREFIX" >&2; exit 2 ;;
+esac
+mkdir -p "$PREFIX"
 EXPECTED_REV="4294f29ed314388f1f6d051ae0128320354e417a"
 
 if [[ ! -d "$SDK_SOURCE/.git" ]]; then

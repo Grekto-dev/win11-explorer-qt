@@ -96,6 +96,17 @@ ExplorerTransferController::Snapshot ExplorerTransferController::snapshot() cons
     return readJobSnapshot();
 }
 
+bool ExplorerTransferController::attachLate() {
+    State expected = State::Idle;
+    if(!job_ || !state_.compare_exchange_strong(expected, State::Running))
+        return false;
+    started_ = true;
+    elapsed_.start();
+    timer_.start();
+    Q_EMIT telemetryUpdated();
+    return true;
+}
+
 bool ExplorerTransferController::markStarted() {
     State expected = State::Idle;
     if(!job_ || !state_.compare_exchange_strong(expected, State::Preparing))

@@ -37,6 +37,10 @@ public:
     ~ExplorerTransferController() override;
 
     Snapshot snapshot() const;
+    // Called only after the owner confirms FileOperation::isRunning() when
+    // the delayed progress dialog is constructed. This is explicit late attach,
+    // not a synthetic started event.
+    bool attachLate();
     // The owner must call immediately before runAsync(); Fm::Job exposes no started signal.
     bool markStarted();
     void cancel();
