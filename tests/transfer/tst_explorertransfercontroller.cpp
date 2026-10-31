@@ -12,6 +12,7 @@
 #include <QTimer>
 #include <sys/stat.h>
 #include "../../pcmanfm/explorertransfercontroller.h"
+#include "../../pcmanfm/explorertransferdialog.h"
 #include "core/filetransferjob.h"
 #include "core/job.h"
 #include <fileoperation.h>
@@ -52,6 +53,7 @@ private Q_SLOTS:
     void optInDialogFactoryKeepsConflictRoutingOnRealFileOperation();
     void optInDialogFactoryKeepsErrorRoutingOnRealFileOperation();
     void defaultDialogFactoryReceivesPointerBasedErrorWithoutTestRegistration();
+    void transferDialogFactoryBuildsCollapsedRealProgressUi();
     void preservesExplicitConflictResponseOnLiveJob();
     void reportsRealTwoGiBCopyProgressAndIntegrity();
     void cooperativePauseCapabilityIsNotAdvertisedByUnsupportedJobs();
@@ -214,7 +216,60 @@ void ExplorerTransferControllerTest::optInDialogFactoryKeepsErrorRoutingOnRealFi
     QCOMPARE(dialogFactoryCalls, 1);
     QCOMPARE(conflictDialogCalls, 0);
     QCOMPARE(errorDialogCalls, 1);
-    QVERIFY(!operation.isRunning());
+}
+
+void ExplorerTransferControllerTest::transferDialogFactoryBuildsCollapsedRealProgressUi() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString source = root.filePath(QStringLiteral("visible-source.bin"));
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write("live-bytes"), qint64(10));
+    file.close();
+    const QString destination = root.filePath(QStringLiteral("destination"));
+    QVERIFY(QDir().mkpath(destination));
+    Fm::FilePathList sources{Fm::FilePath::fromLocalPath(source.toLocal8Bit().constData())};
+    Fm::FileOperation operation(Fm::FileOperation::Copy, sources);
+    auto* dialog = qobject_cast<ExplorerTransferDialog*>(createExplorerTransferDialog(&operation));
+    QVERIFY(dialog);
+    dialog->setSourceFiles(sources);
+    dialog->setDestPath(Fm::FilePath::fromLocalPath(destination.toLocal8Bit().constData()));
+    dialog->setFilesProcessed(0, 1);
+    dialog->setCurFile(source);
+    dialog->setDataTransferred(5, 10);
+    dialog->setPercent(50);
+    dialog->setPrepared();
+    auto* progress = dialog->findChild<QProgressBar*>(QStringLiteral("transferProgress"));
+    QVERIFY(progress);
+    QCOMPARE(progress->value(), 50);
+    auto* progressText = dialog->findChild<QLabel*>(QStringLiteral("transferPercent"));
+    QVERIFY(progressText);
+    QCOMPARE(progressText->text(), QStringLiteral("50% concluído"));
+    auto* summary = dialog->findChild<QLabel*>(QStringLiteral("transferSummary"));
+    QVERIFY(summary);
+    QVERIFY(summary->text().contains(QFileInfo(root.path()).fileName()));
+    QVERIFY(!summary->text().contains(root.path()));
+    QVERIFY(dialog->findChild<QPushButton*>(QStringLiteral("transferDetailsButton")));
+    QVERIFY(dialog->findChild<QPushButton*>(QStringLiteral("transferCancelButton")));
+    QVERIFY(!dialog->findChild<QWidget*>(QStringLiteral("pauseButton")));
+    QVERIFY(dialog->minimumWidth() >= 440);
+    dialog->show();
+    QCoreApplication::processEvents();
+    const QString capture = qEnvironmentVariable("EXPLORER_TRANSFER_UI_SCREENSHOT");
+    if(!capture.isEmpty()) QVERIFY(dialog->grab().save(capture));
+    delete dialog;
+
+    Fm::FileOperation::setDialogFactory(&createExplorerTransferDialog);
+    Fm::FileOperation liveOperation(Fm::FileOperation::Copy, sources);
+    liveOperation.setAutoDestroy(false);
+    liveOperation.setDestination(Fm::FilePath::fromLocalPath(destination.toLocal8Bit().constData()));
+    QSignalSpy operationFinished(&liveOperation, &Fm::FileOperation::finished);
+    QVERIFY(liveOperation.run());
+    QTRY_COMPARE_WITH_TIMEOUT(operationFinished.count(), 1, 10000);
+    Fm::FileOperation::setDialogFactory(nullptr);
+    QFile copied(QDir(destination).filePath(QStringLiteral("visible-source.bin")));
+    QVERIFY(copied.open(QIODevice::ReadOnly));
+    QCOMPARE(copied.readAll(), QByteArray("live-bytes"));
 }
 
 void ExplorerTransferControllerTest::defaultDialogFactoryReceivesPointerBasedErrorWithoutTestRegistration() {

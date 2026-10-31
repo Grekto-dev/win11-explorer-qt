@@ -15,6 +15,7 @@ endif()
 add_executable(tst_explorertransfercontroller
     tst_explorertransfercontroller.cpp
     ../../pcmanfm/explorertransfercontroller.cpp
+    ../../pcmanfm/explorertransferdialog.cpp
 )
 target_include_directories(tst_explorertransfercontroller PRIVATE
     ../../pcmanfm
