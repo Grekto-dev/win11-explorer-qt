@@ -11,6 +11,8 @@
 #include <QMessageBox>
 #include <QTimer>
 #include <sys/stat.h>
+#include <thread>
+#include <future>
 #include "../../pcmanfm/explorertransfercontroller.h"
 #include "../../pcmanfm/explorertransferdialog.h"
 #include "core/filetransferjob.h"
@@ -51,6 +53,7 @@ Fm::FileOperationDialog* createProbeDialog(Fm::FileOperation* operation) {
 class ExplorerTransferControllerTest final : public QObject {
     Q_OBJECT
 private Q_SLOTS:
+    void cancellationBeforeGuiDispatchIsInTerminalSnapshot();
     void cancellationForwardsToLiveLibfmJob();
     void observerLifecycleTracksRealJobSignals();
     void lateAttachStartsObservingAnAlreadyRunningJob();
@@ -68,6 +71,27 @@ private Q_SLOTS:
     void externalCancellationNotifiesControllerExactlyOnce();
     void directCancellableCancellationWakesPausedCopy();
 };
+
+// Real Job::run(), no event loop dispatch until the worker has returned.
+void ExplorerTransferControllerTest::cancellationBeforeGuiDispatchIsInTerminalSnapshot() {
+    class CancelJob final : public Fm::FileOperationJob {
+        void exec() override { setTotalAmount(17, 1); cancel(); }
+    } job;
+    job.setAutoDelete(false);
+    ExplorerTransferController controller(&job);
+    QSignalSpy notices(&controller, &ExplorerTransferController::cancellationRequested);
+    QVERIFY(controller.markStarted());
+    std::thread worker([&] { job.run(); });
+    worker.join();
+    QCOMPARE(notices.count(), 0);
+    const auto terminal = controller.snapshot();
+    QCOMPARE(terminal.state, ExplorerTransferController::State::Finished);
+    QVERIFY(terminal.cancellationRequested);
+    QVERIFY(terminal.cancelled);
+    QCOMPARE(terminal.totalBytes, quint64(17));
+    QCoreApplication::processEvents();
+    QCOMPARE(notices.count(), 1);
+}
 
 void ExplorerTransferControllerTest::observerLifecycleTracksRealJobSignals() {
     ExplorerTransferController missingJob(nullptr);
