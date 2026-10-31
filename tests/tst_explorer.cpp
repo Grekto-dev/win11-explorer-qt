@@ -4,6 +4,7 @@
 #include "mainwindow.h"
 #include "tabpage.h"
 #include "preferencesdialog.h"
+#include "explorericons.h"
 #include <QCheckBox>
 #include <QtTest>
 #include <QTemporaryDir>
@@ -194,6 +195,17 @@ private Q_SLOTS:
         QVERIFY(navigation);
         auto* commands = window->findChild<QToolBar*>(QStringLiteral("explorerCommands"));
         QVERIFY(commands);
+        const QList<QPair<QString,QString>> wiredIcons{
+            {QStringLiteral("explorerNew"),QStringLiteral("new")}, {QStringLiteral("explorerCut"),QStringLiteral("cut")},
+            {QStringLiteral("explorerCopy"),QStringLiteral("copy")}, {QStringLiteral("explorerPaste"),QStringLiteral("paste")},
+            {QStringLiteral("explorerRename"),QStringLiteral("rename")}, {QStringLiteral("explorerDelete"),QStringLiteral("delete")},
+            {QStringLiteral("explorerSort"),QStringLiteral("sort")}, {QStringLiteral("explorerView"),QStringLiteral("view")},
+            {QStringLiteral("explorerMore"),QStringLiteral("more")}};
+        for(const auto& [widgetName, iconName] : wiredIcons) {
+            auto* button = window->findChild<QToolButton*>(widgetName);
+            QVERIFY2(button, qPrintable(widgetName));
+            QVERIFY2(button->icon().pixmap(20,20).toImage() == PCManFM::ExplorerIcons::icon(iconName).pixmap(20,20).toImage(), qPrintable(widgetName));
+        }
         QCOMPARE(title->height(),40);
         QCOMPARE(navigation->height(),49);
         QCOMPARE(commands->height(),47);

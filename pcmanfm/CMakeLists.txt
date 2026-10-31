@@ -2,6 +2,7 @@ set(pcmanfm_CORE_SRCS
     application.cpp
     mainwindow.cpp
     explorerchrome.cpp
+    explorericons.cpp
     tabpage.cpp
     tabbar.cpp
     statusbar.cpp

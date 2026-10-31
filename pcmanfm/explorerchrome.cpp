@@ -4,6 +4,10 @@
 #include "mainwindow.h"
 #include "application.h"
 #include "tabpage.h"
+#include "explorericons.h"
+#include <QStyledItemDelegate>
+#include <QStyleOptionViewItem>
+#include <QTreeView>
 #include <QToolBar>
 #include <QToolButton>
 #include <QHBoxLayout>
@@ -85,7 +89,24 @@ public:
 private:
     QString name_;
 };
-QIcon icon(const char* name) { return QIcon(new LineIcon(QString::fromLatin1(name))); }
+QIcon icon(const char* name) {
+    const QString id = QString::fromLatin1(name);
+    const QIcon svg = ExplorerIcons::icon(id);
+    return svg.isNull() ? QIcon(new LineIcon(id)) : svg;
+}
+
+class ExplorerPlacesDelegate final : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        QStyleOptionViewItem styled(option);
+        initStyleOption(&styled, index);
+        const QIcon source = index.data(Qt::DecorationRole).value<QIcon>();
+        const QIcon replacement = ExplorerIcons::icon(source.name());
+        if(!replacement.isNull()) styled.icon = replacement;
+        QStyledItemDelegate::paint(painter, styled, index);
+    }
+};
 
 class TitleBar : public QWidget {
 public:
@@ -271,7 +292,7 @@ QToolTip { background:#fafafa; color:#202020; border:1px solid #d8d8d8; padding:
         b->setText(label); b->setAccessibleName(label); b->setToolTip(label); b->setToolButtonStyle(Qt::ToolButtonTextBesideIcon); b->setPopupMode(QToolButton::InstantPopup);
         b->setMenu(menu); b->setFixedHeight(32); explorerCommands_->addWidget(b); return b;
     };
-    menuButton(ui.menuCreateNew,"explorerNew","plus",tr("Novo")); explorerCommands_->addSeparator();
+    menuButton(ui.menuCreateNew,"explorerNew","new",tr("Novo")); explorerCommands_->addSeparator();
     command(ui.actionCut,"explorerCut","cut",tr("Recortar")); command(ui.actionCopy,"explorerCopy","copy",tr("Copiar")); command(ui.actionPaste,"explorerPaste","paste",tr("Colar"));
     command(ui.actionRename,"explorerRename","rename",tr("Renomear")); command(ui.actionDelete,"explorerDelete","delete",tr("Mover para a lixeira")); explorerCommands_->addSeparator();
     menuButton(ui.menuSorting,"explorerSort","sort",tr("Classificar")); ui.menu_View_2->addSeparator(); ui.menu_View_2->addAction(ui.actionShowHidden); ui.menu_View_2->addAction(ui.actionShowThumbnails);
@@ -281,6 +302,9 @@ QToolTip { background:#fafafa; color:#202020; border:1px solid #d8d8d8; padding:
     command(ui.actionFolderProperties,"explorerProperties","view",tr("Propriedades da pasta"));
     addToolBarBreak(Qt::TopToolBarArea); addToolBar(Qt::TopToolBarArea,explorerCommands_);
     ui.statusbar->setSizeGripEnabled(false); ui.splitter->setHandleWidth(1); ui.splitter->setSizes({180,924}); ui.sidePane->setIconSize(QSize(16,16));
+    for(auto* placesTree : ui.sidePane->findChildren<QTreeView*>()) {
+        placesTree->setItemDelegate(new ExplorerPlacesDelegate(placesTree));
+    }
     if(auto* combo = ui.sidePane->findChild<QComboBox*>()) combo->hide();
     if(auto* layout = ui.sidePane->layout()) layout->setContentsMargins(4,8,4,0);
 }
