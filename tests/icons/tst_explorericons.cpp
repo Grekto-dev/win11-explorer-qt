@@ -94,7 +94,7 @@ void ExplorerIconsTest::observedToolbarStatesRenderExplicitColors_data() {
                 QColor(name == QStringLiteral("cut") ? "#1c87d9" : "#0078d4");
             for(int size : {16, 20, 24, 32}) {
                 const QByteArray label = QStringLiteral("%1-%2-%3").arg(name)
-                    .arg(mode == QIcon::Normal ? "Normal" : "Disabled").arg(size).toLatin1();
+                    .arg(mode == QIcon::Normal ? QStringLiteral("Normal") : QStringLiteral("Disabled")).arg(size).toLatin1();
                 QTest::newRow(label.constData()) << name << mode << size << accent << neutral;
             }
         }
@@ -126,12 +126,12 @@ void ExplorerIconsTest::observedToolbarStatesRenderExplicitColors() {
         }
         return count;
     };
-    QVERIFY2(pixelsNear(accent) >= 2, qPrintable("missing accent " + accent.name()));
-    QVERIFY2(pixelsNear(neutral) >= 2, qPrintable("missing neutral " + neutral.name()));
+    QVERIFY2(pixelsNear(accent) >= 2, qPrintable(QStringLiteral("missing accent %1").arg(accent.name())));
+    QVERIFY2(pixelsNear(neutral) >= 2, qPrintable(QStringLiteral("missing neutral %1").arg(neutral.name())));
 
     const QString directory = qEnvironmentVariable("EXPLORER_ICONS_STATE_ARTIFACTS");
     if(!directory.isEmpty()) {
-        QVERIFY(image.save(directory + '/' + QString::fromLatin1(QTest::currentDataTag()) + ".png"));
+        QVERIFY(image.save(QStringLiteral("%1/%2.png").arg(directory, QString::fromLatin1(QTest::currentDataTag()))));
     }
 }
 
