@@ -121,7 +121,20 @@ def _normalize_manifest_frames(frames: list[Any]):
         if unit == "ns":
             timestamp = timestamp / 1_000_000
         region = frame.get("region", frame.get("region_px"))
-        normalized.append({**frame, "timestamp_ms": timestamp, "region": region,
+        extra = {}
+        if isinstance(region, dict):
+            if set(region) != {"x", "y", "width", "height"}:
+                raise ValueError("screen-space frame region must contain exactly x, y, width, and height")
+            origin = [region["x"], region["y"]]
+            width, height = region["width"], region["height"]
+            values = [*origin, width, height]
+            if any(type(value) is not int for value in values) or origin[0] < 0 or origin[1] < 0 or width <= 0 or height <= 0:
+                raise ValueError("screen-space frame region must use non-negative integer origin and positive integer dimensions")
+            region = [0, 0, width, height]
+            extra = {"screen_origin": origin, "region_coordinate_space": "screen"}
+        elif isinstance(region, list):
+            extra = {"region_coordinate_space": "image"}
+        normalized.append({**frame, **extra, "timestamp_ms": timestamp, "region": region,
                            "timestamp_provenance": {"field": field, "source_value": frame[field], "source_unit": unit}})
     return normalized
 
@@ -207,6 +220,28 @@ def measure_timeline(frames: list[dict[str, Any]], base_dir: Path | None = None)
             "timing_precision": "observed capture timestamps; visual change is bracketed by sampled frames; no interpolation or inferred sub-cadence duration"}
 
 
+def associate_timeline_events(timeline: dict[str, Any], events: list[dict[str, Any]]):
+    """Bracket input events against samples and report the next sampled ROI change."""
+    curve = timeline["curve"]
+    associated = []
+    for event in events:
+        timestamp = event.get("timestamp_ms")
+        if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp):
+            raise ValueError("event timestamps must be finite milliseconds")
+        right = next((i for i, point in enumerate(curve) if point["timestamp_ms"] >= timestamp), None)
+        bracket = None
+        if right is not None:
+            bracket = ([curve[max(0, right - 1)]["timestamp_ms"], curve[right]["timestamp_ms"]])
+        changed = next((i for i in range(max(1, right or 1), len(curve))
+                        if curve[i]["changed_fraction"] > 0), None) if right is not None else None
+        associated.append({"label": event.get("label"), "event_timestamp_ms": timestamp,
+                           "event_bracket_ms": bracket,
+                           "next_observed_change_interval_ms": ([curve[changed - 1]["timestamp_ms"], curve[changed]["timestamp_ms"]]
+                                                                 if changed is not None else None),
+                           "next_observed_change_frame": changed})
+    return associated
+
+
 def evaluate_criteria(metrics: dict[str, Any], criteria: dict[str, Any] | None,
                       base_dir: Path | None = None):
     if criteria is None:
@@ -251,6 +286,16 @@ def validate_manifest(manifest: Any, base_dir: Path | None = None):
     if not isinstance(env, dict):
         raise ValueError("environment must be an object")
     normalized_env = {**env, **{key: env.get(_ENV_ALIASES.get(key, key), "unknown") for key in _ENV_FIELDS}}
+    if isinstance(env.get("dpi"), dict):
+        measured_dpi = env["dpi"].get("GetDpiForWindow")
+        measured_scale = env["dpi"].get("scale_percent")
+        normalized_env["dpi"] = measured_dpi if type(measured_dpi) in (int, float) else "unknown"
+        normalized_env["scale"] = measured_scale / 100 if type(measured_scale) in (int, float) else "unknown"
+    if isinstance(env.get("client_rect_px"), dict):
+        rect = env["client_rect_px"].get("client_rect")
+        normalized_env["client_rect"] = rect if isinstance(rect, list) else "unknown"
+    if env.get("refresh_rate_hz") is None:
+        normalized_env["refresh_hz"] = "unknown"
     quality_gaps = []
     for key in _ENV_FIELDS:
         value = normalized_env[key]
@@ -408,7 +453,7 @@ def _timeline(args):
     manifest_validation = None
     if validation is not None:
         manifest_validation = {key: validation[key] for key in
-                               ("status", "quality_gaps", "equality_eligible")}
+                               ("status", "quality_gaps", "equality_eligible", "environment")}
     timestamp_provenance = transfer["timestamp_provenance"] if transfer else sorted({
         frame["timestamp_provenance"]["field"] for frame in frames})
     report = {"schema_version": 1, "generated_utc": datetime.now(timezone.utc).isoformat(),
@@ -419,6 +464,14 @@ def _timeline(args):
               "region_provenance": transfer["region_provenance"] if transfer else "manifest region",
               "tool_versions": {"python": platform.python_version(),
               "pillow": PILLOW_VERSION}, "timelines": [measure_timeline(frames, path.parent)]}
+    event_associations = {}
+    if validation is not None:
+        for case in manifest.get("cases", []):
+            measurements = case.get("measurements", {})
+            events = measurements.get("input_events", []) if isinstance(measurements, dict) else []
+            if events:
+                event_associations[case["id"]] = associate_timeline_events(report["timelines"][0], events)
+    report["event_associations"] = event_associations
     Path(args.report).parent.mkdir(parents=True, exist_ok=True)
     Path(args.report).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     print(json.dumps({"report": str(Path(args.report).resolve()), "status": report["status"],

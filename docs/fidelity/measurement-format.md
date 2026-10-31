@@ -27,16 +27,33 @@ A UTF-8 JSON manifest contains:
   cases may be empty. Status is evidence availability, not equivalence.
 - `frames`: optional list of `{file, timestamp_ms, region}` records. Timestamps
   are monotonic milliseconds from the capture clock and strictly increasing;
-  `region` is `[x,y,width,height]` in local image pixels, not screen coordinates;
+  normalized `region` is `[x,y,width,height]` in local image pixels. List input
+  is image-local; producer object input `{x,y,width,height}` is screen-space
+  origin plus captured dimensions and is normalized to a local crop separately.
   x/y are non-negative integers and width/height positive integers. When image
-  files are available, the ROI must fit each corresponding image. Screen-space
-  input coordinates belong in measurements, not `region`. The tool reports
+  files are available, the ROI must fit each corresponding image. The tool reports
   pixel-change/MAE between adjacent ROIs and observed intervals; it does not
   interpolate frames or infer FPS or exact sub-cadence transition durations.
+  When measured `input_events` are present in cases, the timeline report adds
+  per-case event brackets and the next sampled ROI-change interval. These are
+  temporal associations only; they do not compare distinct menu states as if
+  they were equivalent static states or establish causality.
   For published producer frames, `elapsed_ms` is copied as-is and
   `monotonic_ns` is converted to milliseconds by the exact unit factor
   `1,000,000`; original fields and values remain under provenance. `region_px`
   is adapted to local-image `region` without changing its coordinates.
+  A producer `region` object `{x,y,width,height}` is interpreted as an explicit
+  screen-space ROI origin plus captured dimensions: the normalized image crop is
+  `[0,0,width,height]`, and the screen origin is retained separately as
+  `screen_origin`. A four-integer list remains image-local and never gains an
+  inferred screen origin. Both forms are checked against each actual PNG; no
+  coordinate bounds or integer checks are relaxed.
+- Measured nested environment values are normalized without discarding their
+  source: `dpi.GetDpiForWindow` becomes canonical `dpi`, `dpi.scale_percent`
+  becomes unit scale, and `client_rect_px.client_rect` becomes canonical
+  `client_rect`. A null refresh rate remains unknown and a quality gap. It does
+  not prevent ROI pixels from being measured, but does not support a complete
+  environment-parity or refresh-cadence claim.
 
 Relative paths are resolved from the manifest directory and must remain within
 it. Producer absolute paths are accepted only when their resolved targets

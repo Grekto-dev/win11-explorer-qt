@@ -103,9 +103,67 @@ class ImageMeasurementTests(unittest.TestCase):
             self.assertEqual(result["last_change_interval_ms"], [150.0, 220.0])
             self.assertNotIn("exact_duration_ms", result)
 
+    def test_event_associations_bracket_event_and_next_measured_roi_change(self):
+        timeline = {"curve": [
+            {"timestamp_ms": 100.0, "frame": 0, "changed_fraction": 0.0},
+            {"timestamp_ms": 150.0, "frame": 1, "changed_fraction": 0.0},
+            {"timestamp_ms": 220.0, "frame": 2, "changed_fraction": 0.25},
+            {"timestamp_ms": 300.0, "frame": 3, "changed_fraction": 0.0}]}
+        result = measure.associate_timeline_events(timeline, [
+            {"label": "sort-open", "timestamp_ms": 160.0},
+            {"label": "menu-close", "timestamp_ms": 250.0}])
+        self.assertEqual(result[0]["event_bracket_ms"], [150.0, 220.0])
+        self.assertEqual(result[0]["next_observed_change_interval_ms"], [150.0, 220.0])
+        self.assertEqual(result[0]["next_observed_change_frame"], 2)
+        self.assertIsNone(result[1]["next_observed_change_interval_ms"])
+
 
 
 class EvidenceManifestTests(unittest.TestCase):
+    def test_screen_space_region_dict_becomes_local_png_roi_without_losing_origin(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            Image.new("RGB", (640, 400)).save(base / "screen-roi.png")
+            manifest = {"schema_version": 1, "environment": {},
+                "cases": [{"id": "x", "status": "not_observed", "artifacts": [], "measurements": [], "limitations": []}],
+                "frames": [{"file": "screen-roi.png", "timestamp_ms": 1,
+                            "region": {"x": 480, "y": 240, "width": 640, "height": 400}}]}
+            result = measure.validate_manifest(manifest, base)
+            frame = result["normalized_manifest"]["frames"][0]
+            self.assertEqual(frame["region"], [0, 0, 640, 400])
+            self.assertEqual(frame["screen_origin"], [480, 240])
+            self.assertEqual(frame["region_coordinate_space"], "screen")
+            self.assertEqual(result["normalized_manifest"]["provenance"]["source_frames"], manifest["frames"])
+
+    def test_local_region_list_remains_local_and_screen_origin_is_not_inferred(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            Image.new("RGB", (640, 400)).save(base / "local.png")
+            manifest = {"schema_version": 1, "environment": {},
+                "cases": [{"id": "x", "status": "not_observed", "artifacts": [], "measurements": [], "limitations": []}],
+                "frames": [{"file": "local.png", "timestamp_ms": 1, "region": [0, 0, 640, 400]}]}
+            frame = measure.validate_manifest(manifest, base)["normalized_manifest"]["frames"][0]
+            self.assertEqual(frame["region"], [0, 0, 640, 400])
+            self.assertNotIn("screen_origin", frame)
+            self.assertEqual(frame["region_coordinate_space"], "image")
+
+    def test_measured_environment_objects_normalize_without_erasing_unknown_refresh(self):
+        environment = {"build": "Windows 10 Pro; DisplayVersion 26H2; build 26300; UBR 9711",
+            "theme": "light", "language": "pt-BR", "dpi": {"GetDpiForWindow": 96, "scale_percent": 100},
+            "resolution_px": [1440, 900], "client_rect_px": {"client_rect": [0, 0, 1123, 592],
+                "client_screen_origin": [194, 162], "dwm_extended_frame": [193, 162, 1318, 755]},
+            "refresh_rate_hz": None, "capture_method": "measured"}
+        manifest = {"schema_version": 1, "environment": environment,
+            "cases": [{"id": "x", "status": "not_observed", "artifacts": [], "measurements": [], "limitations": []}]}
+        result = measure.validate_manifest(manifest)
+        self.assertEqual(result["environment"]["dpi"], 96)
+        self.assertEqual(result["environment"]["scale"], 1.0)
+        self.assertEqual(result["environment"]["client_rect"], [0, 0, 1123, 592])
+        self.assertEqual(result["environment"]["refresh_hz"], "unknown")
+        self.assertEqual(result["quality_gaps"], ["refresh_hz"])
+        self.assertFalse(result["equality_eligible"])
+        self.assertEqual(result["normalized_manifest"]["provenance"]["producer_environment"], environment)
+
     def test_published_v1_manifest_normalizes_losslessly_and_marks_unknown_quality_gaps(self):
         published = Path("/home/pedro/win11-explorer-qt/.state/fidelity/reference/phase2/20261031T0003-0300/manifest.json")
         self.assertTrue(published.is_file())
@@ -263,6 +321,7 @@ class EvidenceManifestTests(unittest.TestCase):
             data = json.loads(report.read_text())
             self.assertEqual(data["timelines"][0]["duration_ms"], 43.0)
             self.assertNotIn("fps", data["timelines"][0])
+            self.assertEqual(data["manifest_validation"]["environment"]["dpi"], 96)
 
 
 if __name__ == "__main__":
