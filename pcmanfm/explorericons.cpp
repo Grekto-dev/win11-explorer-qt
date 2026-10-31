@@ -61,6 +61,26 @@ QString ExplorerIcons::resourcePath(const QString& name) {
 
 QIcon ExplorerIcons::icon(const QString& name) {
     const QString path = resourcePath(name);
-    return path.isEmpty() || !QFile::exists(path) ? QIcon{} : QIcon(path);
+    if(path.isEmpty() || !QFile::exists(path)) return {};
+
+    static const QHash<QString, QString> normalStateResources{
+        {QStringLiteral("cut"), QStringLiteral("actions/cut-normal.svg")},
+        {QStringLiteral("copy"), QStringLiteral("actions/copy-normal.svg")},
+        {QStringLiteral("rename"), QStringLiteral("actions/rename-normal.svg")},
+        {QStringLiteral("delete"), QStringLiteral("actions/delete-normal.svg")},
+        // Clipboard content was not measured. Paste Normal deliberately keeps
+        // the existing pale fallback; only Disabled is reference-observed.
+        {QStringLiteral("paste"), QStringLiteral("actions/paste.svg")},
+    };
+    const auto normalState = normalStateResources.constFind(name);
+    if(normalState == normalStateResources.cend()) return QIcon(path);
+
+    const QString normalPath = QStringLiteral(":/icons/win11-explorer-qt/scalable/") + normalState.value();
+    if(!QFile::exists(normalPath)) return QIcon(path);
+
+    QIcon icon;
+    icon.addFile(normalPath, QSize(24, 24), QIcon::Normal, QIcon::Off);
+    icon.addFile(path, QSize(24, 24), QIcon::Disabled, QIcon::Off);
+    return icon;
 }
 }
