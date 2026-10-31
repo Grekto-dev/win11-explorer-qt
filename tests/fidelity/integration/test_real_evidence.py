@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "tools/fidelity"))
 import measure
 
-EVIDENCE_ROOT = os.environ.get("FIDELITY_REAL_EVIDENCE_ROOT")
+EVIDENCE_ROOT = os.environ.get("FIDELITY_REAL_EVIDENCE_ROOT", "")
 
 
 @unittest.skipUnless(EVIDENCE_ROOT, "Set FIDELITY_REAL_EVIDENCE_ROOT to the real phase2 evidence directory")
@@ -72,8 +72,8 @@ class RealEvidenceIntegrationTests(unittest.TestCase):
             self.assertEqual(normalized["screen_origin"], [source["region"]["x"], source["region"]["y"]])
         with tempfile.TemporaryDirectory() as temp:
             reports = Path(os.environ.get("FIDELITY_EVIDENCE_REPORT_DIR", temp))
-            reports.mkdir(parents=True, exist_ok=True)
             self.assertFalse(reports.resolve().is_relative_to(Path(EVIDENCE_ROOT).resolve()), "Reports must not modify original evidence")
+            reports.mkdir(parents=True, exist_ok=True)
             report = reports / "real-152-timeline.json"
             completed = subprocess.run([sys.executable, str(ROOT / "tools/fidelity/measure.py"),
                                         "timeline", str(published), "--report", str(report)],

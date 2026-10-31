@@ -1,12 +1,15 @@
 """Synthetic contract fixtures only; not Windows captures or parity evidence."""
 import copy
 import sys
+import json
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools/fidelity"))
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools/fidelity"))
 import measure
 
 
@@ -20,6 +23,13 @@ def synthetic_manifest():
 
 
 class EnvironmentRegressionTests(unittest.TestCase):
+    def test_malformed_producer_environment_provenance_fails_closed(self):
+        for source in (None, [], "synthetic"):
+            manifest = synthetic_manifest()
+            manifest["provenance"] = {"producer_environment": source}
+            with self.subTest(source=source), self.assertRaisesRegex(ValueError, "producer_environment"):
+                measure.validate_manifest(manifest)
+
     def test_canonical_environment_survives_without_aliases(self):
         manifest = synthetic_manifest()
         original = copy.deepcopy(manifest)
@@ -85,7 +95,7 @@ class MeasurementRegressionTests(unittest.TestCase):
                                  [{"name": "count", "value": 0}, {"name": "duration_ms", "value": invalid}],
                                  {"count": False, "nested": {"duration_ms": invalid}},
                                  {"values": [0, {"duration_ms": invalid}]}):
-                for status in ("measured", "not_observed", "blocked"):
+                for status in ("measured", "partial", "not_observed", "blocked"):
                     manifest = synthetic_manifest()
                     manifest["cases"][0].update(status=status, artifacts=["synthetic.txt"], measurements=measurements)
                     with self.subTest(invalid=invalid, measurements=measurements, status=status):
@@ -103,13 +113,45 @@ class MeasurementRegressionTests(unittest.TestCase):
                     self.assertEqual(second, first)
                     self.assertEqual(first["normalized_manifest"]["cases"][0]["measurements"][0]["value"], value)
 
-    def test_explicit_unknown_not_observed_stays_unknown(self):
-        manifest = synthetic_manifest()
-        measurements = {"duration_ms": None, "state": "not_observed", "cadence": "unknown"}
-        manifest["cases"][0]["measurements"] = measurements
-        result = measure.validate_manifest(manifest)
-        self.assertEqual(result["normalized_manifest"]["cases"][0]["producer_measurements"], measurements)
-        self.assertEqual(result["normalized_manifest"]["cases"][0]["status"], "not_observed")
+    def test_explicit_unknown_partial_or_not_observed_stays_unknown(self):
+        for status in ("partial", "not_observed"):
+            manifest = synthetic_manifest()
+            measurements = {"duration_ms": None, "state": "not_observed", "cadence": "unknown"}
+            manifest["cases"][0].update(status=status, measurements=measurements)
+            with self.subTest(status=status):
+                result = measure.validate_manifest(manifest)
+                self.assertEqual(result["normalized_manifest"]["cases"][0]["producer_measurements"], measurements)
+                self.assertEqual(result["normalized_manifest"]["cases"][0]["status"], status)
+                self.assertEqual(measure.validate_manifest(result["normalized_manifest"]), result)
+
+    def test_partial_and_not_observed_cli_keep_unknowns_without_promoting_measured(self):
+        for status in ("partial", "not_observed"):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as temp:
+                base = Path(temp)
+                from PIL import Image
+                Image.new("RGB", (2, 2)).save(base / "synthetic.png")
+                manifest = synthetic_manifest()
+                manifest["frames"] = [{"file": "synthetic.png", "timestamp_ms": 0, "region": [0, 0, 2, 2]}]
+                values = [{"name": "duration_ms", "value": None, "unit": "ms"}]
+                manifest["cases"][0].update(status=status, artifacts=["synthetic.png"], measurements=values)
+                source, report = base / "manifest.json", base / "report.json"
+                source.write_text(json.dumps(manifest))
+                completed = subprocess.run([sys.executable, str(ROOT / "tools/fidelity/measure.py"), "timeline", str(source),
+                                            "--report", str(report)], capture_output=True, text=True)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                data = json.loads(report.read_text())
+                self.assertEqual(data["status"], "not_evaluated")
+                self.assertEqual(data["equivalence"], "not_evaluated")
+                self.assertIsNone(measure.validate_manifest(manifest, base)["normalized_manifest"]["cases"][0]["measurements"][0]["value"])
+                self.assertEqual(json.loads(source.read_text()), manifest)
+                manifest["cases"][0]["status"] = "measured"
+                source.write_text(json.dumps(manifest))
+                report.unlink()
+                rejected = subprocess.run([sys.executable, str(ROOT / "tools/fidelity/measure.py"), "timeline", str(source),
+                                           "--report", str(report)], capture_output=True, text=True)
+                self.assertEqual(rejected.returncode, 2, rejected.stderr)
+                self.assertIn("measurement", rejected.stderr)
+                self.assertFalse(report.exists())
 
 
 class ArtifactRegressionTests(unittest.TestCase):

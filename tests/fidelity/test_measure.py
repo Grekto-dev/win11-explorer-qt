@@ -1,3 +1,4 @@
+"""Portable synthetic algorithm/contract fixtures; not Windows reference evidence."""
 import json
 import subprocess
 import sys
@@ -164,8 +165,6 @@ class EvidenceManifestTests(unittest.TestCase):
         self.assertFalse(result["equality_eligible"])
         self.assertEqual(result["normalized_manifest"]["provenance"]["producer_environment"], environment)
 
-
-
     def test_measured_cases_require_nonempty_measurement_and_supporting_artifacts(self):
         base = {"schema_version": 1, "environment": {}, "cases": [
             {"id": "x", "status": "measured", "artifacts": [], "measurements": {}, "limitations": []}]}
@@ -192,7 +191,6 @@ class EvidenceManifestTests(unittest.TestCase):
                 with self.subTest(region=region), self.assertRaises(ValueError):
                     manifest["frames"][0]["region"] = region
                     measure.validate_manifest(manifest, base)
-
 
     def test_rejects_absolute_artifacts_outside_authorized_phase2_root(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -14,17 +14,50 @@ A UTF-8 JSON manifest contains:
   `capture_method`. Values describe the actual capture; do not fill unknowns
   with guesses. The validator losslessly adapts the published producer aliases
   `language`, `resolution_px`, `client_rect_px`, and
-  `refresh_rate_hz_reported`; it records canonical fields in a normalized copy
-  and retains provenance. Missing/unmeasured values become `unknown`, never
-  inferred DPI, scale, client geometry, or refresh rate.
+  `refresh_rate_hz_reported` (or `refresh_rate_hz`); it records canonical fields
+  in a normalized copy and retains provenance. A present canonical field wins,
+  including an explicit null; aliases are fallback only. An absent
+  `refresh_rate_hz` does not erase canonical `refresh_hz`; an explicit null in
+  that producer field means unknown when no canonical value exists and does not
+  fall through to a reported rate. `refresh_rate_hz_reported` alone remains an
+  untrusted-rate quality gap. Missing/unmeasured values become `unknown`, never
+  inferred DPI, scale, client geometry, or refresh rate. Normalizing again
+  preserves the original producer environment, source frames, timestamp units,
+  and screen origins in the existing provenance, rather than wrapping copies.
 - `fixtures`: optional fixture metadata. If present, describe synthetic input,
   logical/allocated sizes, and hashes actually calculated.
+- `artifacts`: optional top-level list of non-empty path strings (for example
+  the source archive or contact sheet). All are validated, even when they do
+  not also appear under a case or frame.
 - `cases`: non-empty list of unique `id`s with `status` exactly `measured`,
-  `blocked`, or `not_observed`, plus `artifacts`, `measurements`, and
-  `limitations`. Producer `measurements` may be a list or a keyed object and is
-  normalized to a list in the returned copy. A `measured` case must contain at
-  least one supporting artifact and one measurement; blocked/not-observed
-  cases may be empty. Status is evidence availability, not equivalence.
+  `partial`, `blocked`, or `not_observed`, plus `artifacts`, `measurements`, and
+  `limitations`. A `measured` case must contain at least one supporting artifact
+  and a real observed value. `partial` explicitly describes incomplete evidence,
+  not a measured/equivalent result; partial/blocked/not-observed cases may retain
+  empty containers or explicit unknowns without manufacturing values. Status is
+  evidence availability, not equivalence.
+
+  Measurements have two supported producer forms:
+
+  - Named records: `[{"name":"duration_ms","value":0,"unit":"ms"}]`.
+    Only the `value` payload of a named record counts as an observation. The
+    `name`, `unit`, and `description` cannot make null/unknown payloads measured.
+  - Raw keyed object: `{"duration_ms":0,"held":false,"visual_state":"idle"}`.
+    Metric keys identify values; they are not observations themselves. The
+    adapter preserves this object as `producer_measurements` and generates
+    equivalent name/value records without dropping zero, false, null, or
+    descriptive observed states. Nested payloads/lists may contain observations.
+
+  Metadata keys `name`, `id`, `label`, `unit`, `units`, `description`, `source`,
+  `provenance`, and `limitations` do not count as observed leaves. To measure a
+  field with a reserved metadata name, use it as a metric name with a `value`
+  payload. Null, empty containers/text, and explicit unknown/not-measured/
+  not-observed markers (including underscore/hyphen spellings) are not evidence
+  of an observation. Numeric zero and boolean false are valid observations.
+  All numeric leaves in every case's measurements must be finite, including
+  nested leaves and non-measured cases: a valid adjacent measure or textual
+  identifier never masks NaN/Infinity. The original payloads are not rewritten
+  to replace unknowns with numbers.
 - `frames`: optional list of `{file, timestamp_ms, region}` records. Timestamps
   are monotonic milliseconds from the capture clock and strictly increasing;
   normalized `region` is `[x,y,width,height]` in local image pixels. List input
@@ -58,7 +91,12 @@ A UTF-8 JSON manifest contains:
 Relative paths are resolved from the manifest directory and must remain within
 it. Producer absolute paths are accepted only when their resolved targets
 remain inside the authorized `.state/fidelity/reference/phase2/` evidence tree.
-Symlink traversal is checked after resolution. All paths must exist. Publish
+Symlink traversal is checked after resolution. Containment is enforced before
+checking the resolved target's file existence or opening its contents. Top-level `artifacts`,
+`cases[].artifacts`, and `frames[].file` all use the same resolver. File
+existence/containment is checked when a base directory is supplied (the CLI
+always supplies the manifest directory); in-memory validation without a base
+cannot certify file existence. All referenced targets must be regular files. Publish
 manifests atomically after verifying all referenced files.
 Use `python3 tools/fidelity/measure.py validate <manifest.json>` to check the
 contract and artifacts. Unknown environment values must be represented as

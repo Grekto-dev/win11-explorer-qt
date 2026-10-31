@@ -300,7 +300,7 @@ def evaluate_criteria(metrics: dict[str, Any], criteria: dict[str, Any] | None,
 _ENV_ALIASES = {"locale": "language", "resolution": "resolution_px",
                 "client_rect": "client_rect_px", "refresh_hz": "refresh_rate_hz_reported"}
 _ENV_FIELDS = ("build", "theme", "locale", "dpi", "scale", "resolution", "client_rect", "refresh_hz", "capture_method")
-_ALLOWED_STATUS = {"measured", "blocked", "not_observed"}
+_ALLOWED_STATUS = {"measured", "partial", "blocked", "not_observed"}
 
 
 def validate_manifest(manifest: Any, base_dir: Path | None = None):
@@ -313,6 +313,8 @@ def validate_manifest(manifest: Any, base_dir: Path | None = None):
     if not isinstance(provenance, dict):
         raise ValueError("provenance must be an object")
     source_env = provenance.get("producer_environment", env)
+    if not isinstance(source_env, dict):
+        raise ValueError("provenance producer_environment must be an object")
     normalized_env = {**env, **{key: env[key] if key in env else env.get(_ENV_ALIASES.get(key, key), "unknown")
                               for key in _ENV_FIELDS}}
     if "refresh_hz" not in env and "refresh_rate_hz" in env:
@@ -363,7 +365,7 @@ def validate_manifest(manifest: Any, base_dir: Path | None = None):
             raise ValueError("case ids must be unique")
         ids.add(case["id"])
         if case.get("status") not in _ALLOWED_STATUS:
-            raise ValueError("case status must be measured, blocked, or not_observed")
+            raise ValueError("case status must be measured, partial, blocked, or not_observed")
         if not isinstance(case.get("artifacts"), list) or not isinstance(case.get("measurements"), (list, dict)) or not isinstance(case.get("limitations"), list):
             raise ValueError("case artifacts and limitations must be lists; measurements must be list or object")
         has_observation = _has_measured_value(case["measurements"])
