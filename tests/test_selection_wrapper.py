@@ -36,6 +36,21 @@ class SelectionWrapperSafety(unittest.TestCase):
                 self.assertIn('reserved', result.stderr)
                 self.assertFalse((root / 'artifacts/xephyr.log').exists())
 
+    def test_direct_binary_requires_real_server_ownership_before_qapplication(self):
+        binary = Path(os.environ.get('EXPLORER_TEST_BINARY', ROOT / '.state/build/tests/tst_explorer'))
+        if not binary.is_file():
+            self.fail('Build tst_explorer before running ownership regression')
+        env = dict(os.environ, DISPLAY=':18', EXPLORER_XTEST_DISPLAY=':18',
+                   EXPLORER_ENABLE_XTEST='1', QT_QPA_PLATFORM='offscreen')
+        for name in ('EXPLORER_XSERVER_PID', 'EXPLORER_XSERVER_START',
+                     'EXPLORER_XOWNER_PID', 'EXPLORER_XOWNER_START'):
+            env.pop(name, None)
+        result = subprocess.run([str(binary), 'defaultSettingsMatchExplorerDensity'],
+                                env=env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('XTEST ownership rejected', result.stderr)
+        self.assertNotIn('Start testing', result.stdout)
+
     def test_dead_own_server_never_accepts_another_server_readiness(self):
         with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as tmp:
             root = Path(tmp)

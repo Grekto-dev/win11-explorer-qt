@@ -36,6 +36,7 @@
 #include <libfm-qt6/fileoperation.h>
 #include <libfm-qt6/proxyfoldermodel.h>
 #include <sys/stat.h>
+#include <utility>
 
 namespace PCManFM {
 namespace {
@@ -81,14 +82,22 @@ void View::applyRubberBandStyle() {
     if(!child) {
         return;
     }
-    const QString baseStyleName = qApp->style()->objectName();
-    auto* localStyle = new ExplorerSelectionStyle(baseStyleName);
-    localStyle->setParent(child);
-    child->setStyle(localStyle);
+    // setViewMode(sameMode) keeps this widget. QSS may wrap child->style(),
+    // so locate our explicitly parented proxy instead of inspecting that wrapper.
+    ExplorerSelectionStyle* localStyle = nullptr;
+    for(auto* object : child->children()) {
+        if((localStyle = dynamic_cast<ExplorerSelectionStyle*>(object))) break;
+    }
+    if(!localStyle) {
+        localStyle = new ExplorerSelectionStyle(qApp->style()->objectName());
+        localStyle->setParent(child);
+        child->setStyle(localStyle);
+    }
     child->viewport()->installEventFilter(this);
 }
 
 void View::setViewMode(Fm::FolderView::ViewMode mode) {
+    leftDragUrls_.clear();
     Fm::FolderView::setViewMode(mode);
     applyRubberBandStyle();
 }
@@ -98,9 +107,22 @@ bool View::eventFilter(QObject* watched, QEvent* event) {
     // moves local files on the same filesystem. Keep other drops upstream,
     // including explicit Ctrl-copy and nonlocal/unknown filesystem cases.
     if(childView() && watched == childView()->viewport()
+       && (event->type() == QEvent::DragEnter || event->type() == QEvent::DragLeave)) {
+        leftDragUrls_.clear();
+    }
+    if(childView() && watched == childView()->viewport()
        && (event->type() == QEvent::Drop || event->type() == QEvent::DragMove)) {
         auto* drop = static_cast<QDropEvent*>(event);
-        if(drop->modifiers() == Qt::NoModifier && drop->possibleActions().testFlag(Qt::MoveAction)
+        // Qt/XDND reports NoButton at release. Accept that only after this
+        // viewport observed an eligible left-button drag of the very same URLs.
+        // Consume the record on every move/drop; invalid/modifier/right drags
+        // cannot inherit a previous gesture's decision.
+        const auto previousLeftUrls = std::exchange(leftDragUrls_, {});
+        const bool leftGesture = drop->buttons() == Qt::LeftButton
+            || (event->type() == QEvent::Drop && drop->buttons() == Qt::NoButton
+                && !previousLeftUrls.isEmpty() && previousLeftUrls == drop->mimeData()->urls());
+        if(leftGesture && drop->modifiers() == Qt::NoModifier
+           && drop->possibleActions().testFlag(Qt::MoveAction) && model()
            && drop->mimeData()->hasUrls()) {
             auto destination = path();
             const auto index = childView()->indexAt(drop->position().toPoint());
@@ -125,6 +147,7 @@ bool View::eventFilter(QObject* watched, QEvent* event) {
                 sources.emplace_back(Fm::FilePath::fromLocalPath(sourceName.constData()));
             }
             if(sameFilesystem && !sources.empty()) {
+                if(event->type() == QEvent::DragMove) leftDragUrls_ = drop->mimeData()->urls();
                 drop->setDropAction(Qt::MoveAction);
                 drop->accept();
                 if(event->type() == QEvent::Drop) {

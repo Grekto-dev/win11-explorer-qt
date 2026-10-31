@@ -23,6 +23,7 @@
 
 #include <libfm-qt6/folderview.h>
 #include <libfm-qt6/core/filepath.h>
+#include <QUrl>
 
 
 namespace Fm {
@@ -64,6 +65,7 @@ protected:
     virtual void prepareFolderMenu(Fm::FolderMenu* menu);
 
 private:
+    QList<QUrl> leftDragUrls_;
     void applyRubberBandStyle();
     void launchFiles(Fm::FileInfoList files, bool inNewTabs = false);
     void openFolderAndSelectFile(const std::shared_ptr<const Fm::FileInfo>& fileInfo, bool inNewTab = false);
