@@ -4,6 +4,7 @@
 #include <QMutexLocker>
 #include <QMetaObject>
 #include "core/fileoperationjob.h"
+#include "core/filetransferjob.h"
 
 ExplorerTransferController::ExplorerTransferController(Fm::FileOperationJob* job, QObject* parent)
     : QObject(parent), job_(job) {
@@ -31,10 +32,11 @@ ExplorerTransferController::ExplorerTransferController(Fm::FileOperationJob* job
         QMetaObject::invokeMethod(this, &ExplorerTransferController::onFinishedObserved, Qt::QueuedConnection);
     }, Qt::DirectConnection);
     connect(job_, &Fm::Job::cancelled, this, [this] {
-        cancellationRequested_.store(true);
-        if(state_.load() != State::Finished && state_.load() != State::Detached)
-            state_.store(State::Cancelling);
-        Q_EMIT cancellationRequested();
+        if(!cancellationRequested_.exchange(true)) {
+            if(state_.load() != State::Finished && state_.load() != State::Detached)
+                state_.store(State::Cancelling);
+            Q_EMIT cancellationRequested();
+        }
     }, Qt::QueuedConnection);
     connect(job_, &QObject::destroyed, this, &ExplorerTransferController::onJobDestroyed, Qt::QueuedConnection);
 }
@@ -46,13 +48,19 @@ ExplorerTransferController::~ExplorerTransferController() {
 ExplorerTransferController::Snapshot ExplorerTransferController::readJobSnapshot() const {
     Snapshot result;
     result.state = state_.load();
-    result.running = result.state == State::Preparing || result.state == State::Running || result.state == State::Cancelling;
+    result.running = result.state == State::Preparing || result.state == State::Running ||
+                     result.state == State::Pausing || result.state == State::Paused || result.state == State::Cancelling;
     result.cancellationRequested = cancellationRequested_.load();
     result.cancelled = result.cancellationRequested;
     if(started_.load())
         result.elapsedSeconds = elapsed_.elapsed() / 1000.0;
     if(!job_)
         return result;
+
+    if(auto* transfer = dynamic_cast<Fm::FileTransferJob*>(job_.data())) {
+        result.pauseRequested = transfer->pauseRequested();
+        result.paused = transfer->isPauseAcknowledged();
+    }
 
     std::uint64_t total = 0, count = 0, done = 0, doneCount = 0;
     result.hasTotals = job_->totalAmount(total, count);
@@ -100,21 +108,52 @@ bool ExplorerTransferController::markStarted() {
 
 void ExplorerTransferController::cancel() {
     const auto current = state_.load();
-    if(!job_ || (current != State::Preparing && current != State::Running && current != State::Cancelling))
+    if(!job_ || (current != State::Preparing && current != State::Running &&
+                 current != State::Pausing && current != State::Paused && current != State::Cancelling))
         return;
-    cancellationRequested_.store(true);
+    if(cancellationRequested_.exchange(true)) return;
     state_.store(State::Cancelling);
     job_->cancel();
     Q_EMIT cancellationRequested();
 }
 
-bool ExplorerTransferController::pause() { return false; }
-bool ExplorerTransferController::resume() { return false; }
+bool ExplorerTransferController::supportsPause() const {
+    auto* transfer = dynamic_cast<Fm::FileTransferJob*>(job_.data());
+    const auto current = state_.load();
+    return transfer && transfer->supportsCooperativePause() &&
+           current != State::Finished && current != State::Detached && current != State::Cancelling;
+}
+
+bool ExplorerTransferController::pause() {
+    const auto current = state_.load();
+    if(!supportsPause() || (current != State::Preparing && current != State::Running))
+        return false;
+    auto* transfer = dynamic_cast<Fm::FileTransferJob*>(job_.data());
+    if(!transfer || !transfer->pause()) return false;
+    state_.store(State::Pausing);
+    return true;
+}
+
+bool ExplorerTransferController::resume() {
+    const auto current = state_.load();
+    if(current != State::Pausing && current != State::Paused) return false;
+    auto* transfer = dynamic_cast<Fm::FileTransferJob*>(job_.data());
+    if(!transfer || !transfer->pauseRequested()) return false;
+    transfer->resume();
+    state_.store(State::Running);
+    return true;
+}
 
 void ExplorerTransferController::sample() {
     if(state_.load() == State::Detached || state_.load() == State::Finished) {
         timer_.stop();
         return;
+    }
+    if(auto* transfer = dynamic_cast<Fm::FileTransferJob*>(job_.data())) {
+        if(transfer->isPauseAcknowledged() && state_.load() == State::Pausing)
+            state_.store(State::Paused);
+        else if(!transfer->pauseRequested() && state_.load() == State::Pausing)
+            state_.store(State::Running);
     }
     Q_EMIT telemetryUpdated();
 }

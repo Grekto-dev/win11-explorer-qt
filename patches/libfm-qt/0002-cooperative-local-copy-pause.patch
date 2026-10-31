@@ -1,0 +1,137 @@
+--- a/src/core/job.h
++++ b/src/core/job.h
+@@ -25,6 +25,8 @@
+ #include <QThread>
+ #include <QRunnable>
+ #include <memory>
++#include <condition_variable>
++#include <mutex>
+ #include <gio/gio.h>
+ #include "gobjectptr.h"
+ #include "gioptrs.h"
+@@ -74,6 +76,10 @@
+ 
+     void resume();
+ 
++    bool pauseRequested() const;
++    bool isPauseAcknowledged() const;
++    virtual bool supportsCooperativePause() const { return false; }
++
+     const GCancellablePtr& cancellable() const {
+         return cancellable_;
+     }
+@@ -96,6 +102,9 @@
+     void run() override;
+ 
+ protected:
++    // Called only by an operation path with regular progress checkpoints.
++    bool waitWhilePaused();
++
+     ErrorAction emitError(const GErrorPtr& err, ErrorSeverity severity = ErrorSeverity::MODERATE);
+ 
+     // all derived job subclasses should do their work in this method.
+@@ -111,7 +120,10 @@
+     }
+ 
+ private:
+-    bool paused_;
++    mutable std::mutex pauseMutex_;
++    std::condition_variable pauseCondition_;
++    bool pauseRequested_ = false;
++    bool pauseAcknowledged_ = false;
+     GCancellablePtr cancellable_;
+     gulong cancellableHandler_;
+ };
+--- a/src/core/job.cpp
++++ b/src/core/job.cpp
+@@ -4,7 +4,6 @@
+ namespace Fm {
+ 
+ Job::Job():
+-    paused_{false},
+     cancellable_{g_cancellable_new(), false},
+     cancellableHandler_{g_signal_connect(cancellable_.get(), "cancelled", G_CALLBACK(_onCancellableCancelled), this)} {
+ }
+@@ -26,6 +25,43 @@
+ 
+ void Job::cancel() {
+     g_cancellable_cancel(cancellable_.get());
++    pauseCondition_.notify_all();
++}
++
++bool Job::pause() {
++    if(!supportsCooperativePause()) return false;
++    std::lock_guard<std::mutex> lock{pauseMutex_};
++    if(isCancelled()) return false;
++    pauseRequested_ = true;
++    return true;
++}
++
++void Job::resume() {
++    {
++        std::lock_guard<std::mutex> lock{pauseMutex_};
++        pauseRequested_ = false;
++        pauseAcknowledged_ = false;
++    }
++    pauseCondition_.notify_all();
++}
++
++bool Job::pauseRequested() const {
++    std::lock_guard<std::mutex> lock{pauseMutex_};
++    return pauseRequested_;
++}
++
++bool Job::isPauseAcknowledged() const {
++    std::lock_guard<std::mutex> lock{pauseMutex_};
++    return pauseAcknowledged_;
++}
++
++bool Job::waitWhilePaused() {
++    std::unique_lock<std::mutex> lock{pauseMutex_};
++    if(!pauseRequested_ || isCancelled()) return !isCancelled();
++    pauseAcknowledged_ = true;
++    pauseCondition_.wait(lock, [this] { return !pauseRequested_ || isCancelled(); });
++    pauseAcknowledged_ = false;
++    return !isCancelled();
+ }
+ 
+ void Job::run() {
+--- a/src/core/filetransferjob.h
++++ b/src/core/filetransferjob.h
+@@ -24,6 +24,8 @@
+     void setSrcPaths(FilePathList srcPaths);
+     void setDestPaths(FilePathList destPaths);
+     void setDestDirPath(const FilePath &destDirPath);
++
++    bool supportsCooperativePause() const override;
+ 
+ protected:
+     void exec() override;
+--- a/src/core/filetransferjob.cpp
++++ b/src/core/filetransferjob.cpp
+@@ -83,7 +83,16 @@
+ }
+ 
+ void FileTransferJob::gfileCopyProgressCallback(goffset current_num_bytes, goffset total_num_bytes, FileTransferJob* _this) {
++    if(!_this->waitWhilePaused()) return;
+     _this->setCurrentFileProgress(total_num_bytes, current_num_bytes);
++}
++
++bool FileTransferJob::supportsCooperativePause() const {
++    if(mode_ != Mode::COPY || srcPaths_.size() != 1 || destPaths_.size() != 1 ||
++       !srcPaths_.front().isNative() || !destPaths_.front().isNative()) return false;
++    GFileInfoPtr info{g_file_query_info(srcPaths_.front().gfile().get(),
++        G_FILE_ATTRIBUTE_STANDARD_TYPE, G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, nullptr, nullptr), false};
++    return info && g_file_info_get_file_type(info.get()) == G_FILE_TYPE_REGULAR;
+ }
+ 
+ bool FileTransferJob::moveFileSameFs(const FilePath& srcPath, const GFileInfoPtr& srcInfo, FilePath& destPath) {
+--- a/src/libfmqtglobals.h
++++ b/src/libfmqtglobals.h
+@@ -23,3 +23,6 @@
+ #include "fm-qt6_export.h"
+ 
+ #endif
++
++// ABI/API marker for the optional cooperative local-copy checkpoint API.
++#define LIBFM_QT_COOPERATIVE_COPY_PAUSE_API 1

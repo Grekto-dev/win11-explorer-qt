@@ -13,7 +13,7 @@ namespace Fm { class FileOperationJob; }
 class ExplorerTransferController final : public QObject {
     Q_OBJECT
 public:
-    enum class State { Idle, Preparing, Running, Cancelling, Finished, Detached };
+    enum class State { Idle, Preparing, Running, Pausing, Paused, Cancelling, Finished, Detached };
     Q_ENUM(State)
 
     struct Snapshot {
@@ -27,6 +27,8 @@ public:
         bool hasTotals = false;
         bool running = false;
         bool cancellationRequested = false;
+        bool pauseRequested = false;
+        bool paused = false;
         // Compatibility field; true means cancellation was requested, not finished.
         bool cancelled = false;
     };
@@ -38,8 +40,8 @@ public:
     // The owner must call immediately before runAsync(); Fm::Job exposes no started signal.
     bool markStarted();
     void cancel();
-    // libfm-qt 2.4 declares Job::pause/resume but ships no definitions;
-    // FileTransferJob also has no pause checkpoints. Never pretend it paused.
+    // Supported only for one local regular-file COPY with GIO progress callbacks.
+    bool supportsPause() const;
     bool pause();
     bool resume();
 

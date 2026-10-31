@@ -34,17 +34,21 @@ check_hash fileoperation.cpp aa4b6559c24c6307acf7a0720d63c639b842e8011b510747073
 check_hash fileoperationdialog.h 034b2de12c103c2d40ae7f3389655f9a4ef952059f431d70fbf4289beea33050
 check_hash core/job.h 6e60550d8cf3770484702b17c76a01b87b862a18ba9b03e461d8419b115d3c1e
 check_hash core/job.cpp e4783407320e82211b420118664e4df8bf76cbc016944df5176ac4616f6ae877
+check_hash core/filetransferjob.h 600ab7c6eb2fd5cb3e42fb92f46d37875b650f1f14848b90db4ebc23e0a9bda1
+check_hash core/filetransferjob.cpp 49992c168502c59958a961432de5ee1fd5b126b6d0a566dc9a9793e820b1edaa
+check_hash libfmqtglobals.h 4997bfe58f1ffcccdeae40ad3c96481c4ccf97a7dfd0835e9f1c30186fad9424
 license_hash="$(sha256sum "$SDK_SOURCE/LICENSE" | cut -d' ' -f1)"
 if [[ "$license_hash" != "b3aa400aca6d2ba1f0bd03bd98d03d1fe7489a3bbb26969d72016360af8a5c9d" ]]; then
     echo "Unexpected upstream license text hash: $license_hash" >&2
     exit 2
 fi
 
-rm -rf "$OVERLAY_SOURCE"
+rm -rf "$OVERLAY_SOURCE" "$BUILD_DIR" "$PREFIX" "$TEST_BUILD"
 mkdir -p "$(dirname "$OVERLAY_SOURCE")"
 cp -a "$SDK_SOURCE" "$OVERLAY_SOURCE"
 rm -rf "$OVERLAY_SOURCE/.git"
 patch --directory="$OVERLAY_SOURCE" -p1 --forward < "$ROOT/patches/libfm-qt/0001-opt-in-progress-dialog.patch"
+patch --directory="$OVERLAY_SOURCE" -p1 --forward < "$ROOT/patches/libfm-qt/0002-cooperative-local-copy-pause.patch"
 
 cmake -S "$OVERLAY_SOURCE" -B "$BUILD_DIR" -GNinja \
     -DCMAKE_MAKE_PROGRAM="$NINJA_BIN" \

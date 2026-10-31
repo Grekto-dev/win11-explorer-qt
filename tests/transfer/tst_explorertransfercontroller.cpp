@@ -7,6 +7,9 @@
 #include <QTemporaryDir>
 #include <QElapsedTimer>
 #include <QDateTime>
+#include <QApplication>
+#include <QMessageBox>
+#include <QTimer>
 #include <sys/stat.h>
 #include "../../pcmanfm/explorertransfercontroller.h"
 #include "core/filetransferjob.h"
@@ -48,8 +51,11 @@ private Q_SLOTS:
     void destroyingObserverDuringIoLeavesJobRunning();
     void optInDialogFactoryKeepsConflictRoutingOnRealFileOperation();
     void optInDialogFactoryKeepsErrorRoutingOnRealFileOperation();
+    void defaultDialogFactoryReceivesPointerBasedErrorWithoutTestRegistration();
     void preservesExplicitConflictResponseOnLiveJob();
     void reportsRealTwoGiBCopyProgressAndIntegrity();
+    void cooperativePauseCapabilityIsNotAdvertisedByUnsupportedJobs();
+    void externalCancellationNotifiesControllerExactlyOnce();
 };
 
 void ExplorerTransferControllerTest::observerLifecycleTracksRealJobSignals() {
@@ -211,6 +217,43 @@ void ExplorerTransferControllerTest::optInDialogFactoryKeepsErrorRoutingOnRealFi
     QVERIFY(!operation.isRunning());
 }
 
+void ExplorerTransferControllerTest::defaultDialogFactoryReceivesPointerBasedErrorWithoutTestRegistration() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString sourcePath = root.filePath(QStringLiteral("default-error-source.txt"));
+    QFile sourceFile(sourcePath);
+    QVERIFY(sourceFile.open(QIODevice::WriteOnly));
+    QCOMPARE(sourceFile.write("data"), qint64(4));
+    sourceFile.close();
+    const QString invalidDestination = root.filePath(QStringLiteral("not-a-directory"));
+    QFile destinationFile(invalidDestination);
+    QVERIFY(destinationFile.open(QIODevice::WriteOnly));
+    QCOMPARE(destinationFile.write("destination"), qint64(11));
+    destinationFile.close();
+
+    Fm::FileOperation::setDialogFactory(nullptr);
+    Fm::FilePathList sources{Fm::FilePath::fromLocalPath(sourcePath.toLocal8Bit().constData())};
+    Fm::FileOperation operation(Fm::FileOperation::Copy, sources);
+    operation.setAutoDestroy(false);
+    operation.setDestination(Fm::FilePath::fromLocalPath(invalidDestination.toLocal8Bit().constData()));
+    QSignalSpy finished(&operation, &Fm::FileOperation::finished);
+    int defaultErrorDialogs = 0;
+    QTimer closeDefaultError;
+    closeDefaultError.setInterval(10);
+    QObject::connect(&closeDefaultError, &QTimer::timeout, &operation, [&] {
+        if(auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+            ++defaultErrorDialogs;
+            box->accept();
+        }
+    });
+    closeDefaultError.start();
+    QVERIFY(operation.run());
+    QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 10000);
+    closeDefaultError.stop();
+    QVERIFY(defaultErrorDialogs > 0);
+    QVERIFY(!operation.isRunning());
+}
+
 void ExplorerTransferControllerTest::preservesExplicitConflictResponseOnLiveJob() {
     QTemporaryDir root;
     QVERIFY(root.isValid());
@@ -269,7 +312,11 @@ void ExplorerTransferControllerTest::cancellationForwardsToLiveLibfmJob() {
     QSignalSpy finished(job, &Fm::Job::finished);
     QVERIFY(controller.markStarted());
     job->runAsync();
+    QVERIFY(controller.pause());
+    QTRY_VERIFY_WITH_TIMEOUT(controller.snapshot().paused, 5000);
     controller.cancel();
+    controller.cancel();
+    QCOMPARE(cancellationRequested.count(), 1);
     QCOMPARE(controller.snapshot().state, ExplorerTransferController::State::Cancelling);
     QVERIFY(controller.snapshot().running);
     QVERIFY(controller.snapshot().cancellationRequested);
@@ -326,16 +373,42 @@ void ExplorerTransferControllerTest::reportsRealTwoGiBCopyProgressAndIntegrity()
         maxObservedBytes = qMax(maxObservedBytes, observed.finishedBytes + observed.currentFileBytes);
     });
     const auto startedAt = QDateTime::currentDateTimeUtc();
+    bool pauseAccepted = false;
+    int responsiveTicks = 0;
+    QTimer pauseWatcher;
+    pauseWatcher.setInterval(2);
+    QObject::connect(&pauseWatcher, &QTimer::timeout, &controller, [&] { ++responsiveTicks; });
+    QTimer responsivenessProbe;
+    responsivenessProbe.setInterval(25);
+    QObject::connect(&responsivenessProbe, &QTimer::timeout, &controller, [&] { ++responsiveTicks; });
     QElapsedTimer elapsed;
     elapsed.start();
     QVERIFY(controller.markStarted());
+    pauseWatcher.start();
+    responsivenessProbe.start();
+    pauseAccepted = controller.pause();
+    QVERIFY(pauseAccepted);
     job->runAsync();
+    QTRY_VERIFY_WITH_TIMEOUT(pauseAccepted, 5000);
+    QTRY_VERIFY_WITH_TIMEOUT(controller.snapshot().paused, 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(controller.snapshot().state, ExplorerTransferController::State::Paused, 5000);
+    const QString copied = QDir(destinationDir).filePath(QStringLiteral("source-2GiB.bin"));
+    const qint64 pausedSize = QFileInfo(copied).size();
+    QVERIFY(pausedSize > 0);
+    QVERIFY(pausedSize < qint64(fixtureBytes));
+    const int ticksBeforeWait = responsiveTicks;
+    QTest::qWait(350);
+    QCOMPARE(QFileInfo(copied).size(), pausedSize);
+    QVERIFY(responsiveTicks >= ticksBeforeWait + 5);
+    QVERIFY(controller.resume());
+    pauseWatcher.stop();
     QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 180000);
     QTRY_COMPARE_WITH_TIMEOUT(controllerFinished.count(), 1, 10000);
     const auto endedAt = QDateTime::currentDateTimeUtc();
     const auto elapsedMs = elapsed.elapsed();
     const auto sample = controller.snapshot();
-    const QString copied = QDir(destinationDir).filePath(QStringLiteral("source-2GiB.bin"));
+    QVERIFY(!controller.pause());
+    QVERIFY(!controller.resume());
     QFile copiedFile(copied);
     QVERIFY(copiedFile.open(QIODevice::ReadOnly));
     QCryptographicHash copiedHash(QCryptographicHash::Sha256);
@@ -361,6 +434,56 @@ void ExplorerTransferControllerTest::reportsRealTwoGiBCopyProgressAndIntegrity()
                       << "source_allocated_bytes=" << quint64(sourceStat.st_blocks) * 512
                       << "telemetry_samples=" << telemetrySamples
                       << "max_observed_bytes=" << maxObservedBytes;
+    delete job;
+}
+
+void ExplorerTransferControllerTest::cooperativePauseCapabilityIsNotAdvertisedByUnsupportedJobs() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString source = root.filePath(QStringLiteral("link-source.txt"));
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write("data"), qint64(4));
+    file.close();
+    const QString destination = root.filePath(QStringLiteral("dest"));
+    QVERIFY(QDir().mkpath(destination));
+    Fm::FilePathList sources{Fm::FilePath::fromLocalPath(source.toLocal8Bit().constData())};
+    auto* job = new Fm::FileTransferJob(sources,
+        Fm::FilePath::fromLocalPath(destination.toLocal8Bit().constData()), Fm::FileTransferJob::Mode::LINK);
+    job->setAutoDelete(false);
+    ExplorerTransferController controller(job);
+    QVERIFY(!controller.supportsPause());
+    QVERIFY(!controller.pause());
+    QVERIFY(!controller.resume());
+    delete job;
+}
+
+void ExplorerTransferControllerTest::externalCancellationNotifiesControllerExactlyOnce() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString source = root.filePath(QStringLiteral("external-cancel.bin"));
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    const QByteArray block(1024 * 1024, 'E');
+    for(int i = 0; i < 64; ++i) QCOMPARE(file.write(block), qint64(block.size()));
+    file.close();
+    const QString destination = root.filePath(QStringLiteral("dest"));
+    QVERIFY(QDir().mkpath(destination));
+    Fm::FilePathList sources{Fm::FilePath::fromLocalPath(source.toLocal8Bit().constData())};
+    auto* job = new Fm::FileTransferJob(sources,
+        Fm::FilePath::fromLocalPath(destination.toLocal8Bit().constData()), Fm::FileTransferJob::Mode::COPY);
+    job->setAutoDelete(false);
+    ExplorerTransferController controller(job);
+    QSignalSpy notices(&controller, &ExplorerTransferController::cancellationRequested);
+    QSignalSpy finished(job, &Fm::Job::finished);
+    QVERIFY(controller.markStarted());
+    job->runAsync();
+    job->cancel();
+    job->cancel();
+    QTRY_COMPARE_WITH_TIMEOUT(notices.count(), 1, 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 10000);
+    QCOMPARE(notices.count(), 1);
+    QCOMPARE(controller.snapshot().state, ExplorerTransferController::State::Finished);
     delete job;
 }
 
