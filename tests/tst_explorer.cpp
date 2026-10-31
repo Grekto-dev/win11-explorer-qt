@@ -6,6 +6,13 @@
 #include "preferencesdialog.h"
 #include "explorericons.h"
 #include <QCheckBox>
+#include <QStandardItemModel>
+#include <QStyledItemDelegate>
+#include <QIconEngine>
+#include <QPainter>
+#include <QStyleOptionViewItem>
+#include <QProxyStyle>
+#include "view.h"
 #include <QtTest>
 #include <QTemporaryDir>
 #include <QToolBar>
@@ -187,6 +194,78 @@ private Q_SLOTS:
         QTRY_VERIFY(QFile::exists(QDir(destinationDir).filePath(QStringLiteral("renamed.txt"))));
         QVERIFY(!QFile::exists(copied.fileName())); QVERIFY(QFile::exists(source.fileName()));
         QApplication::clipboard()->clear();
+    }
+    void placesDelegatePaintsReplacementNotModelArtwork() {
+        class NamedIcon final : public QIconEngine {
+        public:
+            QIconEngine* clone() const override { return new NamedIcon; }
+            QString iconName() const override { return QStringLiteral("user-home"); }
+            void paint(QPainter* p, const QRect& r, QIcon::Mode, QIcon::State) override {
+                p->fillRect(r, Qt::magenta);
+            }
+        };
+        QTemporaryDir fixture;
+        PCManFM::MainWindow window(Fm::FilePath::fromLocalPath(fixture.path().toUtf8().constData()));
+        auto* side = window.findChild<QWidget*>(QStringLiteral("sidePane"));
+        QVERIFY(side);
+        auto trees = side->findChildren<QTreeView*>();
+        QVERIFY(!trees.isEmpty());
+        auto* tree = trees.first();
+        auto* delegate = tree->itemDelegate();
+        QStandardItemModel model(1, 1);
+        model.setData(model.index(0,0), QIcon(new NamedIcon), Qt::DecorationRole);
+        QStyleOptionViewItem option;
+        option.initFrom(tree);
+        option.rect = QRect(0,0,160,32);
+        option.decorationSize = QSize(16,16);
+        auto render = [&](QAbstractItemDelegate* d) {
+            QImage image(160,32,QImage::Format_ARGB32);
+            image.fill(Qt::white);
+            QPainter painter(&image);
+            d->paint(&painter, option, model.index(0,0));
+            return image;
+        };
+        const auto actual = render(delegate);
+        QStyledItemDelegate upstream;
+        QVERIFY(actual != render(&upstream));
+        const auto replacement = PCManFM::ExplorerIcons::icon(QStringLiteral("user-home"));
+        QVERIFY(!replacement.isNull());
+        model.setData(model.index(0,0), replacement, Qt::DecorationRole);
+        QCOMPARE(actual, render(&upstream));
+    }
+    void repeatedModeAndNavigationReuseOneLocalStyle() {
+        QTemporaryDir fixture;
+        QVERIFY(QDir(fixture.path()).mkdir(QStringLiteral("child")));
+        const auto root = Fm::FilePath::fromLocalPath(fixture.path().toUtf8().constData());
+        const auto nested = Fm::FilePath::fromLocalPath(fixture.filePath(QStringLiteral("child")).toUtf8().constData());
+        QPointer<QStyle> shared = qApp->style();
+        {
+            PCManFM::MainWindow window(root);
+            window.show();
+            QVERIFY(QTest::qWaitForWindowExposed(&window));
+            for(const auto mode : {Fm::FolderView::DetailedListMode, Fm::FolderView::IconMode,
+                                   Fm::FolderView::DetailedListMode}) {
+                window.currentPage()->setViewMode(mode);
+                auto* view = window.currentPage()->folderView();
+                auto* child = view->childView();
+                auto* first = child->style();
+                QVERIFY(first != shared);
+                for(int i=0; i<8; ++i) {
+                    window.currentPage()->setViewMode(mode);
+                    QCOMPARE(view->childView(), child);
+                    QCOMPARE(child->style(), first);
+                    QCOMPARE(child->findChildren<QProxyStyle*>(QString(), Qt::FindDirectChildrenOnly).size(), 1);
+                    const auto destination = i % 2 ? root : nested;
+                    window.chdir(destination);
+                    QTRY_VERIFY(window.currentPage()->path() == destination);
+                    QCOMPARE(view->childView(), child);
+                    QCOMPARE(child->style(), first);
+                }
+                QCOMPARE(qApp->style(), shared.data());
+            }
+        }
+        QVERIFY(shared);
+        QCOMPARE(qApp->style(), shared.data());
     }
     void rubberBandUsesObservedSelectionPixels() {
         QTemporaryDir fixture;
