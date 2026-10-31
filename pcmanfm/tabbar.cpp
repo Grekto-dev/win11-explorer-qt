@@ -155,6 +155,9 @@ void TabBar::dragEnterEvent(QDragEnterEvent *event) {
 
 // Limit the size of large tabs to 2/3 of the width of the tabbar.
 QSize TabBar::tabSizeHint(int index) const {
+    if(property("explorerTabs").toBool()) {
+        return QSize(240, 32);
+    }
     switch (shape()) {
     case QTabBar::RoundedWest:
     case QTabBar::TriangularWest:

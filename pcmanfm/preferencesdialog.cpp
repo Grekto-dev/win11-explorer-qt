@@ -266,6 +266,10 @@ void PreferencesDialog::initThumbnailPage(Settings& settings) {
 }
 
 void PreferencesDialog::initVolumePage(Settings& settings) {
+    for(auto* checkbox : {ui.mountOnStartup, ui.mountRemovable, ui.autoRun}) {
+        checkbox->setEnabled(false);
+        checkbox->setToolTip(tr("Montagem automática e execução de mídia continuam sob responsabilidade do sistema, não deste aplicativo."));
+    }
     ui.mountOnStartup->setChecked(settings.mountOnStartup());
     ui.mountRemovable->setChecked(settings.mountRemovable());
     ui.autoRun->setChecked(settings.autoRun());

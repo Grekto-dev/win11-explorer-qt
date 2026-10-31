@@ -1,2 +1,7 @@
 build
 *.kdev4
+.deps/
+.tools/
+.state/
+__pycache__/
+*.pyc

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Win11 Explorer Qt
+Name[pt_BR]=Explorador — Win11 Explorer Qt
+Comment=Windows 11-inspired file manager based on PCManFM-Qt
+Comment[pt_BR]=Gerenciador de arquivos inspirado no Windows 11, baseado no PCManFM-Qt
+Exec=win11-explorer-qt %U
+Icon=win11-explorer-qt
+Terminal=false
+Categories=System;FileTools;FileManager;Qt;
+StartupNotify=true
+StartupWMClass=win11-explorer-qt

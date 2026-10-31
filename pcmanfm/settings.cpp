@@ -24,11 +24,12 @@
 #include <QStringBuilder>
 #include <QSettings>
 #include <QApplication>
-#include "desktopwindow.h"
+
 #include <libfm-qt6/utilities.h>
 #include <libfm-qt6/core/folderconfig.h>
 #include <libfm-qt6/core/terminal.h>
 #include <QStandardPaths>
+#include <QRegularExpression>
 
 #include <algorithm>
 
@@ -60,9 +61,9 @@ Settings::Settings():
     bookmarkOpenMethod_(OpenInCurrentTab),
     suCommand_(),
     terminal_(),
-    mountOnStartup_(true),
-    mountRemovable_(true),
-    autoRun_(true),
+    mountOnStartup_(false),
+    mountRemovable_(false),
+    autoRun_(false),
     closeOnUnmount_(false),
     wallpaperMode_(0),
     wallpaper_(),
@@ -87,21 +88,21 @@ Settings::Settings():
     desktopNoTooltip_(false),
     alwaysShowTabs_(true),
     showTabClose_(true),
-    switchToNewTab_(false),
+    switchToNewTab_(true),
     reopenLastTabs_(false),
     splitViewTabsNum_(0),
     rememberWindowSize_(true),
-    fixedWindowWidth_(640),
-    fixedWindowHeight_(480),
-    lastWindowWidth_(640),
-    lastWindowHeight_(480),
+    fixedWindowWidth_(1120),
+    fixedWindowHeight_(650),
+    lastWindowWidth_(1120),
+    lastWindowHeight_(650),
     lastWindowMaximized_(false),
-    splitterPos_(120),
+    splitterPos_(180),
     sidePaneVisible_(true),
     sidePaneMode_(Fm::SidePane::ModePlaces),
-    showMenuBar_(true),
+    showMenuBar_(false),
     splitView_(false),
-    viewMode_(Fm::FolderView::IconMode),
+    viewMode_(Fm::FolderView::DetailedListMode),
     showHidden_(false),
     sortOrder_(Qt::AscendingOrder),
     sortColumn_(Fm::FolderModel::ColumnFileName),
@@ -129,8 +130,8 @@ Settings::Settings():
     noItemTooltip_(false),
     scrollPerPixel_(true),
     bigIconSize_(48),
-    smallIconSize_(24),
-    sidePaneIconSize_(24),
+    smallIconSize_(16),
+    sidePaneIconSize_(16),
     thumbnailIconSize_(128),
     onlyUserTemplates_(false),
     templateTypeOnce_(false),
@@ -166,9 +167,13 @@ QString Settings::xdgUserConfigDir() {
 }
 
 QString Settings::profileDir(QString profile, bool useFallback) {
+    static const QRegularExpression safeProfile(QStringLiteral("^[A-Za-z0-9_-]+$"));
+    if(!safeProfile.match(profile).hasMatch()) {
+        profile = QStringLiteral("default");
+    }
     // try user-specific config file first
     QString dirName = QStandardPaths::writableLocation(QStandardPaths::ConfigLocation)
-                      + QStringLiteral("/pcmanfm-qt/") + profile;
+                      + QStringLiteral("/win11-explorer-qt/") + profile;
     QDir dir(dirName);
 
     // if user config dir does not exist, try system-wide config dirs instead
@@ -176,7 +181,7 @@ QString Settings::profileDir(QString profile, bool useFallback) {
         QString fallbackDir;
         const QStringList confList = QStandardPaths::standardLocations(QStandardPaths::ConfigLocation);
         for(const auto &thisConf : confList) {
-            fallbackDir = thisConf + QStringLiteral("/pcmanfm-qt/") + profile;
+            fallbackDir = thisConf + QStringLiteral("/win11-explorer-qt/") + profile;
             if(fallbackDir == dirName) {
                 continue;
             }
@@ -212,7 +217,7 @@ bool Settings::loadFile(QString filePath) {
     if(fallbackIconThemeName_.isEmpty()) {
         // FIXME: we should choose one from installed icon themes or get
         // the value from XSETTINGS instead of hard code a fallback value.
-        fallbackIconThemeName_ = QLatin1String("oxygen"); // fallback icon theme name
+        fallbackIconThemeName_ = QLatin1String("win11-explorer-qt"); // bundled original icons
     }
     suCommand_ = settings.value(QStringLiteral("SuCommand"), QStringLiteral("lxqt-sudo %s")).toString();
     setTerminal(settings.value(QStringLiteral("Terminal"), QStringLiteral("xterm")).toString());
@@ -295,9 +300,9 @@ bool Settings::loadFile(QString filePath) {
     settings.endGroup();
 
     settings.beginGroup(QStringLiteral("Volume"));
-    mountOnStartup_ = settings.value(QStringLiteral("MountOnStartup"), true).toBool();
-    mountRemovable_ = settings.value(QStringLiteral("MountRemovable"), true).toBool();
-    autoRun_ = settings.value(QStringLiteral("AutoRun"), true).toBool();
+    mountOnStartup_ = false;
+    mountRemovable_ = false;
+    autoRun_ = false;
     closeOnUnmount_ = settings.value(QStringLiteral("CloseOnUnmount"), true).toBool();
     settings.endGroup();
 
@@ -309,7 +314,7 @@ bool Settings::loadFile(QString filePath) {
     settings.endGroup();
 
     settings.beginGroup(QStringLiteral("FolderView"));
-    viewMode_ = viewModeFromString(settings.value(QStringLiteral("Mode"), Fm::FolderView::IconMode).toString());
+    viewMode_ = viewModeFromString(settings.value(QStringLiteral("Mode"), QStringLiteral("detailed")).toString());
     showHidden_ = settings.value(QStringLiteral("ShowHidden"), false).toBool();
     sortOrder_ = sortOrderFromString(settings.value(QStringLiteral("SortOrder")).toString());
     sortColumn_ = sortColumnFromString(settings.value(QStringLiteral("SortColumn")).toString());
@@ -326,16 +331,18 @@ bool Settings::loadFile(QString filePath) {
 
     // override config in libfm's FmConfig
     bigIconSize_ = toIconSize(settings.value(QStringLiteral("BigIconSize"), 48).toInt(), Big);
-    smallIconSize_ = toIconSize(settings.value(QStringLiteral("SmallIconSize"), 24).toInt(), Small);
-    sidePaneIconSize_ = toIconSize(settings.value(QStringLiteral("SidePaneIconSize"), 24).toInt(), Small);
+    smallIconSize_ = toIconSize(settings.value(QStringLiteral("SmallIconSize"), 16).toInt(), Small);
+    sidePaneIconSize_ = toIconSize(settings.value(QStringLiteral("SidePaneIconSize"), 16).toInt(), Small);
     thumbnailIconSize_ = toIconSize(settings.value(QStringLiteral("ThumbnailIconSize"), 128).toInt(), Thumbnail);
 
     folderViewCellMargins_ = (settings.value(QStringLiteral("FolderViewCellMargins"), QSize(3, 3)).toSize()
                               .expandedTo(QSize(0, 0))).boundedTo(QSize(48, 48));
 
     // detailed list columns
-    customColumnWidths_ = settings.value(QStringLiteral("CustomColumnWidths")).toList();
-    hiddenColumns_ = settings.value(QStringLiteral("HiddenColumns")).toList();
+    customColumnWidths_ = settings.value(QStringLiteral("CustomColumnWidths"), QVariantList{300,160,100,180,180,180,100,100}).toList();
+    hiddenColumns_ = settings.value(QStringLiteral("HiddenColumns"), QVariantList{
+        int(Fm::FolderModel::ColumnFileCrTime), int(Fm::FolderModel::ColumnFileDTime),
+        int(Fm::FolderModel::ColumnFileOwner), int(Fm::FolderModel::ColumnFileGroup)}).toList();
 
     settings.endGroup();
 
@@ -345,22 +352,22 @@ bool Settings::loadFile(QString filePath) {
     settings.endGroup();
 
     settings.beginGroup(QStringLiteral("Window"));
-    fixedWindowWidth_ = settings.value(QStringLiteral("FixedWidth"), 640).toInt();
-    fixedWindowHeight_ = settings.value(QStringLiteral("FixedHeight"), 480).toInt();
-    lastWindowWidth_ = settings.value(QStringLiteral("LastWindowWidth"), 640).toInt();
-    lastWindowHeight_ = settings.value(QStringLiteral("LastWindowHeight"), 480).toInt();
+    fixedWindowWidth_ = settings.value(QStringLiteral("FixedWidth"), 1120).toInt();
+    fixedWindowHeight_ = settings.value(QStringLiteral("FixedHeight"), 650).toInt();
+    lastWindowWidth_ = settings.value(QStringLiteral("LastWindowWidth"), 1120).toInt();
+    lastWindowHeight_ = settings.value(QStringLiteral("LastWindowHeight"), 650).toInt();
     lastWindowMaximized_ = settings.value(QStringLiteral("LastWindowMaximized"), false).toBool();
     rememberWindowSize_ = settings.value(QStringLiteral("RememberWindowSize"), true).toBool();
     alwaysShowTabs_ = settings.value(QStringLiteral("AlwaysShowTabs"), true).toBool();
     showTabClose_ = settings.value(QStringLiteral("ShowTabClose"), true).toBool();
-    switchToNewTab_ = settings.value(QStringLiteral("SwitchToNewTab"), false).toBool();
+    switchToNewTab_ = settings.value(QStringLiteral("SwitchToNewTab"), true).toBool();
     reopenLastTabs_ = settings.value(QStringLiteral("ReopenLastTabs"), false).toBool();
     tabPaths_ = settings.value(QStringLiteral("TabPaths")).toStringList();
     splitViewTabsNum_ = settings.value(QStringLiteral("SplitViewTabsNum")).toInt();
-    splitterPos_ = settings.value(QStringLiteral("SplitterPos"), 150).toInt();
+    splitterPos_ = settings.value(QStringLiteral("SplitterPos"), 180).toInt();
     sidePaneVisible_ = settings.value(QStringLiteral("SidePaneVisible"), true).toBool();
     sidePaneMode_ = sidePaneModeFromString(settings.value(QStringLiteral("SidePaneMode")).toString());
-    showMenuBar_ = settings.value(QStringLiteral("ShowMenuBar"), true).toBool();
+    showMenuBar_ = settings.value(QStringLiteral("ShowMenuBar"), false).toBool();
     splitView_ = settings.value(QStringLiteral("SplitView"), false).toBool();
     pathBarButtons_ = settings.value(QStringLiteral("PathBarButtons"), true).toBool();
     settings.endGroup();
@@ -817,23 +824,23 @@ static Fm::FolderModel::ColumnId sortColumnFromString(const QString str) {
 static const char* wallpaperModeToString(int value) {
     const char* ret;
     switch(value) {
-    case DesktopWindow::WallpaperNone:
+    case 0:
     default:
         ret = "none";
         break;
-    case DesktopWindow::WallpaperStretch:
+    case 1:
         ret = "stretch";
         break;
-    case DesktopWindow::WallpaperFit:
+    case 2:
         ret = "fit";
         break;
-    case DesktopWindow::WallpaperCenter:
+    case 3:
         ret = "center";
         break;
-    case DesktopWindow::WallpaperTile:
+    case 4:
         ret = "tile";
         break;
-    case DesktopWindow::WallpaperZoom:
+    case 5:
         ret = "zoom";
         break;
     }
@@ -843,22 +850,22 @@ static const char* wallpaperModeToString(int value) {
 int Settings::wallpaperModeFromString(const QString str) {
     int ret;
     if(str == QLatin1String("stretch")) {
-        ret = DesktopWindow::WallpaperStretch;
+        ret = 1;
     }
     else if(str == QLatin1String("fit")) {
-        ret = DesktopWindow::WallpaperFit;
+        ret = 2;
     }
     else if(str == QLatin1String("center")) {
-        ret = DesktopWindow::WallpaperCenter;
+        ret = 3;
     }
     else if(str == QLatin1String("tile")) {
-        ret = DesktopWindow::WallpaperTile;
+        ret = 4;
     }
     else if(str == QLatin1String("zoom")) {
-        ret = DesktopWindow::WallpaperZoom;
+        ret = 5;
     }
     else {
-        ret = DesktopWindow::WallpaperNone;
+        ret = 0;
     }
     return ret;
 }

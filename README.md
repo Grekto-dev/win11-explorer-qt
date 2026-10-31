@@ -1,70 +1,33 @@
-# PCManFM-Qt
+# Win11 Explorer Qt
 
-## Overview
+Fork de PCManFM-Qt que está reconstruindo, em Qt, uma interface inspirada no Explorador de Arquivos do Windows 11. Este repositório contém o **primeiro marco funcional**, não um clone completo.
 
-PCManFM-Qt is a Qt-based file manager which uses `GLib` for file management.
-It was started as the Qt port of PCManFM, the file manager of [LXDE](https://lxde.org).
+## Estado atual
 
-PCManFM-Qt is used by LXQt for handling the desktop. Nevertheless, it can also be used
-independently of LXQt and with any desktop environment, whether under X11 or under Wayland.
+A janela já combina abas CSD, navegação, comandos e a visualização de pastas/arquivos baseada nos modelos do libfm-qt. A interface está apenas no tema claro. Sidebar e menus ainda estão sendo reconstruídos; o filtro atual procura na pasta aberta e **não** é uma busca recursiva.
 
-PCManFM-Qt is licensed under the terms of the
-[GPLv2](https://www.gnu.org/licenses/gpl-2.0.en.html) or any later version. See
-file LICENSE for its full text.  
+## Compilar e executar
 
-## Installation
+Dependências de desenvolvimento: Qt 6.6 ou superior, libfm-qt 2.4 e lxqt-build-tools 2.4, além de CMake e Ninja. Consulte [docs/BUILDING.md](docs/BUILDING.md) para detalhes do SDK local verificado; não há bootstrap portátil de uma etapa para um checkout novo.
 
-### Compiling source code
+```bash
+./scripts/build.sh                 # RelWithDebInfo; instala em .state/install
+./scripts/build.sh Debug           # alternativa para depuração
+./scripts/run.sh                   # executa o binário instalado
+```
 
-The build dependencies are CMake, [lxqt-build-tools](https://github.com/lxqt/lxqt-build-tools),
-[libfm-qt](https://github.com/lxqt/libfm-qt), and layer-shell-qt (for the desktop support under Wayland).
+Opcionalmente, `./scripts/install-dev.sh` cria apenas links de desenvolvimento do launcher, desktop entry e ícone próprio no escopo do usuário (`~/.local`). `--prefix HOME_DE_TESTE` permite testar em outro diretório. O instalador não muda associações MIME, padrões, autostart, configurações do desktop ou arquivos do sistema, e não abre a aplicação.
 
-GVFS is an optional dependency. It provides important functionalities like Trash support.
+## Isolamento e limites
 
-Code configuration is handled by CMake. CMake variable `CMAKE_INSTALL_PREFIX`
-has to be set to `/usr` on most operating systems. Depending on the way library
-paths are dealt with on 64bit systems, variables like `CMAKE_INSTALL_LIBDIR` may
-have to be set as well.  
+O projeto não se registra como gerenciador padrão de pastas, não substitui Nemo/Cinnamon e não instala serviço de sessão nem autostart. Veja [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) e use `python3 scripts/check-isolation.py save .state/desktop-baseline.json` antes da primeira execução e `python3 scripts/check-isolation.py verify .state/desktop-baseline.json` depois. Não sobrescreva uma baseline existente. Ainda faltam acabamento visual, funcionalidades e testes extensivos; não há pacote `.deb` neste marco. O painel duplo legado não é exposto nesta interface de painel único.
 
-To build run `make`, to install `make install`, which accepts the variable `DESTDIR`
-as usual.
+## Verificação
 
-### Binary packages
+Os comandos, cenários exercitados e limites dos testes estão em [docs/VERIFICATION.md](docs/VERIFICATION.md).
 
-Official binary packages are available in Arch Linux, Debian,
-Fedora and openSUSE (Leap and Tumbleweed) and most other distributions.
+## Créditos e licenças
 
-## Usage
+O código deriva do [PCManFM-Qt](https://github.com/lxqt/pcmanfm-qt), licenciado sob GPL-2.0-or-later; o [libfm-qt](https://github.com/lxqt/libfm-qt) é LGPL-2.1-or-later. Os avisos e atribuições do fork permanecem em [LICENSE](LICENSE) e [AUTHORS](AUTHORS). Ícones e interface adicionados ao fork são recursos vetoriais originais; não foram usados ativos da Microsoft.
 
-The file manager functionality should be self-explanatory. For advanced functionalities,
-see the [wiki](https://github.com/lxqt/pcmanfm-qt/wiki).
-
-Handling of the desktop deserves some notes:
-
-To handle the desktop, the binary `pcmanfm-qt` has to be launched with the
-`--desktop` option. Optionally, `--profile` can be used for loading and
-saving settings specific to certain session types, like different
-desktop environments. In an LXQt session, PCManFM-Qt is launched as an
-[LXQt Module](https://github.com/lxqt/lxqt-session#lxqt-modules).
-
-The desktop can be configured by the dialog "Desktop Preferences". Technically,
-it corresponds to launching `pcmanfm-qt` with the option `--desktop-pref`. It
-is available in LXQt desktop's context menu and included as the "Desktop" item in
-the Preferences sub-menu of LXQt Panel's main menu as well as the "LXQt Settings"
-section of [Configuration Center](https://github.com/lxqt/lxqt-config#configuration-center).  
-
-All (command-line) options are explained in detail in `man 1 pcmanfm-qt`.  
-
-## Development
-
-Issues should go to the tracker of PCManFM-Qt at https://github.com/lxqt/pcmanfm-qt/issues.
-
-
-### Translation
-
-Translations can be done in [LXQt-Weblate](https://translate.lxqt-project.org/projects/lxqt-desktop/pcmanfm-qt/)
-
-<a href="https://translate.lxqt-project.org/projects/lxqt-desktop/pcmanfm-qt/">
-<img src="https://translate.lxqt-project.org/widgets/lxqt-desktop/-/pcmanfm-qt/multi-auto.svg" alt="Translation status" />
-</a>
-
+O README original do upstream foi preservado em [README.upstream.md](README.upstream.md).

@@ -36,6 +36,8 @@
 #include <QStandardPaths>
 #include <QClipboard>
 #include <QDebug>
+#include <QTreeView>
+#include <QHeaderView>
 
 #include "tabpage.h"
 #include "launcher.h"
@@ -147,7 +149,10 @@ MainWindow::MainWindow(Fm::FilePath path):
         ui.verticalLayout->setStretch(0, 1);
     }
 
-    splitView_ = path && settings.splitView(); // splt view needs a path
+    splitView_ = false; // The Explorer interface has a single content pane.
+    settings.setSplitView(false);
+    ui.actionSplitView->setVisible(false);
+    ui.actionSplitView->setEnabled(false);
 
     // hide menu items that are not usable
     //if(!uriExists("computer:///"))
@@ -298,6 +303,9 @@ MainWindow::MainWindow(Fm::FilePath path):
     connect(shortcut, &QShortcut::activated, [this] {
         if(currentPage()) {
             currentPage()->clearFilter();
+            currentPage()->setFilterStr(QString());
+            currentPage()->applyFilter();
+            updateExplorerSearch();
             currentPage()->folderView()->childView()->setFocus();
         }
     });
@@ -366,6 +374,7 @@ MainWindow::MainWindow(Fm::FilePath path):
         ui.actionSplitView->setChecked(false);
         setAcceptDrops(true); // we want tab dnd in the simple mode
     }
+    setupExplorerChrome();
     createPathBar(settings.pathBarButtons());
 
     if(settings.pathBarButtons()) {
@@ -676,6 +685,12 @@ void MainWindow::createPathBar(bool usePathButtons) {
             }
         }
         if(bar != nullptr) {
+            bar->setObjectName(QStringLiteral("explorerAddress"));
+            bar->setAttribute(Qt::WA_StyledBackground);
+            bar->setAccessibleName(tr("Barra de endereços"));
+            bar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+            bar->setMinimumWidth(160);
+            bar->setFixedHeight(32);
             ui.toolBar->insertWidget(ui.actionGo, bar);
             ui.actionGo->setVisible(!usePathButtons);
         }
@@ -1273,7 +1288,7 @@ void MainWindow::on_actionThumbnailView_triggered() {
 
 void MainWindow::onTabBarCloseRequested(int index) {
     TabBar* tabBar = static_cast<TabBar*>(sender());
-    if(ViewFrame* viewFrame = qobject_cast<ViewFrame*>(tabBar->parentWidget())) {
+    if(ViewFrame* viewFrame = viewFrameForTabBar(tabBar)) {
         closeTab(index, viewFrame);
     }
 }
@@ -1286,7 +1301,7 @@ void MainWindow::onResetFocus() {
 
 void MainWindow::onTabBarTabMoved(int from, int to) {
     TabBar* tabBar = static_cast<TabBar*>(sender());
-    if(ViewFrame* viewFrame = qobject_cast<ViewFrame*>(tabBar->parentWidget())) {
+    if(ViewFrame* viewFrame = viewFrameForTabBar(tabBar)) {
         // a tab in the tab bar is moved by the user, so we have to move the
         //  corredponding tab page in the stacked widget to the new position, too.
         QWidget* page = viewFrame->getStackedWidget()->widget(from);
@@ -1406,7 +1421,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 
 void MainWindow::onTabBarCurrentChanged(int index) {
     TabBar* tabBar = static_cast<TabBar*>(sender());
-    if(ViewFrame* viewFrame = qobject_cast<ViewFrame*>(tabBar->parentWidget())) {
+    if(ViewFrame* viewFrame = viewFrameForTabBar(tabBar)) {
         viewFrame->getStackedWidget()->setCurrentIndex(index);
         if(viewFrame == activeViewFrame_) {
             updateUIForCurrentPage();
@@ -1553,6 +1568,7 @@ void MainWindow::updateSelectedActions() {
 
 void MainWindow::updateUIForCurrentPage(bool setFocus) {
     TabPage* tabPage = currentPage();
+    updateExplorerSearch();
 
     if(tabPage) {
         setWindowTitle(tabPage->title());
@@ -1721,6 +1737,7 @@ void MainWindow::onTabPageStatusChanged(int type, QString statusText) {
 void MainWindow::onTabPageSortFilterChanged() { // NOTE: This may be called from context menu too.
     TabPage* tabPage = static_cast<TabPage*>(sender());
     if(tabPage == currentPage()) {
+        updateExplorerSearch();
         updateViewMenuForCurrentPage();
         ui.sidePane->setShowHidden(tabPage->showHidden());
         if(!tabPage->hasCustomizedView() && !tabPage->hasInheritedCustomizedView()) { // remember sort settings globally
@@ -1986,7 +2003,7 @@ void MainWindow::onBackForwardContextMenu(QPoint pos) {
 
 void MainWindow::onTabBarClicked(int /*index*/) {
     TabBar* tabBar = static_cast<TabBar*>(sender());
-    if(ViewFrame* viewFrame = qobject_cast<ViewFrame*>(tabBar->parentWidget())) {
+    if(ViewFrame* viewFrame = viewFrameForTabBar(tabBar)) {
         // focus the view on clicking the tab bar
         if(TabPage* page = currentPage(viewFrame)) {
             page->folderView()->childView()->setFocus();
@@ -1996,7 +2013,7 @@ void MainWindow::onTabBarClicked(int /*index*/) {
 
 void MainWindow::tabContextMenu(const QPoint& pos) {
     TabBar* tabBar = static_cast<TabBar*>(sender());
-    if(ViewFrame* viewFrame = qobject_cast<ViewFrame*>(tabBar->parentWidget())) {
+    if(ViewFrame* viewFrame = viewFrameForTabBar(tabBar)) {
         int tabNum = viewFrame->getTabBar()->count();
         if(tabNum < 1) {
             return;
@@ -2158,14 +2175,21 @@ void MainWindow::setTabIcon(TabPage* tabPage) {
     if(viewFrame == nullptr) {
         return;
     }
+    if(auto* tree = qobject_cast<QTreeView*>(tabPage->folderView()->childView())) {
+        if(!tree->property("explorerLayout").toBool()) {
+            tree->setAlternatingRowColors(false);
+            tree->setStyleSheet(QStringLiteral("QTreeView::item { height:26px; }"));
+            auto* header = tree->header();
+            header->moveSection(header->visualIndex(Fm::FolderModel::ColumnFileMTime),1);
+            tree->setProperty("explorerLayout",true);
+        }
+    }
     bool isCustomized = tabPage->hasCustomizedView() || tabPage->hasInheritedCustomizedView();
     int index = viewFrame->getStackedWidget()->indexOf(tabPage);
     auto tabBar = viewFrame->getTabBar();
 
     if(!isCustomized) {
-        if(!tabBar->tabIcon(index).isNull()) {
-            tabBar->setTabIcon(index, QIcon());
-        }
+        tabBar->setTabIcon(index, QIcon::fromTheme(QStringLiteral("folder")));
         return;
     }
 

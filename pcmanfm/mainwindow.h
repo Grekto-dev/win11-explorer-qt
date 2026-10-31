@@ -251,6 +251,9 @@ protected:
     virtual bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
+    void setupExplorerChrome();
+    void updateExplorerSearch();
+    ViewFrame* viewFrameForTabBar(TabBar* tabBar);
     void loadBookmarksMenu();
     void updateUIForCurrentPage(bool setFocus = true);
     void updateViewMenuForCurrentPage();
@@ -265,6 +268,9 @@ private:
     void setTabIcon(TabPage* tabPage);
 
 private:
+    QToolBar* explorerCommands_ = nullptr;
+    QLineEdit* explorerSearch_ = nullptr;
+    QWidget* explorerTitle_ = nullptr;
     Ui::MainWindow ui;
     Fm::PathEdit* pathEntry_;
     Fm::PathBar* pathBar_;

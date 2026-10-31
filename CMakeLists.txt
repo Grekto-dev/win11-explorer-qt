@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.18.0 FATAL_ERROR)
 # The cmake_minimum_required(VERSION) command implicitly invokes the cmake_policy(VERSION)
 # command to specify that the current project code is written for the given range of CMake
 # versions.
-project(pcmanfm-qt)
+project(win11-explorer-qt)
 
 # PcmanFm-Qt Version
 set(PCMANFM_QT_VERSION_MAJOR 2)
@@ -17,7 +17,7 @@ set(PCMANFM_QT_VERSION ${PCMANFM_QT_VERSION_MAJOR}.${PCMANFM_QT_VERSION_MINOR}.$
 set(LIBFMQT_MINIMUM_VERSION "2.4.0")
 set(LXQTBT_MINIMUM_VERSION "2.4.0")
 set(QT_MINIMUM_VERSION "6.6.0")
-set(SHELLQT_MINIMUM_VERSION "6.6.0")
+
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 
@@ -26,12 +26,14 @@ find_package(Qt6LinguistTools ${QT_MINIMUM_VERSION} REQUIRED)
 find_package(Qt6Widgets ${QT_MINIMUM_VERSION} REQUIRED)
 find_package(fm-qt6 ${LIBFMQT_MINIMUM_VERSION} REQUIRED)
 find_package(lxqt2-build-tools ${LXQTBT_MINIMUM_VERSION} REQUIRED)
-find_package(LayerShellQt ${SHELLQT_MINIMUM_VERSION} REQUIRED)
+
 
 message(STATUS "Building ${PROJECT_NAME} with Qt ${Qt6Core_VERSION}")
 
 option(UPDATE_TRANSLATIONS "Update source translation translations/*.ts files" OFF)
 include(GNUInstallDirs)
+option(BUILD_TESTING "Build tests" ON)
+include(CTest)
 include(LXQtPreventInSourceBuilds)
 include(LXQtConfigVars)
 include(LXQtTranslateTs)
@@ -44,16 +46,10 @@ set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
 add_subdirectory(pcmanfm)
 
-# manpage for pcmanfm-qt
-configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/pcmanfm-qt.1.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/pcmanfm-qt.1"
-    @ONLY
-)
-install(FILES
-    "${CMAKE_CURRENT_BINARY_DIR}/pcmanfm-qt.1"
-    DESTINATION "${CMAKE_INSTALL_MANDIR}/man1"
-)
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
+
 
 # add Doxygen support to generate API docs
 # References:
@@ -70,11 +66,3 @@ if(BUILD_DOCUMENTATION)
     )
     install(DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/docs" DESTINATION "${CMAKE_INSTALL_DOCDIR}")
 endif()
-
-install(
-    FILES icons/pcmanfm-qt.svg
-    DESTINATION "${CMAKE_INSTALL_PREFIX}/share/icons/hicolor/scalable/apps"
-)
-
-add_subdirectory(autostart)
-add_subdirectory(config)

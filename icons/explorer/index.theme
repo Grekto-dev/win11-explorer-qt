@@ -1,0 +1,19 @@
+[Icon Theme]
+Name=Win11 Explorer Qt
+Comment=Original icons by Grekto, no Microsoft assets
+Inherits=Adwaita,hicolor
+Directories=scalable/places,scalable/mimetypes
+
+[scalable/places]
+Size=32
+Type=Scalable
+MinSize=8
+MaxSize=256
+Context=Places
+
+[scalable/mimetypes]
+Size=32
+Type=Scalable
+MinSize=8
+MaxSize=256
+Context=MimeTypes
