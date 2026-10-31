@@ -44,7 +44,17 @@ def screenshot(path: Path) -> None:
                    check=True, capture_output=True, text=True)
 
 
+def validate_action_id(value: str) -> str:
+    """Accept a filename token only; reject traversal rather than rewriting it."""
+    import re
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", value):
+        raise ValueError(f"invalid action id: {value!r}")
+    return value
+
+
 def record(out: Path, actions: list[dict]) -> list[dict]:
+    for action in actions:
+        validate_action_id(action.get('id'))
     out.mkdir(parents=True, exist_ok=True)
     log = []
     for i, action in enumerate(actions):
