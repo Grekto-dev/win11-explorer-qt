@@ -5,6 +5,7 @@
 #include "application.h"
 #include "tabpage.h"
 #include "explorericons.h"
+#include "exploreranimation.h"
 #include <QStyledItemDelegate>
 #include <QStyleOptionViewItem>
 #include <QTreeView>
@@ -118,11 +119,11 @@ public:
         tabs->setAutoHide(false); tabs->setTabsClosable(true); tabs->setIconSize(QSize(16,16));
         row->addWidget(tabs,0,Qt::AlignBottom);
         auto* add = new QToolButton(this); add->setObjectName(QStringLiteral("explorerNewTab"));
-        newTab->setIcon(icon("plus")); add->setDefaultAction(newTab); add->setAccessibleName(tr("Nova guia")); add->setFixedSize(36,32);
+        newTab->setIcon(icon("plus")); add->setDefaultAction(newTab); ExplorerAnimation::styleButton(add); add->setAccessibleName(tr("Nova guia")); add->setFixedSize(36,32);
         row->addWidget(add,0,Qt::AlignBottom); row->addStretch(1);
         auto button = [this,row](const char* name,const char* glyph,const QString& label) {
             auto* b = new QToolButton(this); b->setObjectName(QString::fromLatin1(name));
-            b->setIcon(icon(glyph)); b->setIconSize(QSize(20,20)); b->setToolTip(label); b->setAccessibleName(label); b->setFixedSize(46,32);
+            b->setIcon(icon(glyph)); b->setIconSize(QSize(20,20)); b->setToolTip(label); b->setAccessibleName(label); ExplorerAnimation::styleButton(b); b->setFixedSize(46,32);
             row->addWidget(b,0,Qt::AlignTop); return b;
         };
         auto* minimize = button("explorerMinimize","minimize",tr("Minimizar"));
@@ -256,7 +257,7 @@ QToolTip { background:#fafafa; color:#202020; border:1px solid #d8d8d8; padding:
     auto nav = [this](QAction* action,const char* name,const char* glyph,const QString& label) {
         action->setIcon(icon(glyph)); action->setToolTip(label); action->setText(label); ui.toolBar->addAction(action);
         auto* b = qobject_cast<QToolButton*>(ui.toolBar->widgetForAction(action));
-        b->setObjectName(QString::fromLatin1(name)); b->setAccessibleName(label); b->setFixedSize(44,32);
+        b->setObjectName(QString::fromLatin1(name)); b->setAccessibleName(label); ExplorerAnimation::styleButton(b); b->setFixedSize(44,32);
         if(action == ui.actionGoBack || action == ui.actionGoForward) {
             b->setContextMenuPolicy(Qt::CustomContextMenu);
             connect(b,&QToolButton::customContextMenuRequested,this,&MainWindow::onBackForwardContextMenu);
@@ -285,10 +286,11 @@ QToolTip { background:#fafafa; color:#202020; border:1px solid #d8d8d8; padding:
     explorerCommands_->setMovable(false); explorerCommands_->setFloatable(false); explorerCommands_->setFixedHeight(47); explorerCommands_->setIconSize(QSize(20,20));
     auto command = [this](QAction* action,const char* name,const char* glyph,const QString& label) {
         action->setIcon(icon(glyph)); action->setToolTip(label); explorerCommands_->addAction(action);
-        auto* b = qobject_cast<QToolButton*>(explorerCommands_->widgetForAction(action)); b->setObjectName(QString::fromLatin1(name)); b->setAccessibleName(label); b->setFixedSize(40,32);
+        auto* b = qobject_cast<QToolButton*>(explorerCommands_->widgetForAction(action)); b->setObjectName(QString::fromLatin1(name)); b->setAccessibleName(label); ExplorerAnimation::styleButton(b); b->setFixedSize(40,32);
     };
     auto menuButton = [this](QMenu* menu,const char* name,const char* glyph,const QString& label) {
-        auto* b = new QToolButton(explorerCommands_); b->setObjectName(QString::fromLatin1(name)); b->setIcon(icon(glyph)); b->setIconSize(QSize(20,20));
+        ExplorerAnimation::styleMenu(menu);
+        auto* b = new QToolButton(explorerCommands_); b->setObjectName(QString::fromLatin1(name)); b->setIcon(icon(glyph)); b->setIconSize(QSize(20,20)); ExplorerAnimation::styleButton(b);
         b->setText(label); b->setAccessibleName(label); b->setToolTip(label); b->setToolButtonStyle(Qt::ToolButtonTextBesideIcon); b->setPopupMode(QToolButton::InstantPopup);
         b->setMenu(menu); b->setFixedHeight(32); explorerCommands_->addWidget(b); return b;
     };
