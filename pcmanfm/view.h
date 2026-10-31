@@ -42,6 +42,7 @@ public:
     virtual ~View();
 
     void updateFromSettings(Settings& settings);
+    void setViewMode(Fm::FolderView::ViewMode mode);
 
     QSize  getMargins() const {
         return Fm::FolderView::getMargins();
@@ -62,6 +63,7 @@ protected:
     virtual void prepareFolderMenu(Fm::FolderMenu* menu);
 
 private:
+    void applyRubberBandStyle();
     void launchFiles(Fm::FileInfoList files, bool inNewTabs = false);
     void openFolderAndSelectFile(const std::shared_ptr<const Fm::FileInfo>& fileInfo, bool inNewTab = false);
 

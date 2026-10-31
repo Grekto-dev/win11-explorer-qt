@@ -27,17 +27,64 @@
 #include "mainwindow.h"
 #include "launcher.h"
 #include <QAction>
+#include <QPainter>
+#include <QProxyStyle>
+#include <QStyleOption>
 
 namespace PCManFM {
+namespace {
+
+class ExplorerSelectionStyle final : public QProxyStyle {
+public:
+    explicit ExplorerSelectionStyle(const QString& baseStyleName)
+        : QProxyStyle(baseStyleName) {
+    }
+
+    void drawControl(ControlElement element, const QStyleOption* option, QPainter* painter,
+                     const QWidget* widget = nullptr) const override {
+        if(element == CE_RubberBand && option) {
+            painter->save();
+            painter->fillRect(option->rect, QColor(170, 204, 238));
+            painter->setPen(QColor(0, 120, 212));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawRect(option->rect.adjusted(0, 0, -1, -1));
+            painter->restore();
+            return;
+        }
+        QProxyStyle::drawControl(element, option, painter, widget);
+    }
+};
+
+} // namespace
 
 View::View(Fm::FolderView::ViewMode _mode, QWidget* parent):
     Fm::FolderView(_mode, parent) {
+
+    // Keep the observed selection treatment local to this folder view. Each
+    // child style gets an independent base, never qApp's shared style.
+    applyRubberBandStyle();
 
     Settings& settings = static_cast<Application*>(qApp)->settings();
     updateFromSettings(settings);
 }
 
 View::~View() = default;
+
+void View::applyRubberBandStyle() {
+    auto* child = childView();
+    if(!child) {
+        return;
+    }
+    const QString baseStyleName = qApp->style()->objectName();
+    auto* localStyle = new ExplorerSelectionStyle(baseStyleName);
+    localStyle->setParent(child);
+    child->setStyle(localStyle);
+}
+
+void View::setViewMode(Fm::FolderView::ViewMode mode) {
+    Fm::FolderView::setViewMode(mode);
+    applyRubberBandStyle();
+}
 
 void View::onFileClicked(int type, const std::shared_ptr<const Fm::FileInfo>& fileInfo) {
     if(type == MiddleClick) {

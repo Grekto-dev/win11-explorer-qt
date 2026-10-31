@@ -22,6 +22,13 @@
 #include <QFile>
 #include <QScopedPointer>
 #include <libfm-qt6/core/folderconfig.h>
+#include <QColor>
+#include <QAbstractItemView>
+#include <QLibrary>
+#include <QImage>
+#include <QStringList>
+#include <memory>
+#include <X11/Xlib.h>
 
 class ExplorerTest : public QObject {
     Q_OBJECT
@@ -176,6 +183,119 @@ private Q_SLOTS:
         QVERIFY(!QFile::exists(copied.fileName())); QVERIFY(QFile::exists(source.fileName()));
         QApplication::clipboard()->clear();
     }
+    void rubberBandUsesObservedSelectionPixels() {
+        QTemporaryDir fixture;
+        QVERIFY(fixture.isValid());
+        for(const auto& name : {QStringLiteral("Nested Notes.txt"), QStringLiteral("Readme.txt")}) {
+            QFile file(fixture.filePath(name));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write("selection fixture\n");
+        }
+        QScopedPointer<PCManFM::MainWindow> window(new PCManFM::MainWindow(Fm::FilePath::fromLocalPath(fixture.path().toUtf8().constData())));
+        window->resize(1104, 642);
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window.data()));
+        auto* folderView = window->currentPage()->folderView();
+        QTRY_COMPARE(folderView->model()->rowCount(), 2);
+        QStyle* sharedApplicationStyle = qApp->style();
+        for(const auto mode : {Fm::FolderView::DetailedListMode, Fm::FolderView::IconMode}) {
+            window->currentPage()->setViewMode(mode);
+            auto* child = folderView->childView();
+            auto* viewport = child->viewport();
+            QTRY_VERIFY(viewport->width() > 200 && viewport->height() > 100);
+            QVERIFY(child->style() != sharedApplicationStyle);
+            QCOMPARE(qApp->style(), sharedApplicationStyle);
+            const QPoint start(12, viewport->height() - 32);
+            const QPoint end(190, viewport->height() - 10);
+            QTest::mousePress(viewport, Qt::LeftButton, Qt::NoModifier, start);
+            QTest::mouseMove(viewport, end, 20);
+            QCoreApplication::processEvents();
+            const auto image = viewport->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+            QCOMPARE(image.pixelColor((start.x() + end.x()) / 2, (start.y() + end.y()) / 2), QColor(170, 204, 238));
+            QCOMPARE(image.pixelColor(start.x(), (start.y() + end.y()) / 2), QColor(0, 120, 212));
+            QTest::mouseRelease(viewport, Qt::LeftButton, Qt::NoModifier, end);
+        }
+    }
+
+    void nativeXTestSelectionGestures() {
+        if(!qEnvironmentVariableIsSet("EXPLORER_ENABLE_XTEST")) {
+            QSKIP("Set EXPLORER_ENABLE_XTEST=1 on isolated Xephyr :12 to run native XTEST gestures");
+        }
+        if(qEnvironmentVariable("DISPLAY") != QStringLiteral(":12")) {
+            QFAIL("Native XTEST selection test is restricted to isolated Xephyr :12");
+        }
+        QLibrary xtst(QStringLiteral("libXtst.so.6"));
+        QVERIFY2(xtst.load(), "libXtst is required for the native XTEST selection test");
+        using FakeMotion = int (*)(Display*, int, int, int, unsigned long);
+        using FakeButton = int (*)(Display*, unsigned int, int, unsigned long);
+        auto fakeMotion = reinterpret_cast<FakeMotion>(xtst.resolve("XTestFakeMotionEvent"));
+        auto fakeButton = reinterpret_cast<FakeButton>(xtst.resolve("XTestFakeButtonEvent"));
+        QVERIFY(fakeMotion && fakeButton);
+        Display* display = XOpenDisplay(nullptr);
+        QVERIFY(display);
+        struct DisplayCloser { void operator()(Display* d) const { if(d) XCloseDisplay(d); } };
+        std::unique_ptr<Display, DisplayCloser> xdisplay(display);
+
+        QTemporaryDir fixture;
+        QVERIFY(fixture.isValid());
+        const QStringList expected{QStringLiteral("Nested Notes.txt"), QStringLiteral("Readme.txt")};
+        for(const auto& name : expected) {
+            QFile file(fixture.filePath(name));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write("native XTEST selection fixture\n");
+        }
+        QScopedPointer<PCManFM::MainWindow> window(new PCManFM::MainWindow(Fm::FilePath::fromLocalPath(fixture.path().toUtf8().constData())));
+        window->resize(1104, 642);
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window.data()));
+        auto* folderView = window->currentPage()->folderView();
+        QTRY_COMPARE(folderView->model()->rowCount(), 2);
+        auto injectReverseMarquee = [&](Fm::FolderView::ViewMode mode) {
+            window->currentPage()->setViewMode(mode);
+            auto* viewport = folderView->childView()->viewport();
+            QTRY_VERIFY(viewport->width() > 200 && viewport->height() > 100);
+            folderView->selectionModel()->clearSelection();
+            const QPoint start = viewport->mapToGlobal(QPoint(viewport->width() - 8, viewport->height() - 8));
+            const QPoint end = viewport->mapToGlobal(QPoint(8, 8));
+            const int screen = DefaultScreen(display);
+            QVERIFY(fakeMotion(display, screen, start.x(), start.y(), 0));
+            QVERIFY(fakeButton(display, 1, True, 0));
+            QVERIFY(fakeMotion(display, screen, end.x(), end.y(), 80));
+            XFlush(display);
+            QTest::qWait(250);
+            auto* selectionModel = folderView->selectionModel();
+            QModelIndexList selectedIndexes = selectionModel->selectedRows(0);
+            if(mode == Fm::FolderView::IconMode && selectedIndexes.isEmpty()) {
+                for(const auto& index : selectionModel->selectedIndexes()) {
+                    if(index.column() == 0) selectedIndexes << index;
+                }
+            }
+            QCOMPARE(selectedIndexes.size(), 2);
+            QStringList selected;
+            for(const auto& index : selectedIndexes) selected << index.data().toString();
+            selected.sort();
+            QStringList sortedExpected = expected;
+            sortedExpected.sort();
+            QCOMPARE(selected, sortedExpected);
+            if(!qEnvironmentVariable("EXPLORER_TEST_ARTIFACTS").isEmpty()) {
+                const QString suffix = mode == Fm::FolderView::DetailedListMode ? QStringLiteral("details") : QStringLiteral("grid");
+                const auto dir = qEnvironmentVariable("EXPLORER_TEST_ARTIFACTS");
+                QVERIFY(QDir().mkpath(dir));
+                QVERIFY(window->grab().save(QDir(dir).filePath(QStringLiteral("selection-%1-held.png").arg(suffix))));
+            }
+            QVERIFY(fakeButton(display, 1, False, 0));
+            XFlush(display);
+            QTest::qWait(250);
+            if(!qEnvironmentVariable("EXPLORER_TEST_ARTIFACTS").isEmpty()) {
+                const QString suffix = mode == Fm::FolderView::DetailedListMode ? QStringLiteral("details") : QStringLiteral("grid");
+                const auto dir = qEnvironmentVariable("EXPLORER_TEST_ARTIFACTS");
+                QVERIFY(window->grab().save(QDir(dir).filePath(QStringLiteral("selection-%1-released.png").arg(suffix))));
+            }
+        };
+        injectReverseMarquee(Fm::FolderView::DetailedListMode);
+        injectReverseMarquee(Fm::FolderView::IconMode);
+    }
+
     void chromeHasWindowsStructure() {
         QTemporaryDir fixture;
         QVERIFY(fixture.isValid());
