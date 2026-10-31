@@ -86,21 +86,45 @@ def _resolve_artifact(value: str, base_dir: Path):
     return resolved
 
 
-def _has_measured_value(value: Any):
+_MEASUREMENT_METADATA = {"name", "id", "label", "unit", "units", "description", "source", "provenance", "limitations"}
+
+
+def _validate_measurement_numbers(value: Any):
+    # Traverse every leaf before searching for an observation: any() must not
+    # let an earlier valid value hide NaN/Infinity in a neighbouring measurement.
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("measurement numbers must be finite")
+    if isinstance(value, dict):
+        for item in value.values():
+            _validate_measurement_numbers(item)
+    elif isinstance(value, list):
+        for item in value:
+            _validate_measurement_numbers(item)
+
+
+def _contains_observed_value(value: Any):
     if value is None:
         return False
-    if isinstance(value, bool):
-        return True
-    if isinstance(value, (int, float)):
-        return math.isfinite(value)
+    if isinstance(value, (bool, int, float)):
+        return True  # Finite numbers were checked separately; zero/False are data.
     if isinstance(value, str):
-        text = value.strip().lower()
-        return bool(text) and not any(marker in text for marker in ("unknown", "not measured", "not observed"))
+        text = value.strip().lower().replace("_", " ").replace("-", " ")
+        return bool(text) and text not in {"null", "none", "n/a", "nan", "infinity"} and not any(
+            marker in text for marker in ("unknown", "not measured", "not observed", "unmeasured"))
     if isinstance(value, dict):
-        return bool(value) and any(_has_measured_value(item) for item in value.values())
+        if "name" in value:
+            return _contains_observed_value(value.get("value"))
+        return any(_contains_observed_value(item) for key, item in value.items()
+                   if key not in _MEASUREMENT_METADATA)
     if isinstance(value, list):
-        return bool(value) and any(_has_measured_value(item) for item in value)
+        return any(_contains_observed_value(item) for item in value)
     return False
+
+
+def _has_measured_value(value: Any):
+    """Inspect observed payloads, never metric names/units/descriptions."""
+    _validate_measurement_numbers(value)
+    return _contains_observed_value(value)
 
 
 def _normalize_manifest_frames(frames: list[Any]):
@@ -133,9 +157,9 @@ def _normalize_manifest_frames(frames: list[Any]):
             region = [0, 0, width, height]
             extra = {"screen_origin": origin, "region_coordinate_space": "screen"}
         elif isinstance(region, list):
-            extra = {"region_coordinate_space": "image"}
+            extra = {"region_coordinate_space": frame.get("region_coordinate_space", "image")}
         normalized.append({**frame, **extra, "timestamp_ms": timestamp, "region": region,
-                           "timestamp_provenance": {"field": field, "source_value": frame[field], "source_unit": unit}})
+                           "timestamp_provenance": frame.get("timestamp_provenance", {"field": field, "source_value": frame[field], "source_unit": unit})})
     return normalized
 
 
@@ -285,17 +309,23 @@ def validate_manifest(manifest: Any, base_dir: Path | None = None):
     env = manifest.get("environment")
     if not isinstance(env, dict):
         raise ValueError("environment must be an object")
-    normalized_env = {**env, **{key: env.get(_ENV_ALIASES.get(key, key), "unknown") for key in _ENV_FIELDS}}
+    provenance = manifest.get("provenance", {})
+    if not isinstance(provenance, dict):
+        raise ValueError("provenance must be an object")
+    source_env = provenance.get("producer_environment", env)
+    normalized_env = {**env, **{key: env[key] if key in env else env.get(_ENV_ALIASES.get(key, key), "unknown")
+                              for key in _ENV_FIELDS}}
+    if "refresh_hz" not in env and "refresh_rate_hz" in env:
+        normalized_env["refresh_hz"] = env["refresh_rate_hz"] if env["refresh_rate_hz"] is not None else "unknown"
     if isinstance(env.get("dpi"), dict):
         measured_dpi = env["dpi"].get("GetDpiForWindow")
         measured_scale = env["dpi"].get("scale_percent")
         normalized_env["dpi"] = measured_dpi if type(measured_dpi) in (int, float) else "unknown"
-        normalized_env["scale"] = measured_scale / 100 if type(measured_scale) in (int, float) else "unknown"
-    if isinstance(env.get("client_rect_px"), dict):
+        if "scale" not in env:
+            normalized_env["scale"] = measured_scale / 100 if type(measured_scale) in (int, float) else "unknown"
+    if "client_rect" not in env and isinstance(env.get("client_rect_px"), dict):
         rect = env["client_rect_px"].get("client_rect")
         normalized_env["client_rect"] = rect if isinstance(rect, list) else "unknown"
-    if env.get("refresh_rate_hz") is None:
-        normalized_env["refresh_hz"] = "unknown"
     quality_gaps = []
     for key in _ENV_FIELDS:
         value = normalized_env[key]
@@ -313,15 +343,18 @@ def validate_manifest(manifest: Any, base_dir: Path | None = None):
             if key not in quality_gaps:
                 quality_gaps.append(key)
     # These producer fields explicitly report approximations/untrusted values.
-    if "client_rect_px" in env and "approx" in str(env["client_rect_px"]).lower() and "client_rect" not in quality_gaps:
+    if "client_rect" not in source_env and "approx" in str(source_env.get("client_rect_px", "")).lower() and "client_rect" not in quality_gaps:
         quality_gaps.append("client_rect")
-    if "refresh_rate_hz_reported" in env:
+    if "refresh_hz" not in source_env and "refresh_rate_hz" not in source_env and "refresh_rate_hz_reported" in source_env:
         if "refresh_hz" not in quality_gaps:
             quality_gaps.append("refresh_hz")
     quality_gaps = list(dict.fromkeys(quality_gaps))
     cases = manifest.get("cases")
     if not isinstance(cases, list) or not cases:
         raise ValueError("cases must be a non-empty list")
+    artifacts = manifest.get("artifacts", [])
+    if not isinstance(artifacts, list) or any(not isinstance(item, str) or not item for item in artifacts):
+        raise ValueError("manifest artifacts must be a list of non-empty path strings")
     ids = set()
     for case in cases:
         if not isinstance(case, dict) or not isinstance(case.get("id"), str) or not case["id"]:
@@ -333,11 +366,11 @@ def validate_manifest(manifest: Any, base_dir: Path | None = None):
             raise ValueError("case status must be measured, blocked, or not_observed")
         if not isinstance(case.get("artifacts"), list) or not isinstance(case.get("measurements"), (list, dict)) or not isinstance(case.get("limitations"), list):
             raise ValueError("case artifacts and limitations must be lists; measurements must be list or object")
+        has_observation = _has_measured_value(case["measurements"])
         if case["status"] == "measured":
             if not case["artifacts"] or any(not isinstance(item, str) or not item for item in case["artifacts"]):
                 raise ValueError("measured case must include at least one supporting artifact")
-            measurements = case["measurements"]
-            if not _has_measured_value(measurements):
+            if not has_observation:
                 raise ValueError("measured case must include at least one measurement")
     raw_frames = manifest.get("frames", [])
     if not isinstance(raw_frames, list):
@@ -354,7 +387,7 @@ def validate_manifest(manifest: Any, base_dir: Path | None = None):
         if any(type(value) is not int for value in region) or x < 0 or y < 0 or width <= 0 or height <= 0:
             raise ValueError("frame region must use non-negative integer x/y and positive integer width/height")
     if base_dir is not None:
-        paths = []
+        paths = list(artifacts)
         for case in cases:
             paths.extend(case["artifacts"])
         paths.extend(f["file"] for f in frames)
@@ -373,7 +406,7 @@ def validate_manifest(manifest: Any, base_dir: Path | None = None):
     normalized["provenance"] = {"adapter": "schema-v1-alias-and-measurement-container-normalizer",
                                 "producer_environment": dict(env),
                                 "source_frames": raw_frames,
-                                "source_schema_version": manifest["schema_version"]}
+                                "source_schema_version": manifest["schema_version"], **provenance}
     return {"status": "valid", "schema_version": 1, "case_count": len(cases), "frame_count": len(frames),
             "environment": normalized_env, "quality_gaps": quality_gaps,
             "equality_eligible": not quality_gaps, "normalized_manifest": normalized}

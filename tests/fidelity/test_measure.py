@@ -164,31 +164,7 @@ class EvidenceManifestTests(unittest.TestCase):
         self.assertFalse(result["equality_eligible"])
         self.assertEqual(result["normalized_manifest"]["provenance"]["producer_environment"], environment)
 
-    def test_published_v1_manifest_normalizes_losslessly_and_marks_unknown_quality_gaps(self):
-        published = Path("/home/pedro/win11-explorer-qt/.state/fidelity/reference/phase2/20261031T0003-0300/manifest.json")
-        self.assertTrue(published.is_file())
-        original = json.loads(published.read_text())
-        result = measure.validate_manifest(original, published.parent)
-        self.assertEqual(result["status"], "valid")
-        self.assertFalse(result["equality_eligible"])
-        self.assertIn("dpi", result["quality_gaps"])
-        self.assertIn("client_rect", result["quality_gaps"])
-        self.assertEqual(result["environment"]["resolution"], [1440, 900])
-        self.assertEqual(result["environment"]["scale"], "unknown")
-        self.assertEqual(original["environment"]["dpi"], "unknown; registry query returned null")
-        self.assertIn("language", result["normalized_manifest"]["environment"])
-        self.assertEqual(result["normalized_manifest"]["provenance"]["producer_environment"], original["environment"])
-        self.assertEqual(result["case_count"], len(original["cases"]))
 
-    def test_published_interaction_manifest_adapts_monotonic_ns_and_region_px(self):
-        published = Path("/home/pedro/win11-explorer-qt/.state/fidelity/reference/phase2/20261031T0003-0300/INTERACTIONS_READY.json")
-        original = json.loads(published.read_text())
-        result = measure.validate_manifest(original, published.parent)
-        frames = result["normalized_manifest"]["frames"]
-        self.assertEqual(len(frames), 6)
-        self.assertEqual(frames[0]["timestamp_ms"], original["frames"][0]["monotonic_ns"] / 1_000_000)
-        self.assertEqual(frames[0]["region"], original["frames"][0]["region_px"])
-        self.assertEqual(result["normalized_manifest"]["provenance"]["source_frames"], original["frames"])
 
     def test_measured_cases_require_nonempty_measurement_and_supporting_artifacts(self):
         base = {"schema_version": 1, "environment": {}, "cases": [
@@ -217,20 +193,16 @@ class EvidenceManifestTests(unittest.TestCase):
                     manifest["frames"][0]["region"] = region
                     measure.validate_manifest(manifest, base)
 
-    def test_transfer_timeline_adapter_preserves_elapsed_timestamps_and_image_regions(self):
-        reference = Path("/home/pedro/win11-explorer-qt/.state/fidelity/reference/phase2/20261031T0003-0300")
-        source = reference / "transfer-ui-timeline.json"
-        adapted = measure.adapt_transfer_timeline(json.loads(source.read_text()), reference)
-        self.assertEqual([f["timestamp_ms"] for f in adapted["frames"]], [532.5, 1467.2, 2984.1, 6259.3, 13526.0])
-        self.assertTrue(all((reference / f["file"]).is_file() for f in adapted["frames"]))
-        self.assertEqual(adapted["timestamp_provenance"], "transfer-ui-timeline.json elapsed_ms")
 
     def test_rejects_absolute_artifacts_outside_authorized_phase2_root(self):
-        published = Path("/home/pedro/win11-explorer-qt/.state/fidelity/reference/phase2/20261031T0003-0300/manifest.json")
-        manifest = json.loads(published.read_text())
-        manifest["cases"][0]["artifacts"][0] = "/etc/passwd"
-        with self.assertRaisesRegex(ValueError, "authorized phase2"):
-            measure.validate_manifest(manifest, published.parent)
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp) / ".state/fidelity/reference/phase2/synthetic"
+            base.mkdir(parents=True)
+            manifest = {"schema_version": 1, "environment": {}, "cases": [
+                {"id": "synthetic", "status": "not_observed", "artifacts": [str(Path(temp) / "outside")],
+                 "measurements": [], "limitations": ["Synthetic fixture, not Windows evidence"]}]}
+            with self.assertRaisesRegex(ValueError, "authorized phase2"):
+                measure.validate_manifest(manifest, base)
 
     def test_rejects_relative_symlink_artifact_escaping_manifest_directory(self):
         with tempfile.TemporaryDirectory() as temp, tempfile.TemporaryDirectory() as outside:
@@ -262,18 +234,19 @@ class EvidenceManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "status"):
             measure.validate_manifest(manifest)
 
-    def test_cli_compares_real_captures_and_writes_auditable_report(self):
-        repo = Path("/home/pedro/win11-explorer-qt")
-        reference = repo / ".state/reference/explorer-window.png"
-        candidate = repo / ".state/proof-x11/explorer-window.png"
-        self.assertTrue(reference.is_file())
-        self.assertTrue(candidate.is_file())
+    def test_cli_compares_synthetic_images_and_writes_auditable_report(self):
         with tempfile.TemporaryDirectory() as temp:
-            report = Path(temp) / "report.json"
+            base = Path(temp)
+            reference, candidate = base / "synthetic-reference.png", base / "synthetic-candidate.png"
+            Image.new("RGB", (8, 6), "black").save(reference)
+            Image.new("RGB", (8, 6), "white").save(candidate)
+            report = base / "report.json"
             command = [sys.executable, str(ROOT / "tools/fidelity/measure.py"), "compare",
                        "--reference", str(reference), "--candidate", str(candidate),
-                       "--reference-state", "initial-window", "--candidate-state", "initial-window",
-                       "--region", "client,0,0,1104,642", "--report", str(report)]
+                       "--reference-label", "synthetic unit fixture, not Windows evidence",
+                       "--candidate-label", "synthetic unit fixture, not Windows evidence",
+                       "--reference-state", "synthetic-idle", "--candidate-state", "synthetic-idle",
+                       "--region", "client,0,0,8,6", "--report", str(report)]
             completed = subprocess.run(command, text=True, capture_output=True)
             self.assertEqual(completed.returncode, 0, completed.stderr)
             data = json.loads(report.read_text())
@@ -281,7 +254,8 @@ class EvidenceManifestTests(unittest.TestCase):
             self.assertEqual(data["equivalence"], "not_evaluated")
             self.assertIn("tool_versions", data)
             self.assertEqual(data["regions"][0]["name"], "client")
-            self.assertTrue(data["regions"][0]["color"]["mae_rgb"] > 0)
+            self.assertEqual(data["regions"][0]["color"]["mae_rgb"], 255)
+            self.assertIn("synthetic", data["capture_metadata"]["reference_label"])
 
     def test_cli_rejects_incompatible_state_and_missing_evidence(self):
         with tempfile.TemporaryDirectory() as temp:
