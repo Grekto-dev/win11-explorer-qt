@@ -21,15 +21,12 @@ set(QT_MINIMUM_VERSION "6.6.0")
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 
-if(NOT EXISTS "${LIBFMQT_OVERLAY_PREFIX}/lib/libfm-qt6.so.17")
-    message(FATAL_ERROR "LIBFMQT_OVERLAY_PREFIX must name the private libfm-qt ABI overlay; run scripts/fidelity/build-libfm-overlay.sh first")
-endif()
 list(PREPEND CMAKE_PREFIX_PATH "${LIBFMQT_OVERLAY_PREFIX}")
 
 find_package(Qt6DBus ${QT_MINIMUM_VERSION} REQUIRED)
 find_package(Qt6LinguistTools ${QT_MINIMUM_VERSION} REQUIRED)
 find_package(Qt6Widgets ${QT_MINIMUM_VERSION} REQUIRED)
-find_package(fm-qt6 ${LIBFMQT_MINIMUM_VERSION} REQUIRED)
+include(PrivateLibfm)
 find_package(lxqt2-build-tools ${LXQTBT_MINIMUM_VERSION} REQUIRED)
 
 
@@ -37,6 +34,13 @@ message(STATUS "Building ${PROJECT_NAME} with Qt ${Qt6Core_VERSION}")
 
 option(UPDATE_TRANSLATIONS "Update source translation translations/*.ts files" OFF)
 include(GNUInstallDirs)
+# The installed launcher checks the exact artifact selected for this config,
+# rather than guessing a full-version filename from the runtime prefix.
+file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/private-libfm-runtime-$<CONFIG>.txt"
+    CONTENT "$<TARGET_FILE:fm-qt6>\n")
+install(FILES "${CMAKE_BINARY_DIR}/private-libfm-runtime-$<CONFIG>.txt"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/win11-explorer-qt"
+    RENAME private-libfm-runtime.txt)
 option(BUILD_TESTING "Build tests" ON)
 include(CTest)
 include(LXQtPreventInSourceBuilds)
@@ -53,6 +57,24 @@ add_subdirectory(pcmanfm)
 
 if(BUILD_TESTING)
     add_subdirectory(tests)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME overlay-path-safety COMMAND ${Python3_EXECUTABLE}
+        ${PROJECT_SOURCE_DIR}/tests/test_overlay_safety.py -v)
+    add_test(NAME private-libfm-package-guards COMMAND ${Python3_EXECUTABLE}
+        ${PROJECT_SOURCE_DIR}/tests/test_private_libfm_guards.py -v)
+    add_test(NAME private-libfm-fixture-safety COMMAND ${Python3_EXECUTABLE}
+        ${PROJECT_SOURCE_DIR}/tests/test_private_libfm_fixture_safety.py -v)
+    add_test(NAME private-libfm-runtime-safety COMMAND ${Python3_EXECUTABLE}
+        ${PROJECT_SOURCE_DIR}/tests/test_private_libfm_runtime.py -v)
+    set_tests_properties(private-libfm-package-guards private-libfm-fixture-safety
+        private-libfm-runtime-safety PROPERTIES
+        ENVIRONMENT "L4_TEST_PREFIX=${_private_fm_prefix}")
+    add_test(NAME private-libfm-cache-selection COMMAND ${Python3_EXECUTABLE}
+        ${PROJECT_SOURCE_DIR}/tests/test_private_libfm_cmake.py -v)
+    set_tests_properties(private-libfm-cache-selection PROPERTIES
+        ENVIRONMENT "L4_TEST_PREFIX=${_private_fm_prefix}")
+    set_tests_properties(overlay-path-safety private-libfm-package-guards
+        private-libfm-cache-selection PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
 endif()
 
 

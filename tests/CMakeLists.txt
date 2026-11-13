@@ -6,14 +6,14 @@ add_executable(tst_explorer tst_explorer.cpp)
 target_include_directories(tst_explorer PRIVATE ${X11_INCLUDE_DIR})
 target_link_libraries(tst_explorer PRIVATE pcmanfm-core Qt6::Test ${X11_LIBRARIES})
 add_test(NAME explorer-ui COMMAND tst_explorer)
-set_tests_properties(explorer-ui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=qt.qpa.*=false;LD_LIBRARY_PATH=${LIBFMQT_OVERLAY_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}" TIMEOUT 90)
+set_tests_properties(explorer-ui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=qt.qpa.*=false;LD_LIBRARY_PATH=${_private_fm_prefix}/lib:$ENV{LD_LIBRARY_PATH}" TIMEOUT 90)
 add_test(NAME isolation-contract COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_isolation.py)
 add_test(NAME packaging-contract COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_packaging.py)
 find_program(DBUS_RUN_SESSION dbus-run-session REQUIRED)
 add_test(NAME cli-boundary COMMAND ${DBUS_RUN_SESSION} -- ${CMAKE_COMMAND} -E env
     "EXPLORER_BINARY=$<TARGET_FILE:win11-explorer-qt>"
     ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli.py)
-set_tests_properties(cli-boundary PROPERTIES TIMEOUT 60 ENVIRONMENT "LD_LIBRARY_PATH=${LIBFMQT_OVERLAY_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}")
+set_tests_properties(cli-boundary PROPERTIES TIMEOUT 60 ENVIRONMENT "LD_LIBRARY_PATH=${_private_fm_prefix}/lib:$ENV{LD_LIBRARY_PATH}")
 
 # Separate executable owns its icon qrc; production core keeps its single qrc.
 add_subdirectory(icons)
@@ -41,5 +41,5 @@ if(ENABLE_HEAVY_TRANSFER_TESTS)
     target_link_libraries(tst_explorertransfercontroller PRIVATE Qt6::Core Qt6::Test Qt6::Widgets fm-qt6)
     add_test(NAME transfer-controller-heavy COMMAND tst_explorertransfercontroller)
     set_tests_properties(transfer-controller-heavy PROPERTIES TIMEOUT 360 LABELS "heavy;transfer" RUN_SERIAL TRUE
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;LD_LIBRARY_PATH=${LIBFMQT_OVERLAY_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}")
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;LD_LIBRARY_PATH=${_private_fm_prefix}/lib:$ENV{LD_LIBRARY_PATH}")
 endif()

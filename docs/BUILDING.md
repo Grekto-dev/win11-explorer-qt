@@ -19,7 +19,96 @@ uv tool run --from cmake ctest --test-dir .state/build --output-on-failure
 
 `build.sh` usa no máximo dois jobs para a dependência privada e dois para o app, testa Pillow/Xlib em `/usr/bin/python3` antes do configure, seleciona esse intérprete explicitamente e inclui os testes reais de transferência. Sem espaço/interpreter/dependências, falha com explicação; a suite não é pulada para produzir um falso verde. CTest é fornecido pelo pacote CMake (via `uv tool run --from cmake`), mesmo quando `ctest` não consta isoladamente no `PATH`.
 
-O overlay e o app são instalados apenas em `.state/libfm-overlay-prefix` e `.state/install`. `run.sh` coloca o overlay primeiro no `LD_LIBRARY_PATH` e verifica com `ldd` que `libfm-qt6.so` resolve exatamente dentro desse prefix; se a biblioteca estiver ausente ou outra versão vencer a busca, não inicia. Para usar outro prefix privado, passe `--overlay-prefix PATH` a `build.sh` e exporte `LIBFMQT_OVERLAY_PREFIX=PATH` antes de `run.sh`; **PATH precisa ficar dentro do `.state/` desta worktree**. Os scripts recusam prefixos fora dela e não removem overlays compartilhados, `/usr`, `.deps/prefix` ou overlays de outras worktrees.
+O overlay e o app são instalados apenas em `.state/libfm-overlay-prefix` e `.state/install`. `run.sh` coloca o overlay primeiro no `LD_LIBRARY_PATH` e valida, sem executar o `main`, o artefato físico configurado em `share/win11-explorer-qt/private-libfm-runtime.txt`: o arquivo precisa estar nesse prefix, seu SONAME (lido com `readelf`) precisa apontar fisicamente para ele e o `ldd` do binário precisa resolver para o mesmo arquivo; um link de SONAME externo ou outra biblioteca vencendo a busca impede a inicialização. Para usar outro prefix privado, passe `--overlay-prefix PATH` a `build.sh` e exporte `LIBFMQT_OVERLAY_PREFIX=PATH` antes de `run.sh`; **PATH precisa ficar dentro do `.state/` desta worktree**. Os scripts recusam prefixos fora dela e não removem overlays compartilhados, `/usr`, `.deps/prefix` ou overlays de outras worktrees.
+
+## Guardas de fonte, caminhos e seleção de ABI
+
+Antes de qualquer `mkdir`, remoção ou extração do overlay,
+`scripts/fidelity/overlay-preflight.py` verifica os quatro destinos (fonte
+extraída, build da biblioteca, prefixo instalado e build dos testes). Rejeita
+`.state` como destino, `..`, symlinks no destino/ancestrais, escapes da `.state`
+física desta worktree, sobreposição entre destinos e sobreposição com a fonte
+do SDK. `build.sh` também valida seus diretórios de build/install antes de
+reconstruir o overlay. Não canonicalize previamente um argumento para esconder
+um symlink. Esta é uma guarda contra configuração estática insegura; não é uma
+sandbox contra outro processo hostil trocando entradas do filesystem durante o
+build.
+
+A extração usa `git archive` da revisão completa
+`4294f29ed314388f1f6d051ae0128320354e417a`, não `cp` do checkout. Os hashes
+pinados são calculados sobre os blobs dessa revisão; arquivos ignorados,
+untracked e alterações locais não entram no overlay. `LICENSE` (LGPL) e
+`AUTHORS` upstream são preservados. Nenhuma operação escreve em `.deps`.
+
+`cmake/PrivateLibfm.cmake` invalida explicitamente `fm-qt6_DIR` antes da busca
+Config restrita ao prefixo solicitado. Além do arquivo de configuração,
+verifica o target shared importado, os caminhos físicos de todas as localizações
+importadas anunciadas e as localizações efetivamente resolvidas por
+`LOCATION_<CONFIG>` para cada configuração do gerador (ou `LOCATION` sem
+build type). Isso inclui `MAP_IMPORTED_CONFIG_<CONFIG>` e os defaults/cache
+`CMAKE_MAP_IMPORTED_CONFIG_<CONFIG>`, mesmo quando o destino não consta em
+`IMPORTED_CONFIGURATIONS`. A resolução fica com o próprio CMake, preservando
+ordem e entradas vazias dos mapeamentos. Referências primárias:
+[LOCATION](https://cmake.org/cmake/help/latest/prop_tgt/LOCATION_CONFIG.html),
+[MAP_IMPORTED_CONFIG](https://cmake.org/cmake/help/latest/prop_tgt/MAP_IMPORTED_CONFIG_CONFIG.html)
+e `cmTarget::GetMappedConfig` em `Source/cmTarget.cxx` do CMake v3.18.0.
+Os includes de libfm expostos pelo target (inclusive system includes) e cada
+arquivo/diretório da árvore instalada são validados fisicamente. Cada entrada
+é verificada antes de enumerar seu conteúdo: symlinks de subdiretório que
+escapam são recusados sem percorrer a árvore externa. Isso cobre os headers
+`core/job.h`, `core/fileoperationjob.h`, `core/filetransferjob.h` e suas
+dependências internas, não apenas os sentinels. Dependências como GLib
+continuam podendo vir do SDK. Tanto `LIBFMQT_SOURCE_DIR` (nome legado) quanto
+`LIBFMQT_INCLUDE_DIR` devem agora ser o diretório de headers instalado no
+próprio prefixo: `PREFIX/include/libfm-qt6`. Não misture headers internos do
+checkout com uma biblioteca de outro build. A configuração independente do
+harness é protegida pelo mesmo módulo via `CMAKE_PROJECT_<nome>_INCLUDE`, sem
+alterar o código do harness.
+
+Cada configure aceito grava `private-libfm-selection.txt` no build, com config,
+biblioteca real por configuração e diretórios de headers selecionados. Trocar
+`--overlay-prefix` reconfigura essa seleção mesmo com cache antigo. O guard de
+runtime em `run.sh` é uma defesa adicional, não um substituto dessas validações.
+
+Regressões reproduzíveis (somente sandboxes pertencentes à tarefa em `.state`,
+clones/copias mock e sentinels; nunca apontar um teste destrutivo ao SDK real):
+
+```bash
+/usr/bin/python3 tests/test_overlay_safety.py -v
+/usr/bin/python3 tests/test_private_libfm_guards.py -v
+/usr/bin/python3 tests/test_private_libfm_fixture_safety.py -v
+/usr/bin/python3 tests/test_private_libfm_runtime.py -v
+/usr/bin/python3 tests/test_private_libfm_cmake.py -v
+uv tool run --from cmake ctest --test-dir .state/build --output-on-failure
+```
+
+O teste `test_private_libfm_cmake.py` requer um overlay já construído. No CTest,
+`LIBFMQT_OVERLAY_PREFIX` configurado é transmitido explicitamente como
+`L4_TEST_PREFIX`, sem depender dessa variável no shell. Para execução standalone
+com prefixo customizado, use
+`L4_TEST_PREFIX="$PWD/.state/overlay-custom" /usr/bin/python3 tests/test_private_libfm_cmake.py -v`.
+A cópia, as fontes do probe e os builds ficam em um diretório temporário exclusivo
+`private-libfm-*` dentro de `.state`, removido ao terminar, inclusive em falhas.
+Os caminhos físicos da cópia e do cleanup não podem coincidir nem se sobrepor
+(como ancestral, descendente ou alias por symlink) ao input. Nenhum prefixo fixo
+ou overlay de entrada é removido. Os logs do teste de cache persistem em
+`.state/authorized-build/private-libfm-*/`. O teste de segurança separado usa
+somente markers próprios em sandbox, incluindo a colisão com o antigo nome
+`cache-test-prefix`, e executa CTest com apenas um prefixo customizado existente.
+O teste de cache configura com `fm-qt6_DIR` obsoleto no SDK e depois
+com cache no overlay anterior. Um consumer mínimo compilado chama a API nova
+`FileOperation::setDialogFactory`, relinka após a troca e verifica com `dladdr`
+o caminho real da biblioteca carregada, registrando também `ldd`, sem abrir GUI.
+Os cinco testes de overlay, pacote, fixtures, runtime e cache estão registrados no CTest; cada um grava seus logs persistentes em um diretório próprio sob `.state/` (`authorized-build/` para o cache, `build-safety-logs/` para as guardas de pacote, `runtime-safety-logs/` para o runtime), ou em `.state/libfm-logs-*` quando esse nome colide fisicamente com o overlay de entrada.
+Os fixtures negativos de pacote verificam config e biblioteca por symlink,
+localização genérica/per-config externa, mapeamentos target/default/cache em
+single e multi-config, headers individuais e subdiretórios por symlink. Ambos
+os testes de seleção criam seus diretórios de logs, sem depender de execução
+anterior. Mutações opcionais `FM_GUARD_MUTATION=map` e
+`FM_GUARD_MUTATION=headers` retiram só a guarda correspondente na cópia do
+módulo usada pelos fixtures e devem deixar seus testes negativos vermelhos.
+Os testes de fonte verificam que arquivos ocultos/untracked e `AUTHORS` sujo não são copiados,
+preservando o `LICENSE` exato do pin.
 
 O harness de overlay validado por hashes e os patches aplicados ficam em `patches/libfm-qt/` e `scripts/fidelity/build-libfm-overlay.sh`. A API cooperativa de pausa só é oferecida para uma cópia local de um arquivo regular com o checkpoint GIO; os demais modos mantêm a apresentação de transferência sem botão de pausa. O cancelamento continua sendo o cancelamento real de `Fm::FileOperation`.
 
