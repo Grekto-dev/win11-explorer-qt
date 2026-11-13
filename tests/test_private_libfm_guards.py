@@ -19,7 +19,11 @@ class PrivatePackageGuards(unittest.TestCase):
             prefix, foreign = root / 'private', root / 'foreign'
             for directory in (prefix, foreign):
                 (directory / 'lib').mkdir(parents=True)
-                (directory / 'lib/libfm.so').write_text('fixture, not executable')
+                subprocess.run(['cc', '-shared', '-fPIC', '-x', 'c', '-',
+                                '-Wl,-soname,libfm.so.17', '-o', str(directory / 'lib/libfm.so')],
+                               input='int fixture(void) { return 0; }\n', text=True,
+                               capture_output=True, check=True)
+                (directory / 'lib/libfm.so.17').symlink_to('libfm.so')
                 headers = directory / 'include/libfm-qt6'
                 (headers / 'core').mkdir(parents=True)
                 (headers / 'libfmqt.h').touch()
@@ -53,6 +57,14 @@ class PrivatePackageGuards(unittest.TestCase):
                     cmake_setup = f'set(CMAKE_{map_name} "{mapping}")\n'
                 else:
                     cmake_args += [f'-DCMAKE_{map_name}:STRING={mapping}']
+            if scenario == 'external-soname':
+                (prefix / 'lib/libfm.so.17').unlink()
+                (prefix / 'lib/libfm.so.17').symlink_to(foreign / 'lib/libfm.so')
+            elif scenario == 'different-soname':
+                import shutil
+                shutil.copy2(prefix / 'lib/libfm.so', prefix / 'lib/other.so')
+                (prefix / 'lib/libfm.so.17').unlink()
+                (prefix / 'lib/libfm.so.17').symlink_to('other.so')
             if scenario == 'generic-foreign':
                 properties += f' IMPORTED_LOCATION "{foreign}/lib/libfm.so"'
             elif scenario == 'per-config-foreign':
@@ -120,6 +132,20 @@ include("{root}/PrivateLibfm.cmake")
             log = logs / ('package-' + scenario + variant + ('-mutant-' + mutation if mutation else '') + '.log')
             log.write_text(result.stdout + result.stderr)
             return result
+
+    def test_soname_is_the_selected_physical_artifact(self):
+        for scenario in ('external-soname', 'different-soname'):
+            with self.subTest(scenario=scenario):
+                result = self.configure(scenario)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('Private libfm:', result.stderr)
+
+    def test_empty_build_type_and_unavailable_mapping(self):
+        result = self.configure('valid', build_type='')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        result = self.configure('mapped-internal', mapping='MISSING')
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('no location', result.stderr)
 
     def test_individual_header_escapes(self):
         for header in ('core/job.h', 'core/fileoperationjob.h', 'core/filetransferjob.h',

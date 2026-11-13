@@ -10,6 +10,7 @@ from unittest import mock
 
 import test_private_libfm_cmake as fixture
 import test_private_libfm_guards as guards
+from private_libfm_fixture import fixture_plan, preflight
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -98,6 +99,49 @@ class FixtureSafety(unittest.TestCase):
             self.assertEqual(marker.read_bytes(), b'owned sentinel')
             self.assertEqual(list(overlay.iterdir()), [marker])
 
+    def test_sdk_and_source_aliases_are_readonly_including_allocation(self):
+        with tempfile.TemporaryDirectory(prefix='fixture-readonly-', dir=ROOT / '.state') as tmp:
+            root = Path(tmp)
+            sdk = root / '.deps'
+            source = root / 'sources'
+            for directory in (sdk, source):
+                directory.mkdir()
+                (directory / 'marker').write_bytes(b'readonly')
+            overlay = root / 'overlay'
+            overlay.mkdir()
+            for protected in (sdk, source):
+                state = root / '.state'
+                state.symlink_to(protected, target_is_directory=True)
+                before = sorted(p.name for p in protected.iterdir())
+                with self.subTest(protected=protected), self.assertRaises(ValueError):
+                    with fixture_plan(root, overlay, state / 'logs'):
+                        self.fail('allocated inside readonly input')
+                self.assertEqual(sorted(p.name for p in protected.iterdir()), before)
+                state.unlink()
+            (root / '.state').mkdir()
+            for protected in (sdk, source):
+                alias = root / '.state/log-alias'
+                alias.symlink_to(protected, target_is_directory=True)
+                with fixture_plan(root, overlay, alias) as (workspace, logs):
+                    self.assertFalse(logs.is_relative_to(protected))
+                    (logs / 'result').write_text('owned output')
+                    self.assertTrue(workspace.is_dir())
+                self.assertFalse(workspace.exists())
+                self.assertEqual(sorted(p.name for p in protected.iterdir()), ['marker'])
+                self.assertTrue(alias.is_symlink())
+                alias.unlink()
+
+    def test_complete_output_plan_rejects_physical_collisions(self):
+        with tempfile.TemporaryDirectory(prefix='fixture-plan-', dir=ROOT / '.state') as tmp:
+            root = Path(tmp)
+            first = root / 'output'
+            first.mkdir()
+            alias = root / 'alias'
+            alias.symlink_to(first, target_is_directory=True)
+            for other in (first, first / 'child', root, alias, alias / 'child'):
+                with self.subTest(other=other), self.assertRaises(ValueError):
+                    preflight([first, other], [root / 'input'])
+
     def test_ctest_consumes_configured_custom_prefix_without_shell_override(self):
         with tempfile.TemporaryDirectory(prefix='fixture-ctest-', dir=ROOT / '.state') as tmp:
             root = Path(tmp)
@@ -118,6 +162,7 @@ print('CONSUMED=' + str(prefix))
 project(ctest-prefix-fixture NONE)
 include(CTest)
 set(Python3_EXECUTABLE /usr/bin/python3)
+get_filename_component(_private_fm_prefix "${LIBFMQT_OVERLAY_PREFIX}" REALPATH)
 ''' + source[start:end])
             env = dict(os.environ)
             env.pop('L4_TEST_PREFIX', None)
