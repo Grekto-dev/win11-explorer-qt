@@ -9,6 +9,7 @@ import unittest
 from unittest import mock
 
 import test_private_libfm_cmake as fixture
+import test_private_libfm_guards as guards
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -39,6 +40,44 @@ class FixtureSafety(unittest.TestCase):
             self.assertFalse(list((root / '.state').glob('private-libfm-*')),
                              'task-owned temporary workspace was not cleaned')
 
+
+    def test_persistent_logs_never_modify_selected_input(self):
+        for module, logname in ((fixture, 'authorized-build'), (guards, 'build-safety-logs')):
+            for alias in (False, True):
+                with self.subTest(module=module.__name__, alias=alias), tempfile.TemporaryDirectory(
+                        prefix='fixture-log-input-', dir=ROOT / '.state') as tmp:
+                    root = Path(tmp)
+                    overlay = root / '.state' / logname
+                    overlay.mkdir(parents=True)
+                    (overlay / 'marker').write_bytes(b'protected input')
+                    if alias:
+                        target = root / 'input'
+                        overlay.rename(target)
+                        overlay.symlink_to(target, target_is_directory=True)
+                    before = sorted((str(p.relative_to(overlay)), p.read_bytes())
+                                    for p in overlay.rglob('*') if p.is_file())
+                    (root / 'cmake').mkdir()
+                    (root / 'cmake/PrivateLibfm.cmake').write_text(
+                        (ROOT / 'cmake/PrivateLibfm.cmake').read_text())
+                    stop = RuntimeError('configure boundary') if module is fixture else None
+                    with mock.patch.object(module, 'ROOT', root), mock.patch.dict(
+                            os.environ, {'L4_TEST_PREFIX': str(overlay)}), mock.patch.object(
+                            module.subprocess, 'run', side_effect=stop,
+                            return_value=subprocess.CompletedProcess([], 0, 'fixture output', '')):
+                        try:
+                            if module is fixture:
+                                module.PrivateLibfm().test_stale_cache_then_prefix_switch()
+                            else:
+                                module.PrivatePackageGuards().configure('valid')
+                        except (ValueError, RuntimeError):
+                            pass
+                    after = sorted((str(p.relative_to(overlay)), p.read_bytes())
+                                   for p in overlay.rglob('*') if p.is_file())
+                    self.assertEqual(before, after)
+                    self.assertEqual(sorted(p.name for p in overlay.iterdir()), ['marker'])
+                    if alias:
+                        self.assertTrue(overlay.is_symlink())
+                    self.assertFalse(list((root / '.state').glob('private-libfm-*')))
 
     def test_physical_overlap_and_aliases_are_rejected(self):
         with tempfile.TemporaryDirectory(prefix='fixture-paths-', dir=ROOT / '.state') as tmp:

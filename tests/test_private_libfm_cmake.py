@@ -11,40 +11,22 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SDK = (ROOT / '.deps/prefix').resolve()
 
-def require_disjoint(output, overlay):
-    """Reject equal paths, ancestors and aliases before copy or cleanup."""
-    output, overlay = output.resolve(), overlay.resolve()
-    if output.is_relative_to(overlay) or overlay.is_relative_to(output):
-        raise ValueError(f'fixture output overlaps input overlay: {output} / {overlay}')
+from private_libfm_fixture import fixture_plan, require_disjoint
 
 
 @contextmanager
 def fixture_workspace(overlay):
-    state = ROOT / '.state'
-    # Do not even allocate a temporary directory inside the protected input.
-    if state.resolve().is_relative_to(overlay.resolve()):
-        raise ValueError('fixture state directory overlaps input overlay')
-    state.mkdir(parents=True, exist_ok=True)
-    workspace = Path(tempfile.mkdtemp(prefix='private-libfm-', dir=state))
-    try:
-        require_disjoint(workspace, overlay)
-        yield workspace
-    finally:
-        # Only this freshly allocated directory is ever removed. Revalidate
-        # physical paths at cleanup too; never remove a shared/fixed prefix.
-        require_disjoint(workspace, overlay)
-        shutil.rmtree(workspace)
+    with fixture_plan(ROOT, overlay, ROOT / '.state/authorized-build') as (workspace, logs):
+        yield workspace, logs
 
 
 class PrivateLibfm(unittest.TestCase):
     def test_stale_cache_then_prefix_switch(self):
         overlay = Path(os.environ.get('L4_TEST_PREFIX', ROOT / '.state/libfm-overlay-prefix')).resolve()
-        with fixture_workspace(overlay) as workspace:
-            self.exercise_prefix_switch(overlay, workspace)
+        with fixture_workspace(overlay) as (workspace, logs):
+            self.exercise_prefix_switch(overlay, workspace, logs)
 
-    def exercise_prefix_switch(self, overlay, workspace):
-        logs = ROOT / '.state/authorized-build' / workspace.name
-        logs.mkdir(parents=True, exist_ok=True)
+    def exercise_prefix_switch(self, overlay, workspace, logs):
         alternate = workspace / 'alternate-prefix'
         build = workspace / 'cache-regression-build'
         # Full copied prefix so real imported per-config paths are exercised.
@@ -71,11 +53,12 @@ int main() {
 }
 ''')
         for prefix, stale in [(overlay, SDK), (alternate, overlay)]:
-            command = f'''source "$PWD/.deps/env.sh"
-cmake -S "$PWD" -B "{build}" -GNinja -DCMAKE_MAKE_PROGRAM="$NINJA_BIN" \\
+            selected_token = os.path.relpath(prefix, ROOT) if prefix == overlay else str(prefix)
+            command = f'''source "{ROOT}/.deps/env.sh"
+cmake -S "{ROOT}" -B "{build}" -GNinja -DCMAKE_MAKE_PROGRAM="$NINJA_BIN" \\
  -DCMAKE_PREFIX_PATH="{prefix};$SDK_PREFIX;$QT_ROOT" \\
  -Dfm-qt6_DIR="{stale}/share/cmake/fm-qt6" \\
- -DLIBFMQT_OVERLAY_PREFIX="{prefix}" \\
+ -DLIBFMQT_OVERLAY_PREFIX="{selected_token}" \\
  -DLIBFMQT_INCLUDE_DIR="{prefix}/include/libfm-qt6" \\
  -DLIBFMQT_SOURCE_DIR="{prefix}/include/libfm-qt6" \\
  -DCMAKE_MODULE_PATH="$SDK_PREFIX/share/cmake/lxqt2-build-tools/find-modules" \\
@@ -86,6 +69,8 @@ cmake -S "$PWD" -B "{build}" -GNinja -DCMAKE_MAKE_PROGRAM="$NINJA_BIN" \\
             result = subprocess.run(['bash', '-c', command], cwd=ROOT, text=True, capture_output=True)
             (logs / ('configure-' + prefix.name + '.log')).write_text(result.stdout + result.stderr)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            ctest_file = (build / 'CTestTestfile.cmake').read_text()
+            self.assertIn('L4_TEST_PREFIX=' + str(prefix), ctest_file)
             cache = (build / 'CMakeCache.txt').read_text()
             self.assertIn('fm-qt6_DIR:PATH=' + str(prefix / 'share/cmake/fm-qt6'), cache)
             evidence = (build / 'private-libfm-selection.txt').read_text()

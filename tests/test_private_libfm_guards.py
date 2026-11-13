@@ -6,15 +6,16 @@ import subprocess
 import tempfile
 import unittest
 
+from private_libfm_fixture import fixture_plan
+
 ROOT = Path(__file__).resolve().parents[1]
 
 class PrivatePackageGuards(unittest.TestCase):
     def configure(self, scenario, *, build_type='RelWithDebInfo', multi=False,
                   map_source='target', mapping='CUSTOM', header='core/fileoperationjob.h',
                   trace_headers=False):
-        (ROOT / '.state/build-safety-logs').mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix='fm-config-', dir=ROOT / '.state') as tmp:
-            root = Path(tmp)
+        overlay = Path(os.environ.get('L4_TEST_PREFIX', ROOT / '.state/libfm-overlay-prefix')).resolve()
+        with fixture_plan(ROOT, overlay, ROOT / '.state/build-safety-logs') as (root, logs):
             prefix, foreign = root / 'private', root / 'foreign'
             for directory in (prefix, foreign):
                 (directory / 'lib').mkdir(parents=True)
@@ -116,7 +117,7 @@ include("{root}/PrivateLibfm.cmake")
             variant = f'-{map_source}-{build_type}-multi{multi}-{mapping.replace(";", "_")}' if scenario.startswith('mapped-') else ''
             if scenario == 'symlink-header-file':
                 variant = '-' + header.replace('/', '_')
-            log = ROOT / '.state/build-safety-logs' / ('package-' + scenario + variant + ('-mutant-' + mutation if mutation else '') + '.log')
+            log = logs / ('package-' + scenario + variant + ('-mutant-' + mutation if mutation else '') + '.log')
             log.write_text(result.stdout + result.stderr)
             return result
 
