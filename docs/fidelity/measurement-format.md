@@ -91,7 +91,17 @@ A UTF-8 JSON manifest contains:
   provenance is preserved across repeated normalization. Explicit null, malformed
   containers, unsupported units, and conflicting values are rejected with a
   controlled CLI error. Raw keyed and named-record `input_events` produce the
-  same event associations after normalization. `region_px`
+  same event associations after normalization. Missing `input_events` payloads,
+  null, empty text, and the explicit unknown/not-observed/not-measured textual
+  markers described above produce no associations, without rewriting payloads
+  or promoting case status. This also applies to a measured case supported by
+  another actual observation (including zero or false); unknown events alone
+  cannot support a measured case. An observed event payload must be a list of
+  objects with finite numeric, non-boolean `timestamp_ms` values. Unknown records
+  never hide a malformed adjacent record or event; empty lists simply contribute
+  no associations. These event-shape checks are enforced by the timeline consumer;
+  general manifest validation still checks containers/observations and finitude.
+  `region_px`
   is adapted to local-image `region` without changing its coordinates.
   A producer `region` object `{x,y,width,height}` is interpreted as an explicit
   screen-space ROI origin plus captured dimensions: the normalized image crop is
@@ -122,6 +132,18 @@ explicit descriptive values only if the producer knows them; schema validation
 requires a structurally valid container, not fabricated completeness. The
 validator reports `quality_gaps` and `equality_eligible`; a valid container with
 unknown environment values is not eligible for a parity/equality claim.
+
+Timeline dispatch gives shared-container declarations (`environment` or `cases`)
+precedence over legacy metadata. Such documents must pass shared schema v1
+validation even if they also carry `start_utc`, `input`, or `elapsed_ms` extras;
+invalid/ambiguous shared containers cannot fall back to a less strict adapter.
+Raw and normalized shared inputs retain the same quality gaps and associations.
+`schema_version` alone is not a format-family discriminator: producer logs can
+have their own version metadata. Without shared-container declarations, the
+legacy signature requires both `start_utc` and `frames`, and the adapter then
+requires measured `elapsed_ms` on every frame. A lone `start_utc` does not
+identify a supported log. Intermediate guest logs are not silently promoted
+to shared manifests or given a new adapter.
 
 The published `transfer-ui-timeline.json` producer format is adapted explicitly:
 its `elapsed_ms` values are preserved as measured timestamps. Its screenshots
@@ -156,9 +178,14 @@ algorithm behavior only and are not reference/Windows evidence.
 
 Report, heatmap, and overlay destinations are preflighted together, including
 collisions between destinations (equal prefixes, PNG/report overlap, or repeated
-region names that reuse a derived path). Resolved paths and existing file aliases
-are checked before the first result write; rejected plans leave previous artifacts
-intact. Symlink components, parent traversal, non-regular/multiply-linked targets,
+region names that reuse a derived path). Every destination has a file role:
+ancestor/descendant conflicts between planned files are rejected in either order,
+even if neither exists yet. Existing non-directory parent components are also
+rejected during preflight, before an earlier heatmap or overlay can be replaced.
+Resolved paths and existing file aliases are checked before the first result
+write; rejected plans leave previous artifacts intact. This is not a global
+transaction for otherwise valid derived-output plans. Symlink components, parent
+traversal, non-regular/multiply-linked targets,
 source-file aliases, and writes into the recognized phase2 evidence root are
 rejected. Each write uses an exclusive temporary file, no-follow directory
 handles, and atomic replacement, rather than truncating the destination.

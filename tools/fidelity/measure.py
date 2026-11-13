@@ -459,9 +459,13 @@ def _check_output_paths(paths, protected_paths=(), protected_roots=()):
         for component in (path, *path.parents):
             if component.is_symlink():
                 raise ValueError("output path must not contain symlinks")
+            if component != path and component.exists() and not component.is_dir():
+                raise ValueError("output parent must be a directory")
         physical = path.resolve()
-        if any(physical == previous or (path.exists() and previous.exists()
-               and os.path.samefile(path, previous)) for previous in destinations):
+        # All planned destinations are files: neither may parent the other.
+        if any(physical.is_relative_to(previous) or previous.is_relative_to(physical)
+               or (path.exists() and previous.exists()
+                   and os.path.samefile(path, previous)) for previous in destinations):
             raise ValueError("output paths collide with another planned destination")
         destinations.append(physical)
         if any(physical.is_relative_to(root) for root in roots):
@@ -590,7 +594,10 @@ def _timeline(args):
     manifest = json.loads(path.read_text())
     transfer = None
     validation = None
-    if "frames" in manifest and "start_utc" in manifest:
+    # Shared container declarations take precedence over legacy metadata.
+    # schema_version alone is not a family discriminator for producer logs.
+    if (isinstance(manifest, dict) and "frames" in manifest and "start_utc" in manifest
+            and "environment" not in manifest and "cases" not in manifest):
         transfer = adapt_transfer_timeline(manifest, path.parent)
         frames = transfer["frames"]
     else:
@@ -620,6 +627,11 @@ def _timeline(args):
             for record in case["measurements"]:
                 if isinstance(record, dict) and record.get("name") == "input_events":
                     value = record.get("value")
+                    # Explicit absence is not an observed event list. Do not use
+                    # recursive observation detection here: malformed event
+                    # objects/lists must still reach the strict checks below.
+                    if value is None or (isinstance(value, str) and not _contains_observed_value(value)):
+                        continue
                     if not isinstance(value, list) or any(not isinstance(event, dict) for event in value):
                         raise ValueError("input_events must be a list of event objects")
                     events.extend(value)
