@@ -6,6 +6,10 @@
 #include <QStorageInfo>
 #include <QTemporaryDir>
 #include <QElapsedTimer>
+#include <QDeadlineTimer>
+#include <QScopeGuard>
+#include <atomic>
+#include <memory>
 #include <QDateTime>
 #include <QApplication>
 #include <QMessageBox>
@@ -467,31 +471,154 @@ void ExplorerTransferControllerTest::liveOperationPauseButtonWaitsForBackendAck(
     operation.setAutoDestroy(false);
     operation.setDestination(Fm::FilePath::fromLocalPath(destination.toLocal8Bit().constData()));
     QSignalSpy finished(&operation, &Fm::FileOperation::finished);
+    QPointer<Fm::FileOperationJob> job(operation.job());
+
+    // Rendezvous in preparation, not in a replacement copy implementation.
+    // FileOperation's earlier blocking prepared handler still runs normally.
+    // Keep the real worker here until its delayed dialog has requested pause:
+    // otherwise a fast copy may finish before the 1 s dialog factory timer.
+    std::promise<void> releaseWorker;
+    const auto released = releaseWorker.get_future().share();
+    const auto preparationReached = std::make_shared<std::atomic_bool>(false);
+    const auto rendezvousExpired = std::make_shared<std::atomic_bool>(false);
+    connect(job, &Fm::FileOperationJob::preparedToRun, &operation,
+        [released, preparationReached, rendezvousExpired] {
+            *preparationReached = true;
+            *rendezvousExpired = released.wait_for(std::chrono::seconds(15)) != std::future_status::ready;
+        }, Qt::DirectConnection);
+    bool workerReleased = false;
+    const auto release = [&] {
+        if(!workerReleased) {
+            workerReleased = true;
+            releaseWorker.set_value();
+        }
+    };
+
+    QElapsedTimer pauseClock;
+    pauseClock.start();
+    // One finite I/O budget, shared by checkpoint ACK and completion, rather
+    // than a 5 s pause SLA or QTRY's implicit extended-timeout second attempt.
+    // GIO may spend seconds inside one copy_file_range before the callback.
+    QDeadlineTimer ioDeadline(180000);
+    QPointer<ExplorerTransferController> controller;
+    QPointer<QPushButton> pause;
+    const QString copiedPath = QDir(destination).filePath(QFileInfo(source).fileName());
+    const char* phase = "preparing";
+    int responsiveTicks = 0;
+    const auto trace = [&] {
+        const auto s = controller ? controller->snapshot() : ExplorerTransferController::Snapshot{};
+        qInfo().noquote() << "PAUSE_TRACE" << "ms=" << pauseClock.elapsed() << "phase=" << phase
+            << "controller=" << bool(controller) << "state=" << int(s.state)
+            << "request=" << (job && job->pauseRequested()) << "ack=" << (job && job->isPauseAcknowledged())
+            << "current=" << s.currentFileBytes << "finished=" << s.finishedBytes << "total=" << s.totalBytes
+            << "disk=" << QFileInfo(copiedPath).size() << "gui_ticks=" << responsiveTicks
+            << "caption=" << (pause ? pause->text() : QStringLiteral("no-dialog"));
+    };
+    QTimer diagnosticTimer;
+    diagnosticTimer.setInterval(500);
+    connect(&diagnosticTimer, &QTimer::timeout, &operation, trace);
+    QTimer responsivenessProbe;
+    responsivenessProbe.setInterval(25);
+    connect(&responsivenessProbe, &QTimer::timeout, &operation, [&] { ++responsiveTicks; });
+    const auto cleanup = qScopeGuard([&] {
+        diagnosticTimer.stop();
+        responsivenessProbe.stop();
+        release();
+        Fm::FileOperation::setDialogFactory(nullptr);
+        if(job && finished.isEmpty()) {
+            job->cancel();
+            // Do not leave a paused worker accessing an already removed fixture
+            // when an assertion fails. Cancellation still needs a GIO checkpoint.
+            if(!QTest::qWaitFor([&] { return !finished.isEmpty(); }, 180000)) {
+                root.setAutoRemove(false);
+                qCritical().noquote() << "pause test cleanup timed out; retained active fixture" << root.path();
+            }
+        }
+    });
+    diagnosticTimer.start();
+    responsivenessProbe.start();
+    trace();
     QVERIFY(operation.run());
-    QTRY_VERIFY_WITH_TIMEOUT(capturedTransferDialog, 10000);
-    auto* pause = capturedTransferDialog->findChild<QPushButton*>(QStringLiteral("pauseButton"));
+    QVERIFY2(QTest::qWaitFor([&] { return capturedTransferDialog && preparationReached->load(); }, 10000),
+             "real delayed dialog / preparation rendezvous not reached");
+    controller = capturedTransferDialog->findChild<ExplorerTransferController*>();
+    pause = capturedTransferDialog->findChild<QPushButton*>(QStringLiteral("pauseButton"));
+    QVERIFY(controller);
     QVERIFY(pause);
     QVERIFY(pause->isVisible());
+    QVERIFY(pause->isEnabled());
+    QVERIFY(!job->isPauseAcknowledged());
+    phase = "factory-visible-worker-held";
+    trace();
     QTest::mouseClick(pause, Qt::LeftButton);
-    QTRY_COMPARE_WITH_TIMEOUT(pause->text(), QStringLiteral("Retomar"), 5000);
-    const QString copiedPath = QDir(destination).filePath(QFileInfo(source).fileName());
+    const qint64 requestedAt = pauseClock.elapsed();
+    QVERIFY(job->pauseRequested());
+    QVERIFY(!job->isPauseAcknowledged());
+    QCOMPARE(controller->snapshot().state, ExplorerTransferController::State::Pausing);
+    QCOMPARE(pause->text(), QStringLiteral("Pausando…"));
+    QVERIFY(!pause->isEnabled());
+    phase = "request-without-ack-worker-held";
+    trace();
+    // Exercise an actual GUI dispatch while the worker cannot ACK. This makes
+    // the test deterministically reject an optimistic/placebo Resume caption.
+    const int ticksBeforeAck = responsiveTicks;
+    QTest::qWait(75);
+    QVERIFY(responsiveTicks > ticksBeforeAck);
+    QVERIFY(!job->isPauseAcknowledged());
+    QCOMPARE(pause->text(), QStringLiteral("Pausando…"));
+    const qint64 releasedAt = pauseClock.elapsed();
+    release();
+    phase = "awaiting-gio-checkpoint";
+    QVERIFY2(QTest::qWaitFor([&] {
+        return !finished.isEmpty() || (controller && controller->snapshot().paused
+            && pause && pause->text() == QStringLiteral("Retomar") && pause->isEnabled());
+    }, int(ioDeadline.remainingTime())), "real pause ACK / UI not observed within the shared 180 s I/O budget");
+    QVERIFY2(finished.isEmpty(), "copy completed before a partial-copy pause ACK");
+    QVERIFY(controller);
+    QVERIFY(job->pauseRequested());
+    QVERIFY(job->isPauseAcknowledged());
+    QVERIFY(controller->snapshot().paused);
+    QCOMPARE(pause->text(), QStringLiteral("Retomar"));
+    const qint64 ackObservedAt = pauseClock.elapsed();
+    const qint64 ackLatencyMs = ackObservedAt - requestedAt;
     const qint64 pausedBytes = QFileInfo(copiedPath).size();
     QVERIFY(pausedBytes > 0);
     QVERIFY(pausedBytes < qint64(fixtureBytes));
-    QTest::qWait(300);
-    QCOMPARE(QFileInfo(copiedPath).size(), pausedBytes);
+    QVERIFY(!rendezvousExpired->load());
+    phase = "ack-partial-copy";
+    trace();
+    const int ticksWhilePaused = responsiveTicks;
+    // Check throughout the interval, not just two equal endpoint samples.
+    QElapsedTimer stableClock;
+    stableClock.start();
+    while(stableClock.elapsed() < 300) {
+        QTest::qWait(10);
+        QCOMPARE(QFileInfo(copiedPath).size(), pausedBytes);
+        QVERIFY(job->isPauseAcknowledged());
+    }
+    QVERIFY(responsiveTicks >= ticksWhilePaused + 5);
+    const qint64 stableMs = stableClock.elapsed();
+    const int pausedGuiTicks = responsiveTicks - ticksWhilePaused;
     const QString capture = qEnvironmentVariable("EXPLORER_TRANSFER_UI_SCREENSHOT");
     if(!capture.isEmpty()) QVERIFY(capturedTransferDialog->grab().save(capture));
     QTest::mouseClick(pause, Qt::LeftButton);
-    QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 180000);
+    QVERIFY(!job->pauseRequested());
+    phase = "resumed";
+    trace();
+    QVERIFY2(QTest::qWaitFor([&] { return finished.count() == 1; }, int(ioDeadline.remainingTime())),
+             "resume did not complete within the shared 180 s I/O budget");
     QCOMPARE(QFileInfo(copiedPath).size(), qint64(fixtureBytes));
     qInfo().noquote() << "LIVE_TRANSFER_UI"
                       << "fixture_bytes=" << fixtureBytes
                       << "paused_bytes=" << pausedBytes
+                      << "ack_latency_ms=" << ackLatencyMs
+                      << "checkpoint_wait_ms=" << ackObservedAt - releasedAt
+                      << "elapsed_ms=" << pauseClock.elapsed()
+                      << "stable_ms=" << stableMs
+                      << "paused_gui_ticks=" << pausedGuiTicks
                       << "pause_button_ack_label=" << QStringLiteral("Retomar")
                       << "completed_bytes=" << QFileInfo(copiedPath).size()
                       << "screenshot=" << (capture.isEmpty() ? QStringLiteral("not-requested") : capture);
-    Fm::FileOperation::setDialogFactory(nullptr);
 }
 
 void ExplorerTransferControllerTest::defaultDialogFactoryReceivesPointerBasedErrorWithoutTestRegistration() {
