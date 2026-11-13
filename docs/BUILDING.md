@@ -77,6 +77,7 @@ clones/copias mock e sentinels; nunca apontar um teste destrutivo ao SDK real):
 /usr/bin/python3 tests/test_overlay_safety.py -v
 /usr/bin/python3 tests/test_private_libfm_guards.py -v
 /usr/bin/python3 tests/test_private_libfm_fixture_safety.py -v
+/usr/bin/python3 tests/test_private_libfm_runtime.py -v
 /usr/bin/python3 tests/test_private_libfm_cmake.py -v
 uv tool run --from cmake ctest --test-dir .state/build --output-on-failure
 ```
@@ -90,7 +91,7 @@ A cópia, as fontes do probe e os builds ficam em um diretório temporário excl
 `private-libfm-*` dentro de `.state`, removido ao terminar, inclusive em falhas.
 Os caminhos físicos da cópia e do cleanup não podem coincidir nem se sobrepor
 (como ancestral, descendente ou alias por symlink) ao input. Nenhum prefixo fixo
-ou overlay de entrada é removido. Os logs persistem em
+ou overlay de entrada é removido. Os logs do teste de cache persistem em
 `.state/authorized-build/private-libfm-*/`. O teste de segurança separado usa
 somente markers próprios em sandbox, incluindo a colisão com o antigo nome
 `cache-test-prefix`, e executa CTest com apenas um prefixo customizado existente.
@@ -98,7 +99,7 @@ O teste de cache configura com `fm-qt6_DIR` obsoleto no SDK e depois
 com cache no overlay anterior. Um consumer mínimo compilado chama a API nova
 `FileOperation::setDialogFactory`, relinka após a troca e verifica com `dladdr`
 o caminho real da biblioteca carregada, registrando também `ldd`, sem abrir GUI.
-Os cinco testes de overlay, pacote, fixtures, runtime e cache estão registrados no CTest; seus logs persistentes ficam em `.state/authorized-build/`, ou em `.state/libfm-logs-*` quando esse nome colide com o overlay de entrada.
+Os cinco testes de overlay, pacote, fixtures, runtime e cache estão registrados no CTest; cada um grava seus logs persistentes em um diretório próprio sob `.state/` (`authorized-build/` para o cache, `build-safety-logs/` para as guardas de pacote, `runtime-safety-logs/` para o runtime), ou em `.state/libfm-logs-*` quando esse nome colide fisicamente com o overlay de entrada.
 Os fixtures negativos de pacote verificam config e biblioteca por symlink,
 localização genérica/per-config externa, mapeamentos target/default/cache em
 single e multi-config, headers individuais e subdiretórios por symlink. Ambos
