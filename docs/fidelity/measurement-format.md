@@ -24,6 +24,11 @@ A UTF-8 JSON manifest contains:
   inferred DPI, scale, client geometry, or refresh rate. Normalizing again
   preserves the original producer environment, source frames, timestamp units,
   and screen origins in the existing provenance, rather than wrapping copies.
+  A supplied `provenance.producer_environment` must normalize to the same
+  effective environment (including retained producer fields); incomplete or
+  conflicting claims are rejected. Quality checks also inspect the effective
+  input, so a claimed provenance cannot erase a reported-rate gap. This is
+  contract consistency, not cryptographic attestation of the producer.
 - `fixtures`: optional fixture metadata. If present, describe synthetic input,
   logical/allocated sizes, and hashes actually calculated.
 - `artifacts`: optional top-level list of non-empty path strings (for example
@@ -73,7 +78,16 @@ A UTF-8 JSON manifest contains:
   they were equivalent static states or establish causality.
   For published producer frames, `elapsed_ms` is copied as-is and
   `monotonic_ns` is converted to milliseconds by the exact unit factor
-  `1,000,000`; original fields and values remain under provenance. `region_px`
+  `1,000,000`; original fields and values remain under provenance. A supplied
+  frame `timestamp_provenance` must be an object with exactly `field`,
+  `source_value`, and `source_unit`: supported fields are `timestamp_ms` and
+  `elapsed_ms` (ms), or `monotonic_ns` (ns). The source must be finite numeric
+  data matching the canonical timestamp and the original field if still present.
+  The original field may be absent in an already canonical frame; legitimate
+  provenance is preserved across repeated normalization. Explicit null, malformed
+  containers, unsupported units, and conflicting values are rejected with a
+  controlled CLI error. Raw keyed and named-record `input_events` produce the
+  same event associations after normalization. `region_px`
   is adapted to local-image `region` without changing its coordinates.
   A producer `region` object `{x,y,width,height}` is interpreted as an explicit
   screen-space ROI origin plus captured dimensions: the normalized image crop is
@@ -135,3 +149,15 @@ describes only the explicitly bounded metrics, never universal visual parity.
 Optional heatmap and overlay files are derived artifacts and do not alter
 metrics. Preserve source captures unchanged. Synthetic test fixtures verify
 algorithm behavior only and are not reference/Windows evidence.
+
+Report, heatmap, and overlay destinations are preflighted together. Symlink
+components, parent traversal, non-regular/multiply-linked existing targets,
+source-file aliases, and writes into the recognized phase2 evidence root are
+rejected. Each write uses an exclusive temporary file, no-follow directory
+handles, and atomic replacement, rather than truncating the destination.
+The opt-in real-evidence integration applies the same checks to both JSON
+outputs before invoking the CLI. It inventories manifest/support/frame hashes
+before and after, verifies PNG format, and requires 152 distinct resolved frame
+paths, not 152 distinct content hashes (identical captures are legitimate).
+Synthetic sandbox regressions exercise unsafe destinations; never point an
+attack fixture at original Windows captures.

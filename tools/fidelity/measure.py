@@ -116,8 +116,8 @@ def _contains_observed_value(value: Any):
         return bool(text) and text not in {"null", "none", "n/a", "nan", "infinity"} and not any(
             marker in text for marker in ("unknown", "not measured", "not observed", "unmeasured"))
     if isinstance(value, dict):
-        if "name" in value:
-            return _contains_observed_value(value.get("value"))
+        if "name" in value and "value" in value:
+            return _contains_observed_value(value["value"])
         return any(_contains_observed_value(item) for key, item in value.items()
                    if key not in _MEASUREMENT_METADATA)
     if isinstance(value, list):
@@ -162,8 +162,22 @@ def _normalize_manifest_frames(frames: list[Any]):
             extra = {"screen_origin": origin, "region_coordinate_space": "screen"}
         elif isinstance(region, list):
             extra = {"region_coordinate_space": frame.get("region_coordinate_space", "image")}
+        timestamp_provenance = frame.get("timestamp_provenance", {
+            "field": field, "source_value": frame[field], "source_unit": unit})
+        if not isinstance(timestamp_provenance, dict) or set(timestamp_provenance) != {"field", "source_value", "source_unit"}:
+            raise ValueError("timestamp_provenance must contain field, source_value and source_unit")
+        source_field = timestamp_provenance["field"]
+        units = {"timestamp_ms": "ms", "elapsed_ms": "ms", "monotonic_ns": "ns"}
+        if not isinstance(source_field, str) or source_field not in units or timestamp_provenance["source_unit"] != units[source_field]:
+            raise ValueError("timestamp_provenance field and source_unit must name a supported timestamp")
+        source_value = timestamp_provenance["source_value"]
+        if type(source_value) not in (int, float) or not math.isfinite(source_value):
+            raise ValueError("timestamp_provenance source_value must be finite numeric data")
+        source_ms = source_value / 1_000_000 if units[source_field] == "ns" else source_value
+        if source_ms != timestamp or (source_field in frame and frame[source_field] != source_value):
+            raise ValueError("timestamp_provenance does not match frame timestamp")
         normalized.append({**frame, **extra, "timestamp_ms": timestamp, "region": region,
-                           "timestamp_provenance": frame.get("timestamp_provenance", {"field": field, "source_value": frame[field], "source_unit": unit})})
+                           "timestamp_provenance": timestamp_provenance})
     return normalized
 
 
@@ -307,18 +321,7 @@ _ENV_FIELDS = ("build", "theme", "locale", "dpi", "scale", "resolution", "client
 _ALLOWED_STATUS = {"measured", "partial", "blocked", "not_observed"}
 
 
-def validate_manifest(manifest: Any, base_dir: Path | None = None):
-    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
-        raise ValueError("schema_version must be 1")
-    env = manifest.get("environment")
-    if not isinstance(env, dict):
-        raise ValueError("environment must be an object")
-    provenance = manifest.get("provenance", {})
-    if not isinstance(provenance, dict):
-        raise ValueError("provenance must be an object")
-    source_env = provenance.get("producer_environment", env)
-    if not isinstance(source_env, dict):
-        raise ValueError("provenance producer_environment must be an object")
+def _normalize_environment(env):
     normalized_env = {**env, **{key: env[key] if key in env else env.get(_ENV_ALIASES.get(key, key), "unknown")
                               for key in _ENV_FIELDS}}
     if "refresh_hz" not in env and "refresh_rate_hz" in env:
@@ -332,6 +335,25 @@ def validate_manifest(manifest: Any, base_dir: Path | None = None):
     if "client_rect" not in env and isinstance(env.get("client_rect_px"), dict):
         rect = env["client_rect_px"].get("client_rect")
         normalized_env["client_rect"] = rect if isinstance(rect, list) else "unknown"
+    return normalized_env
+
+
+def validate_manifest(manifest: Any, base_dir: Path | None = None):
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+        raise ValueError("schema_version must be 1")
+    env = manifest.get("environment")
+    if not isinstance(env, dict):
+        raise ValueError("environment must be an object")
+    provenance = manifest.get("provenance", {})
+    if not isinstance(provenance, dict):
+        raise ValueError("provenance must be an object")
+    source_env = provenance.get("producer_environment", env)
+    if not isinstance(source_env, dict):
+        raise ValueError("provenance producer_environment must be an object")
+    normalized_env = _normalize_environment(env)
+    source_normalized = _normalize_environment(source_env)
+    if source_normalized != normalized_env:
+        raise ValueError("provenance producer_environment does not match effective environment")
     quality_gaps = []
     for key in _ENV_FIELDS:
         value = normalized_env[key]
@@ -348,11 +370,12 @@ def validate_manifest(manifest: Any, base_dir: Path | None = None):
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
             if key not in quality_gaps:
                 quality_gaps.append(key)
-    # These producer fields explicitly report approximations/untrusted values.
-    if "client_rect" not in source_env and "approx" in str(source_env.get("client_rect_px", "")).lower() and "client_rect" not in quality_gaps:
-        quality_gaps.append("client_rect")
-    if "refresh_hz" not in source_env and "refresh_rate_hz" not in source_env and "refresh_rate_hz_reported" in source_env:
-        if "refresh_hz" not in quality_gaps:
+    # Neither claimed provenance nor a normalized canonical alias can erase
+    # the producer's explicitly reported/approximate quality limitation.
+    for producer in (env, source_env):
+        if "client_rect" not in producer and "approx" in str(producer.get("client_rect_px", "")).lower():
+            quality_gaps.append("client_rect")
+        if "refresh_hz" not in producer and "refresh_rate_hz" not in producer and "refresh_rate_hz_reported" in producer:
             quality_gaps.append("refresh_hz")
     quality_gaps = list(dict.fromkeys(quality_gaps))
     cases = manifest.get("cases")
@@ -504,8 +527,18 @@ def _compare(args):
     ref, cand = Image.open(ref_path), Image.open(cand_path)
     regions = args.region or [("full", None)]
     protected = [ref_path, cand_path]
+    criteria = None
     if args.criteria:
-        protected.append(Path(args.criteria).resolve())
+        criteria_path = Path(args.criteria).resolve()
+        protected.append(criteria_path)
+        criteria = json.loads(criteria_path.read_text())
+        source = criteria.get("source") if isinstance(criteria, dict) else None
+        if not isinstance(source, dict):
+            raise ValueError("criteria source evidence must provide path and sha256")
+        source_path = source.get("path")
+        if not isinstance(source_path, str):
+            raise ValueError("criteria source evidence must provide path and sha256")
+        protected.append(_resolve_artifact(source_path, criteria_path.parent))
     outputs = [args.report] + [f"{prefix}.{name}.png" for prefix in (args.heatmap, args.overlay)
                               if prefix for name, _ in regions]
     _check_output_paths(outputs, protected)
@@ -532,7 +565,6 @@ def _compare(args):
               "capture_metadata": {"reference_label": args.reference_label, "candidate_label": args.candidate_label},
               "regions": output_regions}
     if args.criteria:
-        criteria = json.loads(Path(args.criteria).read_text())
         # Explicit criteria may evaluate named region metrics, never a hidden global aggregate.
         for region in output_regions:
             region["evaluation"] = evaluate_criteria(region["color"], criteria, Path(args.criteria).resolve().parent)
@@ -576,14 +608,25 @@ def _timeline(args):
               "pillow": PILLOW_VERSION}, "timelines": [measure_timeline(frames, path.parent)]}
     event_associations = {}
     if validation is not None:
-        for case in manifest.get("cases", []):
-            measurements = case.get("measurements", {})
-            events = measurements.get("input_events", []) if isinstance(measurements, dict) else []
+        for case in validation["normalized_manifest"]["cases"]:
+            events = []
+            for record in case["measurements"]:
+                if isinstance(record, dict) and record.get("name") == "input_events":
+                    value = record.get("value")
+                    if not isinstance(value, list) or any(not isinstance(event, dict) for event in value):
+                        raise ValueError("input_events must be a list of event objects")
+                    events.extend(value)
             if events:
                 event_associations[case["id"]] = associate_timeline_events(report["timelines"][0], events)
     report["event_associations"] = event_associations
-    Path(args.report).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.report).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    protected = [path, *[_resolve_artifact(frame["file"], path.parent) for frame in frames]]
+    if validation is not None:
+        normalized = validation["normalized_manifest"]
+        artifacts = list(normalized.get("artifacts", []))
+        for case in normalized["cases"]:
+            artifacts.extend(case["artifacts"])
+        protected.extend(_resolve_artifact(item, path.parent) for item in artifacts)
+    _write_output(args.report, (json.dumps(report, indent=2, sort_keys=True) + "\n").encode(), protected)
     print(json.dumps({"report": str(Path(args.report).resolve()), "status": report["status"],
                       "equivalence": report["equivalence"], "frames": len(frames)}))
 

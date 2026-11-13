@@ -14,6 +14,25 @@ import measure
 EVIDENCE_ROOT = os.environ.get("FIDELITY_REAL_EVIDENCE_ROOT", "")
 
 
+def _source_snapshot(manifest, published, expected_frames=152):
+    """Read-only inventory: count physical PNG paths, not distinct contents."""
+    frames = manifest["frames"]
+    paths = [measure._resolve_artifact(frame["file"], published.parent) for frame in frames]
+    if len(frames) != expected_frames or len(set(paths)) != expected_frames:
+        raise ValueError("frame count must match unique resolved PNG paths")
+    for path in paths:
+        with measure.Image.open(path) as image:
+            if image.format != "PNG":
+                raise ValueError("frame evidence must be PNG format")
+            image.verify()
+    artifacts = list(manifest.get("artifacts", []))
+    for case in manifest["cases"]:
+        artifacts.extend(case["artifacts"])
+    paths.extend(measure._resolve_artifact(value, published.parent) for value in artifacts)
+    paths.append(published.resolve())
+    return {str(path): measure._sha256(path) for path in sorted(set(paths))}
+
+
 @unittest.skipUnless(EVIDENCE_ROOT, "Set FIDELITY_REAL_EVIDENCE_ROOT to the real phase2 evidence directory")
 class RealEvidenceIntegrationTests(unittest.TestCase):
     def test_published_v1_manifest_normalizes_losslessly_and_marks_unknown_quality_gaps(self):
@@ -57,6 +76,9 @@ class RealEvidenceIntegrationTests(unittest.TestCase):
         published = Path(EVIDENCE_ROOT) / "20261031T0022-0300/manifest.json"
         original_bytes = published.read_bytes()
         original = json.loads(original_bytes)
+        source_before = _source_snapshot(original, published)
+        self.addCleanup(lambda: self.assertEqual(_source_snapshot(original, published), source_before,
+                                                "Original evidence changed"))
         result = measure.validate_manifest(original, published.parent)
         self.assertEqual(result["frame_count"], 152)
         self.assertEqual(result["environment"]["dpi"], 96)
@@ -73,8 +95,11 @@ class RealEvidenceIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             reports = Path(os.environ.get("FIDELITY_EVIDENCE_REPORT_DIR", temp))
             self.assertFalse(reports.resolve().is_relative_to(Path(EVIDENCE_ROOT).resolve()), "Reports must not modify original evidence")
-            reports.mkdir(parents=True, exist_ok=True)
             report = reports / "real-152-timeline.json"
+            validation_report = reports / "real-152-validation.json"
+            protected = [published, *[measure._resolve_artifact(f["file"], published.parent)
+                                      for f in original["frames"]]]
+            measure._check_output_paths([report, validation_report], protected, [EVIDENCE_ROOT])
             completed = subprocess.run([sys.executable, str(ROOT / "tools/fidelity/measure.py"),
                                         "timeline", str(published), "--report", str(report)],
                                        text=True, capture_output=True)
@@ -86,8 +111,10 @@ class RealEvidenceIntegrationTests(unittest.TestCase):
             summary = {key: result[key] for key in ("status", "frame_count", "quality_gaps", "environment", "equality_eligible")}
             summary.update(equivalence="not_evaluated", environment_parity="not_evaluated",
                            reason="Refresh rate unknown; no measured comparison criteria or candidate supplied")
-            (reports / "real-152-validation.json").write_text(json.dumps(summary, indent=2) + "\n")
+            measure._write_output(validation_report, (json.dumps(summary, indent=2) + "\n").encode(),
+                                  protected, [EVIDENCE_ROOT])
         self.assertEqual(published.read_bytes(), original_bytes)
+        self.assertEqual(_source_snapshot(original, published), source_before)
 
 
 if __name__ == "__main__":
