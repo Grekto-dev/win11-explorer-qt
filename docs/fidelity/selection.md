@@ -30,4 +30,63 @@ Cores são valores RGB efetivamente amostrados em PNGs, não alpha intrínseco: 
 
 A observação foi interativa: XTEST enviado ao app real, captura held/released e estado de seleção visível na UI, incluindo contagem real na barra. Não foi incluído um accessor de teste que leia diretamente `selectedFiles()`/paths em memória; nomes foram conferidos visualmente nas capturas e no manifesto Windows. Não houve mutação de filesystem por esses gestos.
 
-Não medidos na referência: clique/Ctrl/Shift, clique vazio, escape/cancelamento, seleção nas bordas e drag-and-drop. Em particular, não atribuir semântica a Ctrl+Shift+Escape/DND sem nova referência Windows. Nenhum delta apoiado em evidência foi encontrado nesta execução; não foi alterado `view.*`, `tabpage.*` ou libfm-qt.
+Não medidos nesta primeira referência: clique/Ctrl/Shift, clique vazio, escape/cancelamento, seleção nas bordas e drag-and-drop. Este relato é histórico: a rodada abaixo exercita separadamente os quatro casos já associados à referência posterior, sem ampliar a cobertura da primeira captura.
+
+## Ciclo 2: alvo do cleanup e composição (2026-11-12)
+
+Base: `41e4c33ee009b6813535751e47b866226cead9e3`. Evidências novas, nesta worktree: `.state/alpha-proof/cycle2/`. Foi lido o diff completo de 70.728 bytes/11 arquivos (`review-ui-41e-full.diff`, SHA-256 `6db41ed320cbd07a31a9ba8f037adc796094c862c60b32178e58d5f2cea21a0e`), não o artefato truncado.
+
+- Display: CLI, `DISPLAY` e `EXPLORER_XTEST_DISPLAY` precisam coincidir antes do WM e de cada abertura X11, inclusive cleanup. PID/starttime, peer, ancestralidade e flock permanecem. Dois testes sem servidor real interceptam aberturas/input e passaram de RED (uma abertura indevida em cada caso) a GREEN (zero aberturas/injeções). O caso nativo também recusa `--session --display :19` sob ownership real de `:20`, antes de criar `wm.log`.
+- Alpha: apenas o brush local mudou para RGBA `(0,102,204,85)`, mantendo a borda `(0,120,212)`. É um modelo SourceOver inferido dos PNGs, não uma API Windows observada. Na referência grade, ROI inclusivo `(374,398)–(704,417)`: 105 pixels pretos viram `(0,34,68)`; os 6.620 pixels concordam com o modelo dentro de 1 nível/canal. Branco vira `(170,204,238)`.
+- A regressão nos dois modos pinta marcadores preto/branco/colorido pelo delegate real: RED apagava preto com `(170,204,238)`; GREEN exige `(0,34,68)`, `(170,204,238)` e `(40,134,208)`, respectivamente. Verifica borda, ponto externo inalterado, restauração dos marcadores/borda após release e nomes selecionados. Não mudou opacity global, paleta, modelo, fonte, serviço nem ownership/reuso do proxy.
+- N1: cobertura de DragMove esquerdo → Drop NoButton, URLs diferentes, consumo único, enter/leave, modificadores e botão direito passou sem mudar a implementação. O negativo cross-device agora apenas lê/stat de `/proc/self/comm`, comprovando device diferente; não faz Drop/FileOperation sobre esse caminho nem escreve `/dev/shm`.
+
+Build incremental com dois jobs e SDK somente leitura. O cache apontava a um CMake removido; reconfigure do mesmo diretório resolveu, sem reconstruir o prefix. `ldd.log` comprova libfm-qt no overlay privado desta worktree. `ctest-final.log`: 9/9 fora do teste pesado, incluindo suite UI e os seis testes do wrapper.
+
+`native-final/runner-result.json`: exit 0 nos quatro casos nativos anteriores e em `rubberBandCompositesOverContent`, no Xephyr próprio `:20`. PNGs held/released de detalhes/grade foram inspecionados: nomes/ícones visíveis, retângulo ausente após release. `selection-names.json` registra os mesmos dois nomes held/released e composição preservada sobre 153 pixels escuros em detalhes e 192 em grade. `pixel-proof.json` contém análise e hashes dos 19 PNGs; `analyze_pixels.py` permite reproduzi-la.
+
+Limitações registradas, não ocultadas: duas tentativas (`native/` e a repetição posterior `native-complete/`) falharam com zero itens na primeira seleção nativa; `native-retry/` e a rodada completa `native-final/` passaram. Não se afirma estabilidade perfeita; a causa da intermitência não foi demonstrada. O CTest completo ficou em 9/10 (`ctest-full.log`): o teste pesado falhou nos timeouts de ACK de pausa; isoladamente voltou a falhar em `liveOperationPauseButtonWaitsForBackendAck` (`ctest-heavy-retry.log`). Esse subsistema não foi alterado e sua falha não foi atribuída a uma causa sem prova. Não há aprovação independente ou paridade perfeita.
+
+Os snapshots de desktop antes/depois foram idênticos. A baseline histórica já divergia antes (owner D-Bus, applets, MIME e metadados Nemo); a diferença permaneceu idêntica depois. Nenhuma baseline/configuração pessoal foi regravada. Nenhum input foi dirigido a `:0`, `:1` ou VM; o display herdado apenas hospedou o Xephyr.
+
+## Correções da revisão S1/L1/L2/L3/N1 (2026-10-31)
+
+Worktree de correção: `.state/worktrees/fix-ui-review`, base `785bc3b`. Evidências desta rodada ficam na `.state/` dessa worktree, não na `.state/selection-proof/` histórica.
+
+- L1: substituição do ícone em `initStyleOption`, depois da base Qt. A regressão pinta efetivamente um `DecorationRole` magenta com nome conhecido e compara a imagem com a pintura padrão usando o SVG esperado. Verifica também preservação do papel de caminho e do ícone do modelo e fallback para nome desconhecido. Os aliases da lateral traduzem papéis existentes (Home, documentos, downloads, mídia, computador, rede, unidade óptica, lixeira), sem criar caminhos, serviços, contas ou uma entrada OneDrive.
+- L2: cada child view reutiliza seu único proxy de estilo próprio, localizado entre os filhos diretos mesmo quando QSS envolve `style()`. Repetição, navegação e alternância detalhes/ícones preservam esse limite; o estilo global continua vivo e intacto. A regressão de pintura continua verificando separadamente fill RGB `(170,204,238)` e borda `(0,120,212)`.
+- S1: ambos os wrappers convergem para `run_selection_x11.py`; o display é configurável, padrão `:18`, com recusa de `:0`, `:1`, variantes não canônicas, display ocupado e reserva concorrente. `flock` em arquivo persistente no TMPDIR comum é adquirido antes da sondagem/inicialização. Não se remove o arquivo de lock, para não trocar seu inode. O runner exige Xephyr próprio vivo, PID/starttime/parent corretos, executable Xephyr, display no cmdline e peer UNIX `SO_PEERCRED` correspondente antes do WM/input. O binário QtTest valida esses dados e a ancestralidade do wrapper antes de criar QApplication e novamente na conexão de entrada efetiva. Não é sandbox contra código malicioso do mesmo UID.
+- L3: cleanup por escopo em cada marquee sintético/XTEST e nos helpers de clique/DND; conclusão explícita da lambda e curto-circuito impedem o próximo gesto após retorno prematuro. Regressões injetam retorno de falha e exceção depois de pressionar mouse/Ctrl/Shift: o sintético observa os eventos de release e o XTEST consulta o estado real do servidor, exigindo botões/modificadores soltos e uma única tentativa. O cleanup do wrapper é apenas uma proteção adicional contra timeout.
+- N1: a seleção é lida novamente após release nos dois modos e gravada em `selection-names.json`, além das capturas held/released.
+
+### Execução e resultados reais
+
+Reprodução, após o overlay privado já compilado:
+
+```sh
+source .deps/env.sh
+cmake --build .state/build --parallel 2
+uv tool run --from cmake ctest --test-dir .state/build --output-on-failure
+LD_LIBRARY_PATH="$PWD/.state/libfm-overlay-prefix/lib:$LD_LIBRARY_PATH" \
+  /usr/bin/python3 tests/run_selection_x11.py \
+  --binary .state/build/tests/tst_explorer --display :18 \
+  --artifacts .state/native-proof-2 \
+  --case nativeOwnershipRejectsMismatches \
+  --case nativeInputFailureCleanup \
+  --case nativeXTestSelectionGestures \
+  --case nativeExplorerGesturesMatchWindows
+```
+
+`ctest.log`: **10/10 testes passaram**, incluindo `explorer-ui`, wrapper safety e a transferência pesada. A suíte offscreen pula os casos nativos por desenho; a prova separada `native-proof-2/runner-result.json` registra **exitCode 0 nos quatro casos nativos**. `ldd` resolveu libfm-qt para o overlay privado desta worktree.
+
+REDs efetivamente executados: `ui-red.log` (pintura não substituída e três proxies onde deveria haver um); `places-alias-red.log` (user-home sem mapeamento); `cleanup-red.log` (mouse sintético permaneceu pressionado); `ownership-direct-red.log` (binário direto aceitou ausência de ownership); `drop-red.log` (drag direito indevidamente consumido). `wrapper-red.log` mostrou a ausência de exclusão; o caminho de Xephyr morto também excedeu o timeout no wrapper antigo. Os verdes correspondentes e o CTest estão na mesma `.state/`.
+
+O primeiro ensaio com restrição ingênua `buttons()==LeftButton` falhou no DND real (`native-proof/`, `drop-probe/`). O trace registrou DragMove com botão 1 e Drop com botão 0: no XDND, o Drop chega após a soltura. A correção mantém somente a identidade das URLs de um DragMove esquerdo elegível, consome/limpa essa memória em cada movimento/drop e em enter/leave/troca de modo e revalida o destino/filesystem no drop. Nenhum novo motor: MOVE/COPY continuam em libfm-qt. Modificadores, botão direito/ausente sem origem esquerda observada, URLs inválidas/não locais, alvo não diretório e outro filesystem não entram no atalho de MOVE. O teste negativo usa somente fixtures próprias, inclusive uma temporária em `/dev/shm` para comprovar devices distintos.
+
+`native-proof-2/selection-names.json` contém `Nested Notes.txt` e `Readme.txt`, durante e após release, em detalhes e ícones. `native-gesture-comparison.json` contém os nomes selecionados nas etapas Ctrl-toggle/Shift-range/clique vazio e os SHA-256 lidos dos arquivos reais no MOVE e Ctrl-COPY; as capturas de cada etapa estão ao lado. A origem do MOVE desaparece; a do COPY permanece; hashes de destino/origem são comparados no próprio QtTest.
+
+### Limitações e revisão pendente
+
+Não há aprovação independente nesta entrega. Não foram exercitados autoscroll, Escape/cancelamento de seleção, acessibilidade, modos adicionais ou novos gestos Windows, nem medida paridade temporal/geométrica. A inspeção visual independente das novas capturas ainda cabe à integração; os resultados aqui são verificações programáticas e capturas produzidas, não aprovação visual.
+
+A baseline histórica principal de isolamento apresentou diferenças em applets, `mimeapps.list` e metadados de desktop Nemo na consulta após os ensaios. Não foi regravada nem "corrigida"; não houve snapshot anterior desta rodada que permita atribuir essas diferenças. Esta worktree não modifica esses arquivos/configurações. O pai deve reconciliar a baseline antes de declarar isolamento global aprovado. Nenhum input foi enviado ao host: Xephyr usa o display herdado apenas para hospedar sua janela, e todos os eventos injetados desta rodada usaram o servidor próprio `:18`.

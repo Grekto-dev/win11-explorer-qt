@@ -99,13 +99,29 @@ QIcon icon(const char* name) {
 class ExplorerPlacesDelegate final : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
-    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
-        QStyleOptionViewItem styled(option);
-        initStyleOption(&styled, index);
-        const QIcon source = index.data(Qt::DecorationRole).value<QIcon>();
-        const QIcon replacement = ExplorerIcons::icon(source.name());
-        if(!replacement.isNull()) styled.icon = replacement;
-        QStyledItemDelegate::paint(painter, styled, index);
+protected:
+    void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override {
+        QStyledItemDelegate::initStyleOption(option, index);
+        // paint() initializes the option itself: replace only AFTER that base
+        // initialization, without mutating the places model or its actions.
+        const QString source = option->icon.name();
+        // Translate existing Linux places' icon roles, not paths/services. The
+        // bookmark/model/action remains upstream; no OneDrive node is invented.
+        static const QHash<QString, QString> placeRoles{
+            {QStringLiteral("user-home"), QStringLiteral("home")},
+            {QStringLiteral("folder-download"), QStringLiteral("downloads")},
+            {QStringLiteral("folder-downloads"), QStringLiteral("downloads")},
+            {QStringLiteral("folder-documents"), QStringLiteral("documents")},
+            {QStringLiteral("folder-pictures"), QStringLiteral("pictures")},
+            {QStringLiteral("folder-music"), QStringLiteral("music")},
+            {QStringLiteral("folder-videos"), QStringLiteral("videos")},
+            {QStringLiteral("user-desktop"), QStringLiteral("desktop")},
+            {QStringLiteral("network-workgroup"), QStringLiteral("network")},
+            {QStringLiteral("drive-optical"), QStringLiteral("optical-drive")},
+            {QStringLiteral("user-trash"), QStringLiteral("trash")},
+            {QStringLiteral("user-trash-full"), QStringLiteral("trash")}};
+        const QIcon replacement = ExplorerIcons::icon(placeRoles.value(source, source));
+        if(!replacement.isNull()) option->icon = replacement;
     }
 };
 
