@@ -26,6 +26,15 @@ def stop(process):
             process.wait()
 
 
+def verified_target(env, target):
+    # Bind CLI, process display and reserved target before any X11 open/input,
+    # including emergency cleanup. Ownership alone proves only env['DISPLAY'].
+    if env.get('DISPLAY') != target or env.get('EXPLORER_XTEST_DISPLAY') != target:
+        raise RuntimeError('Session display does not match validated target: ' + target)
+    verify_environment(env)
+    return target
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, required=True)
@@ -40,7 +49,7 @@ def main():
     try:
         display_number(args.display)
         if args.session:
-            verify_environment(env)  # Before WM or any input connection.
+            verified_target(env, args.display)  # Before WM or any input connection.
             from Xlib import XK, display
             from Xlib.ext import xtest
             with (artifacts / 'wm.log').open('w') as log:
@@ -50,7 +59,7 @@ def main():
                 try:
                     time.sleep(1)
                     for case in args.case or ('nativeXTestSelectionGestures', 'nativeExplorerGesturesMatchWindows', 'nativeInputFailureCleanup'):
-                        verify_environment(env)
+                        verified_target(env, args.display)
                         with (artifacts / (case + '.log')).open('w') as case_log:
                             try:
                                 result = subprocess.run([str(binary), case], env=env,
@@ -60,8 +69,7 @@ def main():
                                 code = 124
                         results.append({'case': case, 'exitCode': code})
                         # Emergency cleanup is additional to the in-process guards.
-                        verify_environment(env)
-                        d = display.Display(args.display)
+                        d = display.Display(verified_target(env, args.display))
                         try:
                             xtest.fake_input(d, 5, 1)
                             for key in ('Control_L', 'Shift_L'):
@@ -108,10 +116,9 @@ def main():
                         if xephyr.poll() is not None:
                             raise RuntimeError('Xephyr exited before opening ' + args.display)
                         try:
-                            verify_environment(env)
-                            d = display.Display(args.display)
+                            d = display.Display(verified_target(env, args.display))
                             d.close()
-                            verify_environment(env)
+                            verified_target(env, args.display)
                             break
                         except (OSError, RuntimeError):
                             time.sleep(0.1)

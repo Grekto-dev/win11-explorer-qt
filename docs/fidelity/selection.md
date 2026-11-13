@@ -32,6 +32,23 @@ A observação foi interativa: XTEST enviado ao app real, captura held/released 
 
 Não medidos nesta primeira referência: clique/Ctrl/Shift, clique vazio, escape/cancelamento, seleção nas bordas e drag-and-drop. Este relato é histórico: a rodada abaixo exercita separadamente os quatro casos já associados à referência posterior, sem ampliar a cobertura da primeira captura.
 
+## Ciclo 2: alvo do cleanup e composição (2026-11-12)
+
+Base: `41e4c33ee009b6813535751e47b866226cead9e3`. Evidências novas, nesta worktree: `.state/alpha-proof/cycle2/`. Foi lido o diff completo de 70.728 bytes/11 arquivos (`review-ui-41e-full.diff`, SHA-256 `6db41ed320cbd07a31a9ba8f037adc796094c862c60b32178e58d5f2cea21a0e`), não o artefato truncado.
+
+- Display: CLI, `DISPLAY` e `EXPLORER_XTEST_DISPLAY` precisam coincidir antes do WM e de cada abertura X11, inclusive cleanup. PID/starttime, peer, ancestralidade e flock permanecem. Dois testes sem servidor real interceptam aberturas/input e passaram de RED (uma abertura indevida em cada caso) a GREEN (zero aberturas/injeções). O caso nativo também recusa `--session --display :19` sob ownership real de `:20`, antes de criar `wm.log`.
+- Alpha: apenas o brush local mudou para RGBA `(0,102,204,85)`, mantendo a borda `(0,120,212)`. É um modelo SourceOver inferido dos PNGs, não uma API Windows observada. Na referência grade, ROI inclusivo `(374,398)–(704,417)`: 105 pixels pretos viram `(0,34,68)`; os 6.620 pixels concordam com o modelo dentro de 1 nível/canal. Branco vira `(170,204,238)`.
+- A regressão nos dois modos pinta marcadores preto/branco/colorido pelo delegate real: RED apagava preto com `(170,204,238)`; GREEN exige `(0,34,68)`, `(170,204,238)` e `(40,134,208)`, respectivamente. Verifica borda, ponto externo inalterado, restauração dos marcadores/borda após release e nomes selecionados. Não mudou opacity global, paleta, modelo, fonte, serviço nem ownership/reuso do proxy.
+- N1: cobertura de DragMove esquerdo → Drop NoButton, URLs diferentes, consumo único, enter/leave, modificadores e botão direito passou sem mudar a implementação. O negativo cross-device agora apenas lê/stat de `/proc/self/comm`, comprovando device diferente; não faz Drop/FileOperation sobre esse caminho nem escreve `/dev/shm`.
+
+Build incremental com dois jobs e SDK somente leitura. O cache apontava a um CMake removido; reconfigure do mesmo diretório resolveu, sem reconstruir o prefix. `ldd.log` comprova libfm-qt no overlay privado desta worktree. `ctest-final.log`: 9/9 fora do teste pesado, incluindo suite UI e os seis testes do wrapper.
+
+`native-final/runner-result.json`: exit 0 nos quatro casos nativos anteriores e em `rubberBandCompositesOverContent`, no Xephyr próprio `:20`. PNGs held/released de detalhes/grade foram inspecionados: nomes/ícones visíveis, retângulo ausente após release. `selection-names.json` registra os mesmos dois nomes held/released e composição preservada sobre 153 pixels escuros em detalhes e 192 em grade. `pixel-proof.json` contém análise e hashes dos 19 PNGs; `analyze_pixels.py` permite reproduzi-la.
+
+Limitações registradas, não ocultadas: duas tentativas (`native/` e a repetição posterior `native-complete/`) falharam com zero itens na primeira seleção nativa; `native-retry/` e a rodada completa `native-final/` passaram. Não se afirma estabilidade perfeita; a causa da intermitência não foi demonstrada. O CTest completo ficou em 9/10 (`ctest-full.log`): o teste pesado falhou nos timeouts de ACK de pausa; isoladamente voltou a falhar em `liveOperationPauseButtonWaitsForBackendAck` (`ctest-heavy-retry.log`). Esse subsistema não foi alterado e sua falha não foi atribuída a uma causa sem prova. Não há aprovação independente ou paridade perfeita.
+
+Os snapshots de desktop antes/depois foram idênticos. A baseline histórica já divergia antes (owner D-Bus, applets, MIME e metadados Nemo); a diferença permaneceu idêntica depois. Nenhuma baseline/configuração pessoal foi regravada. Nenhum input foi dirigido a `:0`, `:1` ou VM; o display herdado apenas hospedou o Xephyr.
+
 ## Correções da revisão S1/L1/L2/L3/N1 (2026-10-31)
 
 Worktree de correção: `.state/worktrees/fix-ui-review`, base `785bc3b`. Evidências desta rodada ficam na `.state/` dessa worktree, não na `.state/selection-proof/` histórica.

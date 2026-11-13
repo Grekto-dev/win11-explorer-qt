@@ -25,6 +25,7 @@
 #include <QClipboard>
 #include <QMimeData>
 #include <libfm-qt6/pathbar.h>
+#include <libfm-qt6/folderitemdelegate.h>
 #include <QDir>
 #include <QFile>
 #include <QScopedPointer>
@@ -410,6 +411,93 @@ private Q_SLOTS:
         }));
     }
 
+    void rubberBandCompositesOverContent_data() {
+        QTest::addColumn<int>("mode");
+        QTest::newRow("details") << int(Fm::FolderView::DetailedListMode);
+        QTest::newRow("grid") << int(Fm::FolderView::IconMode);
+    }
+    void rubberBandCompositesOverContent() {
+        QFETCH(int, mode);
+        class Markers final : public Fm::FolderItemDelegate {
+        public:
+            using Fm::FolderItemDelegate::FolderItemDelegate;
+            void paint(QPainter* p, const QStyleOptionViewItem& opt, const QModelIndex& index) const override {
+                Fm::FolderItemDelegate::paint(p, opt, index);
+                if(index.column() != 0) return;
+                // Fixed colors independent of selected/hover state: the same
+                // backing content must survive both real painting paths.
+                p->fillRect(QRect(opt.rect.topLeft() + QPoint(12,4), QSize(12,8)), Qt::black);
+                p->fillRect(QRect(opt.rect.topLeft() + QPoint(28,4), QSize(12,8)), Qt::white);
+                p->fillRect(QRect(opt.rect.topLeft() + QPoint(44,4), QSize(12,8)), QColor(60,150,210));
+            }
+        };
+        QTemporaryDir fixture;
+        QVERIFY(fixture.isValid());
+        const QStringList expected{QStringLiteral("Nested Notes.txt"), QStringLiteral("Readme.txt")};
+        for(const auto& name : expected) {
+            QFile file(fixture.filePath(name));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write("alpha regression\n");
+        }
+        PCManFM::MainWindow window(Fm::FilePath::fromLocalPath(fixture.path().toUtf8().constData()));
+        window.resize(1104,642);
+        window.currentPage()->setViewMode(static_cast<Fm::FolderView::ViewMode>(mode));
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto* view = window.currentPage()->folderView();
+        QTRY_COMPARE(view->model()->rowCount(), 2);
+        auto* child = view->childView();
+        auto* original = qobject_cast<Fm::FolderItemDelegate*>(child->itemDelegateForColumn(0));
+        QVERIFY(original);
+        auto* markers = new Markers(child, child);
+        markers->setItemSize(original->itemSize());
+        markers->setIconSize(original->iconSize());
+        markers->setMargins(original->getMargins());
+        child->setItemDelegateForColumn(0, markers);
+        auto* viewport = child->viewport();
+        const auto index = view->model()->index(0,0);
+        QTRY_VERIFY(child->visualRect(index).isValid());
+        const auto origin = child->visualRect(index).topLeft();
+        const QPoint black = origin + QPoint(16,8), white = origin + QPoint(32,8), color = origin + QPoint(48,8);
+        QTest::qWait(50);
+        const auto before = viewport->grab().toImage();
+        QCOMPARE(before.pixelColor(black), QColor(Qt::black));
+        QCOMPARE(before.pixelColor(white), QColor(Qt::white));
+        QCOMPARE(before.pixelColor(color), QColor(60,150,210));
+        const QPoint start(viewport->width()-8, viewport->height()-8), end(2,2);
+        QTest::mousePress(viewport, Qt::LeftButton, Qt::NoModifier, start);
+        const auto release = qScopeGuard([&] { QTest::mouseRelease(viewport, Qt::LeftButton, Qt::NoModifier, end); });
+        QTest::mouseMove(viewport, end, 20);
+        QTest::qWait(250);
+        const auto held = viewport->grab().toImage();
+        const auto artifacts = qEnvironmentVariable("EXPLORER_TEST_ARTIFACTS");
+        const auto suffix = QString::fromLatin1(QTest::currentDataTag());
+        if(!artifacts.isEmpty()) {
+            QVERIFY(QDir().mkpath(artifacts));
+            QVERIFY(before.save(QDir(artifacts).filePath(QStringLiteral("alpha-%1-before.png").arg(suffix))));
+            QVERIFY(held.save(QDir(artifacts).filePath(QStringLiteral("alpha-%1-held.png").arg(suffix))));
+        }
+        QCOMPARE(held.pixelColor(black), QColor(0,34,68));
+        QCOMPARE(held.pixelColor(white), QColor(170,204,238));
+        QCOMPARE(held.pixelColor(color), QColor(40,134,208));
+        QCOMPARE(held.pixelColor(end.x()+1, viewport->height()/2), QColor(0,120,212));
+        const QPoint outside(viewport->width()-3, viewport->height()/2);
+        QCOMPARE(held.pixelColor(outside), before.pixelColor(outside));
+        QTest::mouseRelease(viewport, Qt::LeftButton, Qt::NoModifier, end);
+        QTest::qWait(250);
+        const auto released = viewport->grab().toImage();
+        QCOMPARE(released.pixelColor(black), before.pixelColor(black));
+        QCOMPARE(released.pixelColor(white), before.pixelColor(white));
+        QCOMPARE(released.pixelColor(color), before.pixelColor(color));
+        QCOMPARE(released.pixelColor(end.x()+1, viewport->height()/2), before.pixelColor(end.x()+1, viewport->height()/2));
+        QStringList names;
+        for(const auto& selected : view->selectionModel()->selectedIndexes())
+            if(selected.column() == 0) names << selected.data().toString();
+        names.sort();
+        QCOMPARE(names, expected);
+        if(!artifacts.isEmpty()) QVERIFY(released.save(QDir(artifacts).filePath(QStringLiteral("alpha-%1-released.png").arg(suffix))));
+    }
+
     void localMovePolicyDoesNotClaimUnobservedDrops() {
         QTemporaryDir fixture;
         QFile source(fixture.filePath(QStringLiteral("source.txt")));
@@ -445,17 +533,56 @@ private Q_SLOTS:
                           {QUrl::fromLocalFile(fixture.filePath(QStringLiteral("missing")))}));
         QVERIFY(!consumed(Qt::LeftButton, Qt::NoModifier, Qt::CopyAction | Qt::MoveAction,
                           {QUrl(QStringLiteral("sftp://invalid.example/owned-test"))}));
-        // No mounts/real foreign data: /dev/shm owns a private task fixture.
-        QTemporaryDir other(QStringLiteral("/dev/shm/explorer-drop-test-XXXXXX"));
-        QVERIFY(other.isValid());
-        QFile foreign(other.filePath(QStringLiteral("foreign.txt")));
-        QVERIFY(foreign.open(QIODevice::WriteOnly)); foreign.write("owned fixture"); foreign.close();
+        // Read-only own-process procfs file: no foreign fixture or operation.
+        const QString foreign = QStringLiteral("/proc/self/comm");
+        QFile ownComm(foreign);
+        QVERIFY(ownComm.open(QIODevice::ReadOnly));
+        QVERIFY(!ownComm.readAll().isEmpty());
         struct stat a{}, b{};
         QVERIFY(::stat(source.fileName().toUtf8().constData(), &a) == 0);
-        QVERIFY(::stat(foreign.fileName().toUtf8().constData(), &b) == 0);
-        QVERIFY2(a.st_dev != b.st_dev, "Cross-filesystem regression needs a distinct tmpfs device");
+        QVERIFY(::stat(foreign.toUtf8().constData(), &b) == 0);
+        QVERIFY2(a.st_dev != b.st_dev, "Cross-filesystem regression needs a distinct procfs device");
         QVERIFY(!consumed(Qt::LeftButton, Qt::NoModifier, Qt::CopyAction | Qt::MoveAction,
-                          {QUrl::fromLocalFile(foreign.fileName())}));
+                          {QUrl::fromLocalFile(foreign)}));
+
+        auto leftMove = [&] {
+            return consumed(Qt::LeftButton, Qt::NoModifier, Qt::CopyAction | Qt::MoveAction, {localUrl});
+        };
+        auto drop = [&](const QList<QUrl>& urls, Qt::KeyboardModifiers mods = Qt::NoModifier) {
+            mime.setUrls(urls);
+            QDropEvent event(QPointF(500,400), Qt::CopyAction | Qt::MoveAction, &mime, Qt::NoButton, mods);
+            event.ignore();
+            const bool claimed = probe.eventFilter(probe.childView()->viewport(), &event);
+            if(claimed && (!event.isAccepted() || event.dropAction() != Qt::MoveAction))
+                QTest::qFail("Claimed drop must explicitly accept Move", __FILE__, __LINE__);
+            return claimed;
+        };
+        QVERIFY(!drop({localUrl}));
+        QVERIFY(leftMove());
+        QVERIFY(!drop({QUrl::fromLocalFile(fixture.path())})); // Different URLs consume record.
+        QVERIFY(!drop({localUrl}));
+        for(auto type : {QEvent::DragLeave, QEvent::DragEnter}) {
+            QVERIFY(leftMove());
+            QEvent boundary(type);
+            probe.eventFilter(probe.childView()->viewport(), &boundary);
+            QVERIFY(!drop({localUrl}));
+        }
+        for(auto mods : {Qt::ControlModifier, Qt::ShiftModifier, Qt::AltModifier}) {
+            QVERIFY(leftMove());
+            QVERIFY(!consumed(Qt::LeftButton, mods, Qt::CopyAction | Qt::MoveAction, {localUrl}));
+            QVERIFY(!drop({localUrl}));
+            QVERIFY(leftMove());
+            QVERIFY(!drop({localUrl}, mods));
+            QVERIFY(!drop({localUrl}));
+        }
+        QVERIFY(leftMove());
+        QVERIFY(!consumed(Qt::RightButton, Qt::NoModifier, Qt::CopyAction | Qt::MoveAction, {localUrl}));
+        QVERIFY(!drop({localUrl}));
+        QVERIFY(leftMove());
+        QVERIFY(drop({localUrl}));
+        QVERIFY(!drop({localUrl})); // Single use after an eligible NoButton drop.
+        // No event dispatch after accepting: probe destruction cancels its queued
+        // FileOperation callback. These are state-policy tests, never transfers.
     }
     void nativeOwnershipRejectsMismatches() {
         if(!qEnvironmentVariableIsSet("EXPLORER_ENABLE_XTEST")) QSKIP("Owned Xephyr required");
@@ -468,6 +595,18 @@ private Q_SLOTS:
             QVERIFY(!SelectionOwnership::verify());
         }
         QVERIFY(SelectionOwnership::verify());
+        QTemporaryDir rejected;
+        QVERIFY(rejected.isValid());
+        QProcess mismatched;
+        mismatched.start(QStringLiteral("/usr/bin/python3"), {
+            QDir(QFileInfo(QString::fromUtf8(__FILE__)).absolutePath()).filePath(QStringLiteral("run_selection_x11.py")),
+            QStringLiteral("--session"), QStringLiteral("--display"), QStringLiteral(":19"),
+            QStringLiteral("--binary"), QCoreApplication::applicationFilePath(),
+            QStringLiteral("--artifacts"), rejected.path()});
+        QVERIFY(mismatched.waitForFinished(5000));
+        QCOMPARE(mismatched.exitCode(), 2);
+        QVERIFY(mismatched.readAllStandardError().contains("does not match validated target"));
+        QVERIFY(!QFile::exists(rejected.filePath(QStringLiteral("wm.log"))));
     }
     void nativeInputFailureCleanup() {
         if(!qEnvironmentVariableIsSet("EXPLORER_ENABLE_XTEST")) QSKIP("Owned Xephyr required");
@@ -584,6 +723,11 @@ private Q_SLOTS:
             QVERIFY(fakeMotion(display, screen, end.x(), end.y(), 80));
             XFlush(display);
             QTest::qWait(250);
+            const auto captureDir = qEnvironmentVariable("EXPLORER_TEST_ARTIFACTS");
+            if(!captureDir.isEmpty()) {
+                const auto label = mode == Fm::FolderView::DetailedListMode ? QStringLiteral("details") : QStringLiteral("grid");
+                QVERIFY(window->grab().save(QDir(captureDir).filePath(QStringLiteral("selection-%1-attempt.png").arg(label))));
+            }
             auto* selectionModel = folderView->selectionModel();
             QModelIndexList selectedIndexes = selectionModel->selectedRows(0);
             if(mode == Fm::FolderView::IconMode && selectedIndexes.isEmpty()) {
@@ -598,6 +742,7 @@ private Q_SLOTS:
             QStringList sortedExpected = expected;
             sortedExpected.sort();
             QCOMPARE(selected, sortedExpected);
+            const auto heldContent = viewport->grab().toImage();
             if(!qEnvironmentVariable("EXPLORER_TEST_ARTIFACTS").isEmpty()) {
                 const QString suffix = mode == Fm::FolderView::DetailedListMode ? QStringLiteral("details") : QStringLiteral("grid");
                 const auto dir = qEnvironmentVariable("EXPLORER_TEST_ARTIFACTS");
@@ -616,6 +761,29 @@ private Q_SLOTS:
                 const auto dir = qEnvironmentVariable("EXPLORER_TEST_ARTIFACTS");
                 QVERIFY(window->grab().save(QDir(dir).filePath(QStringLiteral("selection-%1-released.png").arg(suffix))));
             }
+            const auto releasedContent = viewport->grab().toImage();
+            int darkPixels = 0;
+            const QRect interior(12,12,viewport->width()-24,viewport->height()-24);
+            for(const auto& index : selectedIndexes) {
+                const auto area = folderView->childView()->visualRect(index).intersected(interior);
+                for(int y=area.top(); y<=area.bottom(); ++y) {
+                    for(int x=area.left(); x<=area.right(); ++x) {
+                        const auto under = releasedContent.pixelColor(x,y);
+                        if(qMax(under.red(), qMax(under.green(), under.blue())) > 100) continue;
+                        const auto over = heldContent.pixelColor(x,y);
+                        const QColor predicted(qRound(under.red()*2.0/3),
+                                               qRound(under.green()*2.0/3+34),
+                                               qRound(under.blue()*2.0/3+68));
+                        QVERIFY2(qAbs(over.red()-predicted.red()) <= 1
+                                 && qAbs(over.green()-predicted.green()) <= 1
+                                 && qAbs(over.blue()-predicted.blue()) <= 1,
+                                 "Native held marquee erased/changed backing text or icon");
+                        ++darkPixels;
+                    }
+                }
+            }
+            QVERIFY2(darkPixels >= 20, "Need actual dark name/icon pixels under native marquee");
+            observations.insert(suffix + QStringLiteral("-dark-pixels-preserved"), darkPixels);
             complete = true;
             }, releaseInput);
         };

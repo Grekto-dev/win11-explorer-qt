@@ -51,7 +51,9 @@ public:
                      const QWidget* widget = nullptr) const override {
         if(element == CE_RubberBand && option) {
             painter->save();
-            painter->fillRect(option->rect, QColor(170, 204, 238));
+            // SourceOver inferred from held/released reference pixels: white
+            // -> (170,204,238), black -> (0,34,68). Keep backing text/icons.
+            painter->fillRect(option->rect, QColor(0, 102, 204, 85));
             painter->setPen(QColor(0, 120, 212));
             painter->setBrush(Qt::NoBrush);
             painter->drawRect(option->rect.adjusted(0, 0, -1, -1));
