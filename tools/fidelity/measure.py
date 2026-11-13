@@ -7,6 +7,10 @@ import json
 import math
 import platform
 import sys
+import os
+import stat
+import secrets
+from io import BytesIO
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -414,6 +418,70 @@ def validate_manifest(manifest: Any, base_dir: Path | None = None):
             "equality_eligible": not quality_gaps, "normalized_manifest": normalized}
 
 
+def _check_output_paths(paths, protected_paths=(), protected_roots=()):
+    """Preflight every destination, including existing physical components."""
+    sources = [Path(p).resolve() for p in protected_paths]
+    roots = [Path(p).resolve() for p in protected_roots]
+    for source in sources:
+        roots.extend(p for p in source.parents if p.name == "phase2"
+                     and p.parent.name == "reference" and p.parent.parent.name == "fidelity"
+                     and p.parent.parent.parent.name == ".state")
+    for value in paths:
+        path = Path(value).absolute()
+        if ".." in path.parts:
+            raise ValueError("output path must not contain parent traversal")
+        for component in (path, *path.parents):
+            if component.is_symlink():
+                raise ValueError("output path must not contain symlinks")
+        physical = path.resolve()
+        if any(physical.is_relative_to(root) for root in roots):
+            raise ValueError("output path overlaps protected evidence root")
+        if physical in sources or (path.exists() and any(
+                source.exists() and os.path.samefile(path, source) for source in sources)):
+            raise ValueError("output path overlaps source evidence")
+        if path.exists():
+            info = path.stat(follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError("output must be an unlinked regular file")
+
+
+def _write_output(path, payload, protected_paths=(), protected_roots=()):
+    """Atomic replacement through pinned no-follow directory descriptors."""
+    _check_output_paths([path], protected_paths, protected_roots)
+    path = Path(path).absolute()
+    directory = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    temporary = None
+    try:
+        for part in path.parts[1:-1]:
+            try:
+                os.mkdir(part, dir_fd=directory)
+            except FileExistsError:
+                pass
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        try:
+            info = os.stat(path.name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            info = None
+        if info is not None and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
+            raise ValueError("output must be a non-symlink, unlinked regular file")
+        temporary = ".fidelity-" + secrets.token_hex(16)
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=directory)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # rename replaces the directory entry itself, never follows a raced-in symlink.
+        os.replace(temporary, path.name, src_dir_fd=directory, dst_dir_fd=directory)
+        temporary = None
+    finally:
+        if temporary is not None:
+            os.unlink(temporary, dir_fd=directory)
+        os.close(directory)
+
+
 def _parse_region(text: str):
     try:
         name, *coords = text.split(",")
@@ -435,6 +503,12 @@ def _compare(args):
             raise ValueError(f"evidence image not found: {p}")
     ref, cand = Image.open(ref_path), Image.open(cand_path)
     regions = args.region or [("full", None)]
+    protected = [ref_path, cand_path]
+    if args.criteria:
+        protected.append(Path(args.criteria).resolve())
+    outputs = [args.report] + [f"{prefix}.{name}.png" for prefix in (args.heatmap, args.overlay)
+                              if prefix for name, _ in regions]
+    _check_output_paths(outputs, protected)
     output_regions = []
     for name, crop in regions:
         result = compare_region(ref, cand, crop)
@@ -444,10 +518,12 @@ def _compare(args):
             box = _crop_box(crop, ref.size)
             r, c = ref.convert("RGBA").crop(box), cand.convert("RGBA").crop(box)
             diff = ImageChops.difference(r, c).convert("RGB")
-            if args.heatmap:
-                ImageEnhance.Contrast(diff).enhance(4).save(f"{args.heatmap}.{name}.png")
-            if args.overlay:
-                Image.blend(r.convert("RGB"), c.convert("RGB"), .5).save(f"{args.overlay}.{name}.png")
+            for prefix, image in ((args.heatmap, ImageEnhance.Contrast(diff).enhance(4)),
+                                  (args.overlay, Image.blend(r.convert("RGB"), c.convert("RGB"), .5))):
+                if prefix:
+                    buffer = BytesIO()
+                    image.save(buffer, format="PNG")
+                    _write_output(f"{prefix}.{name}.png", buffer.getvalue(), protected)
     report = {"schema_version": 1, "generated_utc": datetime.now(timezone.utc).isoformat(),
               "status": "not_evaluated", "equivalence": "not_evaluated",
               "reference": {"path": str(ref_path), "sha256": _sha256(ref_path), "state": args.reference_state},
@@ -463,8 +539,7 @@ def _compare(args):
         evaluations = [r["evaluation"] for r in output_regions]
         report["status"] = "measured"
         report["equivalence"] = "pass" if all(e["equivalence"] == "pass" for e in evaluations) else "fail"
-    Path(args.report).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.report).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    _write_output(args.report, (json.dumps(report, indent=2, sort_keys=True) + "\n").encode(), protected)
     print(json.dumps({"report": str(Path(args.report).resolve()), "status": report["status"],
                       "equivalence": report["equivalence"], "regions": len(output_regions)}))
 
