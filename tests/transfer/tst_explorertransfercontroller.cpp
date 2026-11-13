@@ -58,6 +58,7 @@ Fm::FileOperationDialog* createProbeDialog(Fm::FileOperation* operation) {
 class ExplorerTransferControllerTest final : public QObject {
     Q_OBJECT
 private Q_SLOTS:
+    void cancellationIsIdempotentDuringSynchronousReentry();
     void backendControlsCannotReopenCompletion();
     void cancellationCannotPassPredicateWaitGap();
     void completionPrecedesDestructiveFinishedHandlers();
@@ -80,6 +81,29 @@ private Q_SLOTS:
     void externalCancellationNotifiesControllerExactlyOnce();
     void directCancellableCancellationWakesPausedCopy();
 };
+
+void ExplorerTransferControllerTest::cancellationIsIdempotentDuringSynchronousReentry() {
+    class CancelJob final : public Fm::FileOperationJob {
+        void exec() override {}
+    } job;
+    job.setAutoDelete(false);
+    ExplorerTransferController controller(&job);
+    QSignalSpy notices(&controller, &ExplorerTransferController::cancellationRequested);
+    QVERIFY(controller.markStarted());
+    int reentries = 0;
+    connect(&job, &Fm::Job::cancelled, &controller, [&] {
+        ++reentries;
+        controller.cancel();
+    }, Qt::DirectConnection);
+    controller.cancel();
+    QVERIFY(job.isCancelled());
+    QVERIFY(controller.snapshot().cancellationRequested);
+    QCOMPARE(reentries, 1);
+    QCOMPARE(notices.count(), 1);
+    QCoreApplication::processEvents();
+    controller.cancel();
+    QCOMPARE(notices.count(), 1);
+}
 
 void ExplorerTransferControllerTest::backendControlsCannotReopenCompletion() {
     class TerminalJob final : public Fm::FileOperationJob {
