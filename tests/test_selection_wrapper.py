@@ -24,18 +24,20 @@ class SelectionWrapperSafety(unittest.TestCase):
     def test_session_rejects_different_target_without_open_or_input(self):
         self.check_session_target(':19')
 
+    def test_session_rejects_different_target_when_owned_target_is_19(self):
+        self.check_session_target(':18', owned_target=':19')
+
     def test_cleanup_rechecks_target_without_open_or_input(self):
         self.check_session_target(':18', change_at_cleanup=True)
 
-    def check_session_target(self, target, change_at_cleanup=False):
-        # Isolate all process/X11 side effects. The ownership seam accepts only
-        # :18; neither a real personal server nor a WM is ever contacted.
+    def check_session_target(self, target, change_at_cleanup=False, owned_target=':18'):
+        # Isolate all process/X11 side effects; no server is ever contacted.
         from Xlib import display
         from Xlib.ext import xtest
         with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as tmp:
-            env = dict(os.environ, DISPLAY=':18', EXPLORER_XTEST_DISPLAY=':18')
+            env = dict(os.environ, DISPLAY=owned_target, EXPLORER_XTEST_DISPLAY=owned_target)
             def verify(environment):
-                if environment['DISPLAY'] != ':18':
+                if environment['DISPLAY'] != owned_target:
                     raise RuntimeError('ownership changed')
             def execute(*args, **kwargs):
                 if change_at_cleanup:
@@ -87,7 +89,7 @@ class SelectionWrapperSafety(unittest.TestCase):
         if not binary.is_file():
             self.fail('Build tst_explorer before running ownership regression')
         env = dict(os.environ, DISPLAY=':18', EXPLORER_XTEST_DISPLAY=':18',
-                   EXPLORER_ENABLE_XTEST='1', QT_QPA_PLATFORM='offscreen')
+                   EXPLORER_ENABLE_XTEST='1', QT_QPA_PLATFORM='xcb')
         for name in ('EXPLORER_XSERVER_PID', 'EXPLORER_XSERVER_START',
                      'EXPLORER_XOWNER_PID', 'EXPLORER_XOWNER_START'):
             env.pop(name, None)

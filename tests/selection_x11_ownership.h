@@ -19,6 +19,20 @@ inline QList<QByteArray> stat(qint64 pid) {
     auto text = read(QStringLiteral("/proc/%1/stat").arg(pid));
     return text.mid(text.lastIndexOf(')') + 2).simplified().split(' ');
 }
+// Qt 6.8.3 QGuiApplicationPrivate::createPlatformIntegration() consumes
+// -platform/-platformpluginpath (also --); QXcbIntegration consumes -display.
+// Reject rather than strip: QtTest case/report arguments remain untouched.
+// Require one explicit backend, never environment-driven fallback selection.
+inline bool qtRoutingAllowed(int argc, char* const* argv) {
+    if(qgetenv("QT_QPA_PLATFORM") != "xcb") return false;
+    for(int i = 1; i < argc; ++i) {
+        QByteArray arg(argv[i]);
+        if(arg.startsWith("--")) arg.remove(0, 1);
+        arg = arg.split('=').first();
+        if(arg == "-display" || arg == "-platform" || arg == "-platformpluginpath") return false;
+    }
+    return true;
+}
 inline bool verify(Display* display = nullptr) {
     const auto target = qEnvironmentVariable("EXPLORER_XTEST_DISPLAY");
     if(!QRegularExpression(QStringLiteral("^:(?:[2-9]|[1-9][0-9]+)$")).match(target).hasMatch()

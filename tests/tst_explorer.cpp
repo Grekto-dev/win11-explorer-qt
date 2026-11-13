@@ -584,6 +584,78 @@ private Q_SLOTS:
         // No event dispatch after accepting: probe destruction cancels its queued
         // FileOperation callback. These are state-policy tests, never transfers.
     }
+    void qtRoutingGuardDoesNotConsumeQtTestArguments() {
+        const bool wasSet = qEnvironmentVariableIsSet("QT_QPA_PLATFORM");
+        const auto saved = qgetenv("QT_QPA_PLATFORM");
+        const auto restore = qScopeGuard([&] {
+            if(wasSet) qputenv("QT_QPA_PLATFORM", saved);
+            else qunsetenv("QT_QPA_PLATFORM");
+        });
+        qputenv("QT_QPA_PLATFORM", "xcb");
+        auto allowed = [](QList<QByteArray> args) {
+            QList<char*> argv;
+            for(auto& arg : args) argv.append(arg.data());
+            return SelectionOwnership::qtRoutingAllowed(argv.size(), argv.data());
+        };
+        // Pure routing policy: these strings never reach XOpenDisplay or Qt.
+        for(const auto& option : {QByteArray("-display"), QByteArray("--display"),
+                                 QByteArray("-platform"), QByteArray("--platform"),
+                                 QByteArray("-platformpluginpath"), QByteArray("--platformpluginpath")}) {
+            QVERIFY(!allowed({"test", option, "unowned-route"}));
+            QVERIFY(!allowed({"test", option + "=unowned-route"}));
+            QVERIFY(!allowed({"test", option}));
+        }
+        QVERIFY(allowed({"test", "-o", "report.xml,junitxml", "-v1", "case:row"}));
+        QVERIFY(allowed({"test", "-functions"}));
+        QVERIFY(allowed({"test", "-datatags"}));
+        for(const auto& platform : {QByteArray("offscreen"), QByteArray("xcb;offscreen"), QByteArray("xcb:display=unowned-route"), QByteArray()}) {
+            qputenv("QT_QPA_PLATFORM", platform);
+            QVERIFY(!allowed({"test"}));
+        }
+        qunsetenv("QT_QPA_PLATFORM");
+        QVERIFY(!allowed({"test"}));
+    }
+    void nativeQtRoutingRejectsOverrides() {
+        if(!qEnvironmentVariableIsSet("EXPLORER_ENABLE_XTEST")) QSKIP("Owned Xephyr required");
+        QVERIFY(SelectionOwnership::verify());
+        const QString target = qEnvironmentVariable("EXPLORER_XTEST_DISPLAY");
+        const QList<QStringList> routes = {
+            {QStringLiteral("-platform"), QStringLiteral("offscreen")},
+            {QStringLiteral("--platform"), QStringLiteral("offscreen")},
+            {QStringLiteral("-display"), target},
+            {QStringLiteral("--display"), target},
+            {QStringLiteral("-platformpluginpath"), QStringLiteral("/nonexistent")}
+        };
+        for(const auto& route : routes) {
+            QProcess child;
+            auto arguments = route;
+            arguments << QStringLiteral("defaultSettingsMatchExplorerDensity");
+            child.start(QCoreApplication::applicationFilePath(), arguments);
+            QVERIFY(child.waitForFinished(5000));
+            QCOMPARE(child.exitCode(), 2);
+            QVERIFY(child.readAllStandardError().contains("XTEST Qt routing rejected"));
+            QVERIFY(!child.readAllStandardOutput().contains("Start testing"));
+        }
+        for(const auto& platform : {QStringLiteral("offscreen"), QStringLiteral("xcb;offscreen"), QString()}) {
+            QProcess child;
+            auto environment = QProcessEnvironment::systemEnvironment();
+            environment.insert(QStringLiteral("QT_QPA_PLATFORM"), platform);
+            child.setProcessEnvironment(environment);
+            child.start(QCoreApplication::applicationFilePath(), {QStringLiteral("defaultSettingsMatchExplorerDensity")});
+            QVERIFY(child.waitForFinished(5000));
+            QCOMPARE(child.exitCode(), 2);
+            QVERIFY(child.readAllStandardError().contains("XTEST Qt routing rejected"));
+        }
+        QTemporaryDir reports;
+        QVERIFY(reports.isValid());
+        QProcess child;
+        const auto report = reports.filePath(QStringLiteral("result.xml"));
+        child.start(QCoreApplication::applicationFilePath(), {
+            QStringLiteral("defaultSettingsMatchExplorerDensity"), QStringLiteral("-o"), report + QStringLiteral(",junitxml")});
+        QVERIFY(child.waitForFinished(5000));
+        QCOMPARE(child.exitCode(), 0);
+        QVERIFY(QFile::exists(report));
+    }
     void nativeOwnershipRejectsMismatches() {
         if(!qEnvironmentVariableIsSet("EXPLORER_ENABLE_XTEST")) QSKIP("Owned Xephyr required");
         QVERIFY(SelectionOwnership::verify());
@@ -597,10 +669,15 @@ private Q_SLOTS:
         QVERIFY(SelectionOwnership::verify());
         QTemporaryDir rejected;
         QVERIFY(rejected.isValid());
+        // Assert distinctness before even starting the runner: a matching target
+        // would start another WM instead of exercising its rejection path.
+        const QString target = qEnvironmentVariable("EXPLORER_XTEST_DISPLAY");
+        const QString mismatchedTarget = target == QStringLiteral(":2") ? QStringLiteral(":3") : QStringLiteral(":2");
+        QVERIFY(mismatchedTarget != qEnvironmentVariable("EXPLORER_XTEST_DISPLAY"));
         QProcess mismatched;
         mismatched.start(QStringLiteral("/usr/bin/python3"), {
             QDir(QFileInfo(QString::fromUtf8(__FILE__)).absolutePath()).filePath(QStringLiteral("run_selection_x11.py")),
-            QStringLiteral("--session"), QStringLiteral("--display"), QStringLiteral(":19"),
+            QStringLiteral("--session"), QStringLiteral("--display"), mismatchedTarget,
             QStringLiteral("--binary"), QCoreApplication::applicationFilePath(),
             QStringLiteral("--artifacts"), rejected.path()});
         QVERIFY(mismatched.waitForFinished(5000));
@@ -1030,7 +1107,12 @@ private Q_SLOTS:
 };
 
 int main(int argc, char** argv) {
-    if(qEnvironmentVariableIsSet("EXPLORER_ENABLE_XTEST") && !SelectionOwnership::verify()) {
+    const bool native = qEnvironmentVariableIsSet("EXPLORER_ENABLE_XTEST");
+    if(native && !SelectionOwnership::qtRoutingAllowed(argc, argv)) {
+        fprintf(stderr, "XTEST Qt routing rejected: use runner xcb environment without routing overrides\n");
+        return 2;
+    }
+    if(native && !SelectionOwnership::verify()) {
         fprintf(stderr, "XTEST ownership rejected: use run_selection_x11.py with a task-owned Xephyr\n");
         return 2;
     }
@@ -1039,6 +1121,14 @@ int main(int argc, char** argv) {
     qputenv("XDG_CONFIG_HOME", config.path().toUtf8());
     qputenv("XDG_CACHE_HOME", (config.path() + QStringLiteral("/cache")).toUtf8());
     PCManFM::Application app(argc, argv);
+    if(native) {
+        auto* x11 = app.nativeInterface<QNativeInterface::QX11Application>();
+        Display* qtDisplay = x11 ? x11->display() : nullptr;
+        if(!qtDisplay || !SelectionOwnership::verify(qtDisplay)) {
+            fprintf(stderr, "XTEST Qt connection ownership rejected\n");
+            return 2;
+        }
+    }
     app.init();
     app.settings().load(QStringLiteral("ui-test"));
     const auto folderConfig = (config.path() + QStringLiteral("/folders.conf")).toUtf8();
