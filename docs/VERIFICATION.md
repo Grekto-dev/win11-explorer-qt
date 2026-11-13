@@ -79,3 +79,62 @@ Wayland, acessibilidade completa, todas as opções herdadas, operações
 complexas de rede/montagem, restauração da lixeira, recuperação após falhas
 ou conflitos extensivos de arquivos. Sidebar, menus, diálogos, tema escuro
 e páginas especiais continuam como trabalho de reconstrução posterior.
+
+## Fase 2 (candidato de integração `phase2/integration-r2`)
+
+Esta seção registra o que foi exercitado depois do primeiro marco. **Não é uma
+declaração de paridade com o Explorer do Windows.**
+
+### Exercitado nesta integração
+
+- Build limpo (`./scripts/build.sh Debug`) do overlay privado de libfm-qt e do
+  aplicativo, seguido de **CTest 18/18**: contratos de isolamento/pacote/CLI,
+  UI Qt, SVGs, harness de evidências, guardas do overlay/CMake, segurança do
+  wrapper X11, teste pesado de transferência (cópia real de 2 GiB com hash,
+  pausa com ACK, cancelamento) e `job-cancel-lifetime`.
+- `ldd` dos binários de teste e do aplicativo resolve `libfm-qt6.so.17` no
+  overlay privado desta árvore; `scripts/fidelity/check-private-libfm-runtime.py`
+  confere o artefato físico, o SONAME e o `ldd` sem executar o `main`.
+- Seis casos nativos de seleção/ownership em Xephyr próprio (roteamento Qt,
+  limpeza de entrada, gestos Ctrl/Shift/vazio/DND, composição alfa do retângulo
+  de seleção) e os sete checks de `tests/e2e_x11.py` com o executável
+  instalado.
+- Verificação de isolamento antes/depois de cada rodada: manipulador de
+  diretórios, proprietário de FileManager1, applets do Cinnamon, desktop do
+  Nemo e MIME inalterados **durante as rodadas**.
+
+### Correções de segurança e confiabilidade desta fase
+
+- Cancelamento de `Fm::Job` não acessa o job depois de acordar o worker
+  (`requestCancellation()` retém o gate de pausa e o `GCancellable` antes);
+  regressão determinística em `tests/transfer/tst_job_cancel_lifetime.cpp`.
+  O chamador continua responsável por manter o `Job` vivo até entrar na chamada.
+- O controller emite `cancellationRequested` uma vez sob reentrância.
+- Saídas de fixtures/logs do build, prefixo canônico transmitido ao CTest e
+  validação física do SONAME antes de iniciar o aplicativo.
+- Plano de saída do harness rejeita colisões (incluindo ancestralidade
+  arquivo/diretório); `input_events` desconhecido e o roteamento de formato de
+  manifesto seguem o schema declarado.
+- Testes X11 não dependem de `TMPDIR`; a rota Qt efetiva é vinculada ao display
+  próprio antes de qualquer entrada.
+
+### Limitações conhecidas (não resolvidas)
+
+- **Controles de transferência do Windows não foram observados**: Mais
+  detalhes, pausa, retomada e cancelamento na referência; apenas progresso vivo
+  e hash de cópias de 2/4 GiB foram medidos. O comportamento da pausa no Linux
+  é cooperativo, restrito a COPY de arquivo regular local, e não é comparado
+  com o Windows.
+- Taxa de atualização da referência desconhecida (capturas de ~15 fps);
+  `equality_eligible=false` e `equivalence=not_evaluated` nos relatórios.
+  Curvas de animação não foram reproduzidas.
+- Escape durante o retângulo de seleção, bordas/autoscroll e estados de ícones
+  não observados continuam sem referência.
+- Estabilidade do teste nativo de seleção: duas execuções antigas tiveram zero
+  itens na primeira seleção, sem causa demonstrada; as execuções desta rodada
+  passaram.
+- `.config/nemo/desktop-metadata` difere da baseline original de 2026-10-30. O
+  arquivo é do Nemo, que está em execução; não há evidência que atribua a
+  mudança a este projeto, e a baseline original não foi substituída.
+- Wayland, pacote `.deb` e reprodutibilidade pública completa não foram
+  validados.
