@@ -19,7 +19,7 @@ uv tool run --from cmake ctest --test-dir .state/build --output-on-failure
 
 `build.sh` usa no máximo dois jobs para a dependência privada e dois para o app, testa Pillow/Xlib em `/usr/bin/python3` antes do configure, seleciona esse intérprete explicitamente e inclui os testes reais de transferência. Sem espaço/interpreter/dependências, falha com explicação; a suite não é pulada para produzir um falso verde. CTest é fornecido pelo pacote CMake (via `uv tool run --from cmake`), mesmo quando `ctest` não consta isoladamente no `PATH`.
 
-O overlay e o app são instalados apenas em `.state/libfm-overlay-prefix` e `.state/install`. `run.sh` coloca o overlay primeiro no `LD_LIBRARY_PATH` e verifica com `ldd` que `libfm-qt6.so` resolve exatamente dentro desse prefix; se a biblioteca estiver ausente ou outra versão vencer a busca, não inicia. Para usar outro prefix privado, passe `--overlay-prefix PATH` a `build.sh` e exporte `LIBFMQT_OVERLAY_PREFIX=PATH` antes de `run.sh`; **PATH precisa ficar dentro do `.state/` desta worktree**. Os scripts recusam prefixos fora dela e não removem overlays compartilhados, `/usr`, `.deps/prefix` ou overlays de outras worktrees.
+O overlay e o app são instalados apenas em `.state/libfm-overlay-prefix` e `.state/install`. `run.sh` coloca o overlay primeiro no `LD_LIBRARY_PATH` e valida, sem executar o `main`, o artefato físico configurado em `share/win11-explorer-qt/private-libfm-runtime.txt`: o arquivo precisa estar nesse prefix, seu SONAME (lido com `readelf`) precisa apontar fisicamente para ele e o `ldd` do binário precisa resolver para o mesmo arquivo; um link de SONAME externo ou outra biblioteca vencendo a busca impede a inicialização. Para usar outro prefix privado, passe `--overlay-prefix PATH` a `build.sh` e exporte `LIBFMQT_OVERLAY_PREFIX=PATH` antes de `run.sh`; **PATH precisa ficar dentro do `.state/` desta worktree**. Os scripts recusam prefixos fora dela e não removem overlays compartilhados, `/usr`, `.deps/prefix` ou overlays de outras worktrees.
 
 ## Guardas de fonte, caminhos e seleção de ABI
 
@@ -98,7 +98,7 @@ O teste de cache configura com `fm-qt6_DIR` obsoleto no SDK e depois
 com cache no overlay anterior. Um consumer mínimo compilado chama a API nova
 `FileOperation::setDialogFactory`, relinka após a troca e verifica com `dladdr`
 o caminho real da biblioteca carregada, registrando também `ldd`, sem abrir GUI.
-Os três testes de overlay/pacote/cache continuam registrados no CTest.
+Os cinco testes de overlay, pacote, fixtures, runtime e cache estão registrados no CTest; seus logs persistentes ficam em `.state/authorized-build/`, ou em `.state/libfm-logs-*` quando esse nome colide com o overlay de entrada.
 Os fixtures negativos de pacote verificam config e biblioteca por symlink,
 localização genérica/per-config externa, mapeamentos target/default/cache em
 single e multi-config, headers individuais e subdiretórios por symlink. Ambos

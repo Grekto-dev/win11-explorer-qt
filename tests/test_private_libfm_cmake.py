@@ -71,6 +71,15 @@ cmake -S "{ROOT}" -B "{build}" -GNinja -DCMAKE_MAKE_PROGRAM="$NINJA_BIN" \\
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             ctest_file = (build / 'CTestTestfile.cmake').read_text()
             self.assertIn('L4_TEST_PREFIX=' + str(prefix), ctest_file)
+            # Every registered test that links the private ABI must receive the
+            # same physical prefix first in its loader path, not the raw token.
+            tests_file = (build / 'tests/CTestTestfile.cmake').read_text()
+            expected = 'LD_LIBRARY_PATH=' + str(prefix) + '/lib:'
+            for test_name in ('explorer-ui', 'cli-boundary'):
+                registered = [line for line in tests_file.splitlines()
+                              if f'set_tests_properties({test_name} ' in line]
+                self.assertEqual(len(registered), 1, test_name)
+                self.assertIn(expected, registered[0], test_name)
             cache = (build / 'CMakeCache.txt').read_text()
             self.assertIn('fm-qt6_DIR:PATH=' + str(prefix / 'share/cmake/fm-qt6'), cache)
             evidence = (build / 'private-libfm-selection.txt').read_text()
