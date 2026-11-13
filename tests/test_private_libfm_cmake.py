@@ -75,7 +75,7 @@ cmake -S "{ROOT}" -B "{build}" -GNinja -DCMAKE_MAKE_PROGRAM="$NINJA_BIN" \\
             # same physical prefix first in its loader path, not the raw token.
             tests_file = (build / 'tests/CTestTestfile.cmake').read_text()
             expected = 'LD_LIBRARY_PATH=' + str(prefix) + '/lib:'
-            for test_name in ('explorer-ui', 'cli-boundary'):
+            for test_name in ('explorer-ui', 'cli-boundary', 'selection-wrapper-safety'):
                 registered = [line for line in tests_file.splitlines()
                               if f'set_tests_properties({test_name} ' in line]
                 self.assertEqual(len(registered), 1, test_name)

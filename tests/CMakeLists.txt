@@ -25,7 +25,7 @@ add_test(NAME reference-capture-ids-unit COMMAND ${Python3_EXECUTABLE} -m unitte
 add_test(NAME reference-timeline-unit COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${PROJECT_SOURCE_DIR}/scripts/fidelity/reference -p test_timeline.py -v)
 set_tests_properties(reference-capture-ids-unit reference-timeline-unit PROPERTIES TIMEOUT 60)
 add_test(NAME selection-wrapper-safety COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_selection_wrapper.py)
-set_tests_properties(selection-wrapper-safety PROPERTIES ENVIRONMENT "EXPLORER_TEST_BINARY=$<TARGET_FILE:tst_explorer>;LD_LIBRARY_PATH=${LIBFMQT_OVERLAY_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}")
+set_tests_properties(selection-wrapper-safety PROPERTIES ENVIRONMENT "EXPLORER_TEST_BINARY=$<TARGET_FILE:tst_explorer>;LD_LIBRARY_PATH=${_private_fm_prefix}/lib:$ENV{LD_LIBRARY_PATH}")
 add_test(NAME selection-baseline COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/selection/probe_baseline.py)
 set_tests_properties(fidelity-harness reference-capture-unit selection-baseline PROPERTIES TIMEOUT 60)
 
