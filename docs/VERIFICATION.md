@@ -63,14 +63,14 @@ como evidência de acessibilidade ou integração de portais validada.
 
 ## Proteção do ambiente e atribuição
 
-A baseline local confirmou que continuaram iguais: manipulador padrão de
+Na época do primeiro marco, a baseline local confirmou que continuaram iguais (a situação atual está em "Fase 2 / Limitações"): manipulador padrão de
 pastas (`nemo.desktop`), proprietário do serviço FileManager1, applets do
 Cinnamon, opção de ícones do desktop Nemo e arquivos de associações MIME.
 `LICENSE`, `AUTHORS` e o conteúdo de `README.upstream.md` foram comparados
 com a base upstream e preservados. O README upstream mantém inclusive o
 whitespace original, por preservação byte a byte.
 
-Houve revisões independentes do código/UI e dos scripts/documentação sem
+No primeiro marco, houve revisões independentes do código/UI e dos scripts/documentação sem
 achados bloqueadores. Não foram publicados pacotes, tags ou releases.
 
 ## Ainda não coberto
@@ -90,18 +90,29 @@ declaração de paridade com o Explorer do Windows.**
 - Build limpo (`./scripts/build.sh Debug`) do overlay privado de libfm-qt e do
   aplicativo, seguido de **CTest 18/18**: contratos de isolamento/pacote/CLI,
   UI Qt, SVGs, harness de evidências, guardas do overlay/CMake, segurança do
-  wrapper X11, teste pesado de transferência (cópia real de 2 GiB com hash,
-  pausa com ACK, cancelamento) e `job-cancel-lifetime`.
+  wrapper X11, teste pesado de transferência (cópia real de 2 GiB no Linux, com hash,
+  pausa com ACK, cancelamento; só existe com `ENABLE_HEAVY_TRANSFER_TESTS=ON`,
+  que o `build.sh` liga, e exige ≥12 GiB livres) e `job-cancel-lifetime`.
 - `ldd` dos binários de teste e do aplicativo resolve `libfm-qt6.so.17` no
   overlay privado desta árvore; `scripts/fidelity/check-private-libfm-runtime.py`
-  confere o artefato físico, o SONAME e o `ldd` sem executar o `main`.
-- Seis casos nativos de seleção/ownership em Xephyr próprio (roteamento Qt,
-  limpeza de entrada, gestos Ctrl/Shift/vazio/DND, composição alfa do retângulo
-  de seleção) e os sete checks de `tests/e2e_x11.py` com o executável
-  instalado.
-- Verificação de isolamento antes/depois de cada rodada: manipulador de
-  diretórios, proprietário de FileManager1, applets do Cinnamon, desktop do
-  Nemo e MIME inalterados **durante as rodadas**.
+  confere o artefato físico, o SONAME e o `ldd` sem executar o `main`
+  (saídas: `.state/r3/evidence/ldd.txt` e `runtime-check.txt`, na árvore de
+  integração, não versionadas).
+- Seis casos nativos em Xephyr próprio (ownership, roteamento Qt, limpeza de
+  entrada, gestos XTEST Ctrl/Shift/vazio/DND, comparação desses gestos com a
+  referência medida — não é paridade geral — e composição alfa do retângulo de
+  seleção) e os sete checks de `tests/e2e_x11.py` com o executável instalado.
+- Isolamento por rodada: `scripts/check-isolation.py save` antes e `verify`
+  depois da rodada nativa (`.state/r3/native-*/before.json`); o verify passou
+  (manipulador de pastas, proprietário de FileManager1, applets do Cinnamon,
+  desktop do Nemo e MIME iguais **ao snapshot tirado antes da rodada**). Isto
+  não é comparação com a baseline original: ver Limitações. As rodadas
+  anteriores (17/17) constam só nas notas do coordenador, sem log persistido.
+- Estado da revisão: backend (`85f4f5a`), evidências, UI e build passaram em
+  revisão independente após ciclos de correção (a revisão do build deixou um
+  achado de documentação corrigido sem nova revisão); o delta de integração
+  foi revisado e reprovado por esta documentação, corrigida depois. Não há
+  revisão independente do diff integrado completo.
 
 ### Correções de segurança e confiabilidade desta fase
 
@@ -121,8 +132,8 @@ declaração de paridade com o Explorer do Windows.**
 ### Limitações conhecidas (não resolvidas)
 
 - **Controles de transferência do Windows não foram observados**: Mais
-  detalhes, pausa, retomada e cancelamento na referência; apenas progresso vivo
-  e hash de cópias de 2/4 GiB foram medidos. O comportamento da pausa no Linux
+  detalhes, pausa, retomada e cancelamento na referência; na VM Windows só
+  progresso vivo e hash de cópias de 2 e 4 GiB foram medidos. O comportamento da pausa no Linux
   é cooperativo, restrito a COPY de arquivo regular local, e não é comparado
   com o Windows.
 - Taxa de atualização da referência desconhecida (capturas de ~15 fps);
@@ -133,8 +144,14 @@ declaração de paridade com o Explorer do Windows.**
 - Estabilidade do teste nativo de seleção: duas execuções antigas tiveram zero
   itens na primeira seleção, sem causa demonstrada; as execuções desta rodada
   passaram.
-- `.config/nemo/desktop-metadata` difere da baseline original de 2026-10-30. O
-  arquivo é do Nemo, que está em execução; não há evidência que atribua a
-  mudança a este projeto, e a baseline original não foi substituída.
+- **Isolamento contra a baseline original (2026-10-30) falha hoje**, e também
+  contra a baseline de retomada (2026-10-31): `check-isolation.py verify`
+  aponta o proprietário de FileManager1 (`:1.57` → `:1.54`), a lista de
+  applets do Cinnamon, `.config/mimeapps.list` e `.config/nemo/desktop-metadata`
+  (saídas: `.state/r3/evidence/isolation-vs-*.txt`). Causa **não determinada**.
+  Observado apenas: `mimeapps.list` tem mtime de 2026-11-04, `desktop-metadata`
+  de 2026-11-13 17:13, o manipulador padrão de `inode/directory` continua
+  `nemo.desktop` e as rodadas desta integração passaram contra snapshots
+  próprios. As baselines não foram substituídas.
 - Wayland, pacote `.deb` e reprodutibilidade pública completa não foram
   validados.
