@@ -1,7 +1,9 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Fail-closed wrapper tests; no desktop or injected input."""
+from contextlib import redirect_stderr
 import fcntl
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -14,6 +16,15 @@ import run_selection_x11 as runner
 ROOT = Path(__file__).resolve().parents[1]
 
 class SelectionWrapperSafety(unittest.TestCase):
+    def setUp(self):
+        # Explicit local base: CTest must not depend on Hermes or tempfile's
+        # platform fallback (/tmp), even when TMPDIR/TEMP/TMP are absent.
+        base = ROOT / '.state/selection-wrapper-tests'
+        base.mkdir(parents=True, exist_ok=True)
+        temporary = tempfile.TemporaryDirectory(dir=base)
+        self.addCleanup(temporary.cleanup)
+        self.scratch = Path(temporary.name)
+
     def run_wrapper(self, target, scratch, extra=None):
         env = dict(os.environ, TMPDIR=str(scratch), EXPLORER_XTEST_DISPLAY=target,
                    EXPLORER_TEST_ARTIFACTS=str(scratch / 'artifacts'))
@@ -34,7 +45,7 @@ class SelectionWrapperSafety(unittest.TestCase):
         # Isolate all process/X11 side effects; no server is ever contacted.
         from Xlib import display
         from Xlib.ext import xtest
-        with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as tmp:
+        with tempfile.TemporaryDirectory(dir=self.scratch) as tmp:
             env = dict(os.environ, DISPLAY=owned_target, EXPLORER_XTEST_DISPLAY=owned_target)
             def verify(environment):
                 if environment['DISPLAY'] != owned_target:
@@ -67,7 +78,7 @@ class SelectionWrapperSafety(unittest.TestCase):
                     run.assert_not_called()
 
     def test_refuses_desktop_displays_before_starting_xephyr(self):
-        with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as tmp:
+        with tempfile.TemporaryDirectory(dir=self.scratch) as tmp:
             for target in (':0', ':0.0', ':1', ':1.0', 'localhost:0', ''):
                 with self.subTest(target=target):
                     result = self.run_wrapper(target, Path(tmp))
@@ -75,7 +86,7 @@ class SelectionWrapperSafety(unittest.TestCase):
                     self.assertIn('Unsafe isolated display', result.stderr)
 
     def test_exclusive_common_scratch_lock_precedes_server_start(self):
-        with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as tmp:
+        with tempfile.TemporaryDirectory(dir=self.scratch) as tmp:
             root = Path(tmp)
             with (root / 'explorer-x11-display-18.lock').open('a') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -99,8 +110,100 @@ class SelectionWrapperSafety(unittest.TestCase):
         self.assertIn('XTEST ownership rejected', result.stderr)
         self.assertNotIn('Start testing', result.stdout)
 
+    def test_server_startup_failure_matrix(self):
+        # Real harmless children, no fake X server or personal display. Control
+        # the scheduling boundary explicitly instead of racing an exit script.
+        from Xlib import display
+        from Xlib.ext import xtest
+        real_popen = subprocess.Popen
+        real_identity = runner.process_identity
+        for tmpdir in (True, False):
+            for boundary in ('before-zombie', 'before-reaped', 'after', 'alive-invalid'):
+                with self.subTest(tmpdir=tmpdir, boundary=boundary), \
+                     tempfile.TemporaryDirectory(dir=self.scratch) as tmp:
+                    root = Path(tmp)
+                    artifacts = root / 'artifacts'
+                    env = dict(os.environ, TEMP=str(root), TMP=str(root))
+                    env.pop('TMPDIR', None)
+                    if tmpdir:
+                        env['TMPDIR'] = str(root)
+                    children = []
+                    def start(command, **kwargs):
+                        self.assertEqual(command[0], 'Xephyr', 'WM started before proof')
+                        source = ('raise SystemExit(7)' if boundary.startswith('before')
+                                  else 'import signal; signal.pause()')
+                        child = real_popen(['/usr/bin/python3', '-c', source], **kwargs)
+                        children.append(child)
+                        if boundary == 'before-zombie':
+                            os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT)
+                        elif boundary == 'before-reaped':
+                            child.wait(timeout=3)
+                        return child
+                    def identity(pid):
+                        if children and pid == children[0].pid:
+                            if boundary == 'alive-invalid':
+                                raise RuntimeError('Live identity sentinel')
+                            value = real_identity(pid)
+                            if boundary == 'after':
+                                children[0].terminate()
+                                children[0].wait(timeout=3)
+                            return value
+                        return real_identity(pid)
+                    argv = ['runner', '--display', ':918', '--binary', '/usr/bin/true',
+                            '--artifacts', str(artifacts)]
+                    stderr = io.StringIO()
+                    # Observe the selected base while retaining the real lock,
+                    # filesystem setup, process identity and stop/cleanup.
+                    real_reserve = runner.reserve
+                    reservations = []
+                    def reserve(target, scratch):
+                        reservations.append(scratch)
+                        return real_reserve(target, scratch)
+                    try:
+                        with mock.patch.dict(os.environ, env, clear=True), \
+                             mock.patch('sys.argv', argv), redirect_stderr(stderr), \
+                             mock.patch.object(runner, 'reserve', side_effect=reserve), \
+                             mock.patch.object(runner.subprocess, 'Popen', side_effect=start) as spawned, \
+                             mock.patch.object(runner, 'process_identity', side_effect=identity), \
+                             mock.patch.object(runner.subprocess, 'run') as session, \
+                             mock.patch.object(display, 'Display') as opened, \
+                             mock.patch.object(xtest, 'fake_input') as injected:
+                            with self.assertRaises(SystemExit) as raised:
+                                runner.main()
+                            self.assertEqual(raised.exception.code, 2)
+                            spawned.assert_called_once()
+                            session.assert_not_called()
+                            opened.assert_not_called()
+                            injected.assert_not_called()
+                        expected_scratch = (root if tmpdir else
+                                            ROOT / '.state/selection-x11-scratch')
+                        self.assertEqual(reservations, [expected_scratch.resolve()])
+                        self.assertIsNotNone(children[0].poll(), 'child leaked')
+                        expected_status = 7 if boundary.startswith('before') else -15
+                        self.assertEqual(children[0].returncode, expected_status)
+                        self.assertFalse(Path(f'/proc/{children[0].pid}').exists())
+                        diagnostic = stderr.getvalue()
+                        if boundary == 'alive-invalid':
+                            self.assertIn('Live identity sentinel', diagnostic)
+                            self.assertNotIn('Xephyr exited', diagnostic)
+                        else:
+                            self.assertIn('Xephyr exited before opening :918', diagnostic)
+                        self.assertTrue((artifacts / 'xephyr.log').is_file())
+                        for name in ('config', 'cache', 'data', 'state', 'runtime'):
+                            self.assertTrue((artifacts / ('xdg-' + name)).is_dir())
+                        self.assertTrue((artifacts / 'tmp').is_dir())
+                        self.assertFalse((artifacts / 'wm.log').exists())
+                        self.assertFalse((artifacts / 'ownership.json').exists())
+                        self.assertFalse((artifacts / 'runner-result.json').exists())
+                        with real_reserve(':918', expected_scratch):
+                            pass  # Same lock can be reacquired after every failure.
+                    finally:
+                        for child in children:
+                            runner.stop(child)
+                self.assertFalse(root.exists(), 'per-case directory leaked')
+
     def test_dead_own_server_never_accepts_another_server_readiness(self):
-        with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as tmp:
+        with tempfile.TemporaryDirectory(dir=self.scratch) as tmp:
             root = Path(tmp)
             fake = root / 'Xephyr'
             fake.write_text('#!/bin/sh\nexit 7\n')

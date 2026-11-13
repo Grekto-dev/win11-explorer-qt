@@ -71,3 +71,57 @@ nativa depende da interface X11 do Qt usado; sua ausência resulta em rejeição
 A contraprova de credenciais e os binários mutantes são evidências locais,
 não novos alvos do CTest. Não houve VM, integração de backend ou novo estudo de
 paridade Windows nesta rodada. Baselines históricas não devem ser normalizadas.
+
+## Contrato C: ambiente e término precoce (2026-11-13)
+
+A suíte `selection-wrapper-safety` não exige `TMPDIR`: cada teste aloca um
+workspace exclusivo sob `.state/selection-wrapper-tests` da própria worktree,
+com remoção por `TemporaryDirectory`/`addCleanup`. O CTest não precisa herdar
+variáveis do Hermes. Para a reserva comum, o runner usa o `TMPDIR` herdado ou,
+se ausente, `.state/selection-x11-scratch` junto ao fonte; só depois cria o
+`TMPDIR` particular da execução em `<artifacts>/tmp`. `TEMP`/`TMP` não são
+interpretados como a reserva comum. Runners que compartilham um display devem
+compartilhar a mesma base de reserva; isso não é uma reserva global entre
+bases independentes nem uma sandbox contra processos do mesmo UID.
+
+A identidade de um Xephyr já morto pode falhar por zumbi (`Dead process`) ou
+por `/proc` ausente. O helper local `server_identity` consulta `Popen.poll()`
+somente ao classificar essa falha: se a morte for confirmada, usa o mesmo
+diagnóstico `Xephyr exited before opening <display>` da fronteira posterior à
+identidade. Se o filho ainda estiver vivo, preserva o erro de identidade.
+Nada nessa classificação autoriza uma conexão ou relaxa PID/starttime, peer
+do socket, ancestralidade, rota Qt ou argumentos QtTest.
+
+A regressão determinística usa filhos Python sem X11, controlados no seam de
+`Popen`/identidade: exit 7 observado com `waitid(WNOWAIT)` deixa um zumbi real;
+`wait()` força a variante recolhida; outro filho é encerrado após obter a
+identidade; um erro sentinela com filho vivo é a contraprova. Não há servidor
+falso, corrida repetida até passar ou conexão ao desktop pessoal. As quatro
+fronteiras são cruzadas com `TMPDIR` presente/ausente, sempre com `TEMP`/`TMP`
+em scratch autorizado. Cada linha exige exit 2, diagnóstico específico, zero
+WM/sessão/aberturas Xlib/input, filho recolhido e lock novamente adquirível.
+Os diretórios XDG/tmp e `xephyr.log` são evidências persistentes permitidas;
+`ownership.json`, `wm.log` e resultado de sessão não podem existir nesses
+negativos. Os workspaces temporários de cada linha são removidos; arquivos
+de lock do scratch estável permanecem intencionalmente, sem trocar inode.
+
+Evidência desta rodada em `.state/infra-contract/ui/` (ignorada pelo Git):
+
+- RED sem `TMPDIR`: seis `KeyError` em sete testes; GREEN após base explícita.
+- RED determinístico: quatro falhas exatas de diagnóstico, duas por fronteira
+  anterior à identidade; GREEN na matriz de oito combinações. Contraprova do
+  filho vivo preserva o erro sentinela. Mutante de identidade bruta produz
+  quatro falhas; mutante que ignora o alvo produz três, sem side effects X11.
+- Wrapper repetido duas vezes em cada ambiente e CTest do wrapper em ambos;
+  CTest UI/baseline/wrapper, além de build do alvo com dois jobs e loader
+  físico do overlay privado conferido.
+- Xephyr próprio `:24`: ownership, roteamento, cleanup, seleção, gestos de
+  arquivos, composição alpha, lifetime do proxy e política DND; `:19` e `:2`:
+  ownership, roteamento e cleanup. Provas ao vivo de PID/starttime/parent e
+  `SO_PEERCRED`, seguidas de confirmação de reap/socket livre. Um driver por
+  vez. Nenhum input em `:0`/`:1`; o display herdado apenas hospeda o Xephyr.
+
+O resultado estruturado registra os logs, limites e SHAs. A rodada não executa
+transferências pesadas nem amplia o escopo para backend/buildguardas/VM. O
+snapshot específico antes/depois deve ser comparado separadamente da baseline
+histórica; diferenças já existentes nesta última não são apagadas ou corrigidas.

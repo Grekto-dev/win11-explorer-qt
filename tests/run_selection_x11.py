@@ -26,6 +26,17 @@ def stop(process):
             process.wait()
 
 
+def server_identity(process, target):
+    try:
+        return process_identity(process.pid)
+    except (OSError, RuntimeError):
+        # A child can already be a zombie or have been reaped before /proc is
+        # read. Classify only proven death, not an arbitrary identity failure.
+        if process.poll() is not None:
+            raise RuntimeError('Xephyr exited before opening ' + target) from None
+        raise
+
+
 def verified_target(env, target):
     # Bind CLI, process display and reserved target before any X11 open/input,
     # including emergency cleanup. Ownership alone proves only env['DISPLAY'].
@@ -85,7 +96,8 @@ def main():
             return int(any(row['exitCode'] for row in results))
 
         # Reserve in inherited COMMON scratch, before per-run TMPDIR changes.
-        scratch = Path(os.environ.get('TMPDIR', str(Path.home() / '.cache/explorer-tests'))).resolve()
+        scratch = Path(os.environ.get('TMPDIR', str(
+            Path(__file__).resolve().parents[1] / '.state/selection-x11-scratch'))).resolve()
         scratch.mkdir(parents=True, exist_ok=True)
         with reserve(args.display, scratch):
             check_free(args.display)
@@ -105,7 +117,7 @@ def main():
                                           env=env, stdout=log, stderr=subprocess.STDOUT)
                 try:
                     env.update(EXPLORER_XSERVER_PID=str(xephyr.pid),
-                               EXPLORER_XSERVER_START=process_identity(xephyr.pid)[1],
+                               EXPLORER_XSERVER_START=server_identity(xephyr, args.display)[1],
                                EXPLORER_XOWNER_PID=str(os.getpid()),
                                EXPLORER_XOWNER_START=process_identity(os.getpid())[1],
                                DISPLAY=args.display, EXPLORER_XTEST_DISPLAY=args.display,
