@@ -1,18 +1,207 @@
+diff --git a/src/core/fileoperationjob.cpp b/src/core/fileoperationjob.cpp
+index c2fbb26..af541cf 100644
+--- a/src/core/fileoperationjob.cpp
++++ b/src/core/fileoperationjob.cpp
+@@ -2,6 +2,20 @@
+ 
+ namespace Fm {
+ 
++void FileOperationJob::publishCompletion(bool cancellationRequested) {
++    // No observer/QObject callback: this runs while the backend owns its data,
++    // before any finished handler can destroy a dialog or schedule job deletion.
++    std::lock_guard<std::mutex> lock{completion_->mutex};
++    std::uint64_t count = 0;
++    completion_->hasTotals = totalAmount(completion_->totalBytes, count);
++    finishedAmount(completion_->finishedBytes, count);
++    currentFileProgress(completion_->currentFile, completion_->currentTotal, completion_->currentDone);
++    completion_->cancellationRequested = cancellationRequested;
++    completion_->completedAt = std::chrono::steady_clock::now();
++    completion_->ready = true;
++}
++
++
+ FileOperationJob::FileOperationJob():
+     hasTotalAmount_{false},
+     calcProgressUsingSize_{true},
+diff --git a/src/core/fileoperationjob.h b/src/core/fileoperationjob.h
+index f491a4b..edab19d 100644
+--- a/src/core/fileoperationjob.h
++++ b/src/core/fileoperationjob.h
+@@ -6,6 +6,7 @@
+ #include <string>
+ #include <mutex>
+ #include <cstdint>
++#include <chrono>
+ #include "fileinfo.h"
+ #include "filepath.h"
+ 
+@@ -22,6 +23,19 @@ public:
+         SKIP_ERROR = 1<<3
+     };
+ 
++    // Independent lifetime: published before Job::finished can dispatch owners.
++    struct Completion {
++        mutable std::mutex mutex;
++        bool ready = false;
++        bool cancellationRequested = false;
++        bool hasTotals = false;
++        std::uint64_t totalBytes = 0, finishedBytes = 0;
++        std::uint64_t currentTotal = 0, currentDone = 0;
++        FilePath currentFile;
++        std::chrono::steady_clock::time_point completedAt;
++    };
++    std::shared_ptr<const Completion> completion() const { return completion_; }
++
+     explicit FileOperationJob();
+ 
+     // get total amount of work to do
+@@ -56,6 +70,7 @@ Q_SIGNALS:
+     void fileExists(const FileInfo& src, const FileInfo& dest, FileExistsAction& response, FilePath& newDest);
+ 
+ protected:
++    void publishCompletion(bool cancellationRequested) override;
+ 
+     FileExistsAction askRename(const FileInfo& src, const FileInfo& dest, FilePath& newDest);
+ 
+@@ -78,6 +93,7 @@ protected:
+     }
+ 
+ private:
++    std::shared_ptr<Completion> completion_ = std::make_shared<Completion>();
+     bool hasTotalAmount_;
+     bool calcProgressUsingSize_;
+     std::uint64_t totalSize_;
+diff --git a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
+index a616467..60f1884 100644
+--- a/src/core/filetransferjob.cpp
++++ b/src/core/filetransferjob.cpp
+@@ -83,9 +83,18 @@ void FileTransferJob::setDestDirPath(const FilePath& destDirPath) {
+ }
+ 
+ void FileTransferJob::gfileCopyProgressCallback(goffset current_num_bytes, goffset total_num_bytes, FileTransferJob* _this) {
++    if(!_this->waitWhilePaused()) return;
+     _this->setCurrentFileProgress(total_num_bytes, current_num_bytes);
+ }
+ 
++bool FileTransferJob::supportsCooperativePause() const {
++    if(mode_ != Mode::COPY || srcPaths_.size() != 1 || destPaths_.size() != 1 ||
++       !srcPaths_.front().isNative() || !destPaths_.front().isNative()) return false;
++    GFileInfoPtr info{g_file_query_info(srcPaths_.front().gfile().get(),
++        G_FILE_ATTRIBUTE_STANDARD_TYPE, G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, nullptr, nullptr), false};
++    return info && g_file_info_get_file_type(info.get()) == G_FILE_TYPE_REGULAR;
++}
++
+ bool FileTransferJob::moveFileSameFs(const FilePath& srcPath, const GFileInfoPtr& srcInfo, FilePath& destPath) {
+     int flags = G_FILE_COPY_ALL_METADATA | G_FILE_COPY_NOFOLLOW_SYMLINKS;
+     GErrorPtr err;
+diff --git a/src/core/filetransferjob.h b/src/core/filetransferjob.h
+index 21cb6f5..486c3d9 100644
+--- a/src/core/filetransferjob.h
++++ b/src/core/filetransferjob.h
+@@ -25,6 +25,8 @@ public:
+     void setDestPaths(FilePathList destPaths);
+     void setDestDirPath(const FilePath &destDirPath);
+ 
++    bool supportsCooperativePause() const override;
++
+ protected:
+     void exec() override;
+ 
+diff --git a/src/core/job.cpp b/src/core/job.cpp
+index 509fd74..daf0e45 100644
+--- a/src/core/job.cpp
++++ b/src/core/job.cpp
+@@ -4,7 +4,7 @@
+ namespace Fm {
+ 
+ Job::Job():
+-    paused_{false},
++    pauseGate_{std::make_shared<JobPauseGate>()},
+     cancellable_{g_cancellable_new(), false},
+     cancellableHandler_{g_signal_connect(cancellable_.get(), "cancelled", G_CALLBACK(_onCancellableCancelled), this)} {
+ }
+@@ -25,11 +25,59 @@ void Job::runAsync(QThread::Priority priority) {
+ }
+ 
+ void Job::cancel() {
+-    g_cancellable_cancel(cancellable_.get());
++    requestCancellation();
++}
++
++bool Job::requestCancellation() {
++    // Publishing wakes the worker, which may complete and destroy this Job
++    // (QThreadPool autoDelete) before this call finishes. Retain what the rest
++    // of the call needs BEFORE publishing; do not touch members afterwards.
++    // The caller must keep the Job alive until this function is entered.
++    // ~Job() disconnects the GLib handler, so cancelling the retained
++    // GCancellable after destruction cannot call back into this Job.
++    // GLib invokes the callback synchronously: never hold the predicate mutex
++    // across it.
++    const std::shared_ptr<JobPauseGate> gate = pauseGate_;
++    const GCancellablePtr cancellable = cancellable_;
++    if(!gate->cancel()) return false;
++    g_cancellable_cancel(cancellable.get());
++    return true;
++}
++
++bool Job::pause() {
++    if(!supportsCooperativePause()) return false;
++    std::lock_guard<std::mutex> lock{pauseGate_->mutex};
++    if(pauseGate_->finished || pauseGate_->cancelled || isCancelled()) return false;
++    pauseGate_->requested = true;
++    return true;
++}
++
++void Job::resume() {
++    pauseGate_->resume();
++}
++
++bool Job::pauseRequested() const {
++    std::lock_guard<std::mutex> lock{pauseGate_->mutex};
++    return pauseGate_->requested;
++}
++
++bool Job::isPauseAcknowledged() const {
++    std::lock_guard<std::mutex> lock{pauseGate_->mutex};
++    return pauseGate_->acknowledged;
++}
++
++bool Job::waitWhilePaused() {
++    return pauseGate_->wait([] {});
+ }
+ 
+ void Job::run() {
+     exec();
++    {
++        std::lock_guard<std::mutex> lock{pauseGate_->mutex};
++        pauseGate_->finished = true;
++        pauseGate_->requested = pauseGate_->acknowledged = false;
++        publishCompletion(pauseGate_->cancelled || isCancelled());
++    }
+     Q_EMIT finished();
+ }
+ 
+diff --git a/src/core/job.h b/src/core/job.h
+index 0cee747..d04ebe3 100644
 --- a/src/core/job.h
 +++ b/src/core/job.h
-@@ -25,6 +25,8 @@
+@@ -25,6 +25,9 @@
  #include <QThread>
  #include <QRunnable>
  #include <memory>
++#include "jobpausegate_p.h"
 +#include <condition_variable>
 +#include <mutex>
  #include <gio/gio.h>
  #include "gobjectptr.h"
  #include "gioptrs.h"
-@@ -74,6 +76,10 @@
+@@ -74,6 +77,13 @@ public:
  
      void resume();
  
++    // Linearized with completion. False means the terminal cut already won.
++    bool requestCancellation();
++
 +    bool pauseRequested() const;
 +    bool isPauseAcknowledged() const;
 +    virtual bool supportsCooperativePause() const { return false; }
@@ -20,112 +209,103 @@
      const GCancellablePtr& cancellable() const {
          return cancellable_;
      }
-@@ -96,6 +102,9 @@
+@@ -96,6 +106,11 @@ public Q_SLOTS:
      void run() override;
  
  protected:
++    virtual void publishCompletion(bool /*cancellationRequested*/) {}
++
 +    // Called only by an operation path with regular progress checkpoints.
 +    bool waitWhilePaused();
 +
      ErrorAction emitError(const GErrorPtr& err, ErrorSeverity severity = ErrorSeverity::MODERATE);
  
      // all derived job subclasses should do their work in this method.
-@@ -111,7 +120,10 @@
+@@ -107,11 +122,15 @@ private:
+     }
+ 
+     void onCancellableCancelled(GCancellable* /*cancellable*/) {
++        pauseGate_->cancel();
+         Q_EMIT cancelled();
      }
  
  private:
 -    bool paused_;
-+    mutable std::mutex pauseMutex_;
-+    std::condition_variable pauseCondition_;
-+    bool pauseRequested_ = false;
-+    bool pauseAcknowledged_ = false;
++    // Shared with in-flight control calls: requestCancellation() retains it
++    // before waking the worker, which may finish and (QThreadPool autoDelete)
++    // destroy this Job while the call is still publishing.
++    std::shared_ptr<JobPauseGate> pauseGate_;
      GCancellablePtr cancellable_;
      gulong cancellableHandler_;
  };
---- a/src/core/job.cpp
-+++ b/src/core/job.cpp
-@@ -4,7 +4,6 @@
- namespace Fm {
- 
- Job::Job():
--    paused_{false},
-     cancellable_{g_cancellable_new(), false},
-     cancellableHandler_{g_signal_connect(cancellable_.get(), "cancelled", G_CALLBACK(_onCancellableCancelled), this)} {
- }
-@@ -26,6 +25,43 @@
- 
- void Job::cancel() {
-     g_cancellable_cancel(cancellable_.get());
-+    pauseCondition_.notify_all();
-+}
+diff --git a/src/core/jobpausegate_p.h b/src/core/jobpausegate_p.h
+new file mode 100644
+index 0000000..b4268ca
+--- /dev/null
++++ b/src/core/jobpausegate_p.h
+@@ -0,0 +1,60 @@
++/*
++ * Copyright (C) 2016 Hong Jen Yee (PCMan) <pcman.tw@gmail.com>
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
++ *
++ */
 +
-+bool Job::pause() {
-+    if(!supportsCooperativePause()) return false;
-+    std::lock_guard<std::mutex> lock{pauseMutex_};
-+    if(isCancelled()) return false;
-+    pauseRequested_ = true;
-+    return true;
-+}
++// Private libfm-qt implementation detail; not installed as public API.
++#pragma once
++#include <mutex>
++#include <condition_variable>
 +
-+void Job::resume() {
-+    {
-+        std::lock_guard<std::mutex> lock{pauseMutex_};
-+        pauseRequested_ = false;
-+        pauseAcknowledged_ = false;
++namespace Fm {
++class JobPauseGate {
++public:
++    mutable std::mutex mutex;
++    std::condition_variable condition;
++    bool requested = false;
++    bool acknowledged = false;
++    bool cancelled = false;
++    bool finished = false;
++
++    bool cancel() {
++        {
++            std::lock_guard<std::mutex> lock{mutex};
++            if(finished) return false;
++            cancelled = true;
++        }
++        condition.notify_all();
++        return true;
 +    }
-+    pauseCondition_.notify_all();
++    void resume() {
++        { std::lock_guard<std::mutex> lock{mutex}; if(finished) return; requested = acknowledged = false; }
++        condition.notify_all();
++    }
++    template<class BeforeWait> bool wait(BeforeWait beforeWait) {
++        std::unique_lock<std::mutex> lock{mutex};
++        if(!requested || cancelled) return !cancelled;
++        acknowledged = true;
++        while(requested && !cancelled) {
++            beforeWait();
++            condition.wait(lock);
++        }
++        acknowledged = false;
++        return !cancelled;
++    }
++};
 +}
-+
-+bool Job::pauseRequested() const {
-+    std::lock_guard<std::mutex> lock{pauseMutex_};
-+    return pauseRequested_;
-+}
-+
-+bool Job::isPauseAcknowledged() const {
-+    std::lock_guard<std::mutex> lock{pauseMutex_};
-+    return pauseAcknowledged_;
-+}
-+
-+bool Job::waitWhilePaused() {
-+    std::unique_lock<std::mutex> lock{pauseMutex_};
-+    if(!pauseRequested_ || isCancelled()) return !isCancelled();
-+    pauseAcknowledged_ = true;
-+    pauseCondition_.wait(lock, [this] { return !pauseRequested_ || isCancelled(); });
-+    pauseAcknowledged_ = false;
-+    return !isCancelled();
- }
- 
- void Job::run() {
---- a/src/core/filetransferjob.h
-+++ b/src/core/filetransferjob.h
-@@ -24,6 +24,8 @@
-     void setSrcPaths(FilePathList srcPaths);
-     void setDestPaths(FilePathList destPaths);
-     void setDestDirPath(const FilePath &destDirPath);
-+
-+    bool supportsCooperativePause() const override;
- 
- protected:
-     void exec() override;
---- a/src/core/filetransferjob.cpp
-+++ b/src/core/filetransferjob.cpp
-@@ -83,7 +83,16 @@
- }
- 
- void FileTransferJob::gfileCopyProgressCallback(goffset current_num_bytes, goffset total_num_bytes, FileTransferJob* _this) {
-+    if(!_this->waitWhilePaused()) return;
-     _this->setCurrentFileProgress(total_num_bytes, current_num_bytes);
-+}
-+
-+bool FileTransferJob::supportsCooperativePause() const {
-+    if(mode_ != Mode::COPY || srcPaths_.size() != 1 || destPaths_.size() != 1 ||
-+       !srcPaths_.front().isNative() || !destPaths_.front().isNative()) return false;
-+    GFileInfoPtr info{g_file_query_info(srcPaths_.front().gfile().get(),
-+        G_FILE_ATTRIBUTE_STANDARD_TYPE, G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, nullptr, nullptr), false};
-+    return info && g_file_info_get_file_type(info.get()) == G_FILE_TYPE_REGULAR;
- }
- 
- bool FileTransferJob::moveFileSameFs(const FilePath& srcPath, const GFileInfoPtr& srcInfo, FilePath& destPath) {
+diff --git a/src/libfmqtglobals.h b/src/libfmqtglobals.h
+index ed2d45b..ef91cff 100644
 --- a/src/libfmqtglobals.h
 +++ b/src/libfmqtglobals.h
 @@ -23,3 +23,6 @@
@@ -134,11 +314,4 @@
  #endif
 +
 +// ABI/API marker for the optional cooperative local-copy checkpoint API.
-+#define LIBFM_QT_COOPERATIVE_COPY_PAUSE_API 1
---- a/src/core/job.h
-+++ b/src/core/job.h
-@@ -106,3 +106,4 @@
-     void onCancellableCancelled(GCancellable* /*cancellable*/) {
-+        pauseCondition_.notify_all();
-         Q_EMIT cancelled();
-     }
++#define LIBFM_QT_COOPERATIVE_COPY_PAUSE_API 2

@@ -45,4 +45,18 @@ if(ENABLE_HEAVY_TRANSFER_TESTS)
     add_test(NAME transfer-controller-heavy COMMAND tst_explorertransfercontroller)
     set_tests_properties(transfer-controller-heavy PROPERTIES TIMEOUT 360 LABELS "heavy;transfer" RUN_SERIAL TRUE
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;LD_LIBRARY_PATH=${_private_fm_prefix}/lib:$ENV{LD_LIBRARY_PATH}")
+
+    # Deterministic Job cancellation lifetime regression. The executable
+    # interposes pthread_cond_broadcast, so its symbols must be exported.
+    find_package(Threads REQUIRED)
+    add_executable(tst_job_cancel_lifetime
+        ${PROJECT_SOURCE_DIR}/tests/transfer/tst_job_cancel_lifetime.cpp)
+    set_target_properties(tst_job_cancel_lifetime PROPERTIES ENABLE_EXPORTS ON)
+    target_include_directories(tst_job_cancel_lifetime PRIVATE ${LIBFMQT_SOURCE_DIR} ${LIBFMQT_INCLUDE_DIR})
+    target_link_libraries(tst_job_cancel_lifetime PRIVATE Qt6::Core fm-qt6 Threads::Threads ${CMAKE_DL_LIBS})
+    add_test(NAME job-cancel-lifetime COMMAND tst_job_cancel_lifetime)
+    # MALLOC_PERTURB_ poisons freed Job memory; tcache_count=0 makes glibc really poison it
+    # (tcache-recycled chunks are not), so a late access cannot pass by luck.
+    set_tests_properties(job-cancel-lifetime PROPERTIES TIMEOUT 60 LABELS "heavy;transfer"
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;MALLOC_PERTURB_=165;GLIBC_TUNABLES=glibc.malloc.tcache_count=0;LD_LIBRARY_PATH=${_private_fm_prefix}/lib:$ENV{LD_LIBRARY_PATH}")
 endif()

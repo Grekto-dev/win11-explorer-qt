@@ -6,15 +6,22 @@
 #include <QStorageInfo>
 #include <QTemporaryDir>
 #include <QElapsedTimer>
+#include <QDeadlineTimer>
+#include <QScopeGuard>
+#include <atomic>
+#include <memory>
 #include <QDateTime>
 #include <QApplication>
 #include <QMessageBox>
 #include <QTimer>
 #include <sys/stat.h>
+#include <thread>
+#include <future>
 #include "../../pcmanfm/explorertransfercontroller.h"
 #include "../../pcmanfm/explorertransferdialog.h"
 #include "core/filetransferjob.h"
 #include "core/job.h"
+#include "core/jobpausegate_p.h"
 #include <fileoperation.h>
 #include <fileoperationdialog.h>
 
@@ -51,6 +58,12 @@ Fm::FileOperationDialog* createProbeDialog(Fm::FileOperation* operation) {
 class ExplorerTransferControllerTest final : public QObject {
     Q_OBJECT
 private Q_SLOTS:
+    void cancellationIsIdempotentDuringSynchronousReentry();
+    void backendControlsCannotReopenCompletion();
+    void cancellationCannotPassPredicateWaitGap();
+    void completionPrecedesDestructiveFinishedHandlers();
+    void cancellationBeforeGuiDispatchIsInTerminalSnapshot_data();
+    void cancellationBeforeGuiDispatchIsInTerminalSnapshot();
     void cancellationForwardsToLiveLibfmJob();
     void observerLifecycleTracksRealJobSignals();
     void lateAttachStartsObservingAnAlreadyRunningJob();
@@ -68,6 +81,152 @@ private Q_SLOTS:
     void externalCancellationNotifiesControllerExactlyOnce();
     void directCancellableCancellationWakesPausedCopy();
 };
+
+void ExplorerTransferControllerTest::cancellationIsIdempotentDuringSynchronousReentry() {
+    class CancelJob final : public Fm::FileOperationJob {
+        void exec() override {}
+    } job;
+    job.setAutoDelete(false);
+    ExplorerTransferController controller(&job);
+    QSignalSpy notices(&controller, &ExplorerTransferController::cancellationRequested);
+    QVERIFY(controller.markStarted());
+    int reentries = 0;
+    connect(&job, &Fm::Job::cancelled, &controller, [&] {
+        ++reentries;
+        controller.cancel();
+    }, Qt::DirectConnection);
+    controller.cancel();
+    QVERIFY(job.isCancelled());
+    QVERIFY(controller.snapshot().cancellationRequested);
+    QCOMPARE(reentries, 1);
+    QCOMPARE(notices.count(), 1);
+    QCoreApplication::processEvents();
+    controller.cancel();
+    QCOMPARE(notices.count(), 1);
+}
+
+void ExplorerTransferControllerTest::backendControlsCannotReopenCompletion() {
+    class TerminalJob final : public Fm::FileOperationJob {
+    public:
+        bool supportsCooperativePause() const override { return true; }
+        void exec() override { setTotalAmount(7, 1); setFinishedAmount(7, 1); }
+    } job;
+    job.setAutoDelete(false);
+    ExplorerTransferController controller(&job);
+    QVERIFY(controller.markStarted());
+    std::thread worker([&] { job.run(); });
+    worker.join();
+    const bool accepted = job.pause();
+    job.resume();
+    job.cancel();
+    QCOMPARE(controller.snapshot().state, ExplorerTransferController::State::Finished);
+    QVERIFY(!accepted);
+    QVERIFY(!job.pauseRequested());
+    QVERIFY(!job.isCancelled());
+    QVERIFY(!controller.snapshot().cancellationRequested);
+}
+
+void ExplorerTransferControllerTest::cancellationCannotPassPredicateWaitGap() {
+    Fm::JobPauseGate gate;
+    gate.requested = true;
+    std::promise<void> inGap, cancelStarted, cancelDone, workerDone;
+    auto cancellationDone = cancelDone.get_future();
+    auto completed = workerDone.get_future();
+    std::atomic_bool cancelledBeforeWait{false};
+    std::thread worker([&] {
+        gate.wait([&] {
+            inGap.set_value();
+            cancelStarted.get_future().wait();
+            // Deadline is only for observing blocked cancellation. The old
+            // implementation is forced to finish its notify BEFORE wait().
+            cancelledBeforeWait = cancellationDone.wait_for(std::chrono::milliseconds(200)) == std::future_status::ready;
+        });
+        workerDone.set_value();
+    });
+    inGap.get_future().wait();
+    std::thread canceller([&] {
+        cancelStarted.set_value();
+        gate.cancel();
+        cancelDone.set_value();
+    });
+    const bool woke = completed.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+    if(!woke) gate.resume(); // deterministic rescue: never leave a hung test thread
+    worker.join();
+    canceller.join();
+    QVERIFY2(!cancelledBeforeWait, "cancel publication escaped the predicate mutex");
+    QVERIFY2(woke, "cancellation notification was lost in the predicate/wait gap");
+}
+
+// Connect the destructive owner first, as FileOperation does. Hold the
+// worker inside that handler while the GUI reads terminal data and deletes
+// its child observer. No queued observer notification has run yet.
+void ExplorerTransferControllerTest::completionPrecedesDestructiveFinishedHandlers() {
+    class CountingJob final : public Fm::FileOperationJob {
+        void exec() override { setTotalAmount(29, 1); setFinishedAmount(29, 1); }
+    } job;
+    job.setAutoDelete(false);
+    std::promise<void> entered, release;
+    auto released = release.get_future();
+    QObject owner;
+    QObject::connect(&job, &Fm::Job::finished, &owner, [&] {
+        entered.set_value();
+        released.wait();
+    }, Qt::DirectConnection);
+    auto* controller = new ExplorerTransferController(&job);
+    QVERIFY(controller->markStarted());
+    std::thread worker([&] { job.run(); });
+    entered.get_future().wait();
+    const auto terminal = controller->snapshot();
+    controller->cancel();
+    const bool pauseAccepted = controller->pause();
+    const bool resumeAccepted = controller->resume();
+    const auto afterControls = controller->snapshot();
+    delete controller;
+    release.set_value();
+    worker.join();
+    QCOMPARE(terminal.state, ExplorerTransferController::State::Finished);
+    QCOMPARE(terminal.finishedBytes, quint64(29));
+    QCOMPARE(afterControls.state, ExplorerTransferController::State::Finished);
+    QVERIFY(!afterControls.cancellationRequested);
+    QVERIFY(!pauseAccepted);
+    QVERIFY(!resumeAccepted);
+    QVERIFY(!job.isCancelled());
+}
+
+void ExplorerTransferControllerTest::cancellationBeforeGuiDispatchIsInTerminalSnapshot_data() {
+    QTest::addColumn<bool>("directCancellable");
+    QTest::newRow("Job-cancel") << false;
+    QTest::newRow("external-GCancellable") << true;
+}
+
+// Real Job::run(), no event loop dispatch until the worker has returned.
+void ExplorerTransferControllerTest::cancellationBeforeGuiDispatchIsInTerminalSnapshot() {
+    QFETCH(bool, directCancellable);
+    class CancelJob final : public Fm::FileOperationJob {
+    public:
+        bool direct = false;
+        void exec() override {
+            setTotalAmount(17, 1);
+            if(direct) g_cancellable_cancel(cancellable().get());
+            else cancel();
+        }
+    } job;
+    job.direct = directCancellable;
+    job.setAutoDelete(false);
+    ExplorerTransferController controller(&job);
+    QSignalSpy notices(&controller, &ExplorerTransferController::cancellationRequested);
+    QVERIFY(controller.markStarted());
+    std::thread worker([&] { job.run(); });
+    worker.join();
+    QCOMPARE(notices.count(), 0);
+    const auto terminal = controller.snapshot();
+    QCOMPARE(terminal.state, ExplorerTransferController::State::Finished);
+    QVERIFY(terminal.cancellationRequested);
+    QVERIFY(terminal.cancelled);
+    QCOMPARE(terminal.totalBytes, quint64(17));
+    QCoreApplication::processEvents();
+    QCOMPARE(notices.count(), 1);
+}
 
 void ExplorerTransferControllerTest::observerLifecycleTracksRealJobSignals() {
     ExplorerTransferController missingJob(nullptr);
@@ -336,31 +495,154 @@ void ExplorerTransferControllerTest::liveOperationPauseButtonWaitsForBackendAck(
     operation.setAutoDestroy(false);
     operation.setDestination(Fm::FilePath::fromLocalPath(destination.toLocal8Bit().constData()));
     QSignalSpy finished(&operation, &Fm::FileOperation::finished);
+    QPointer<Fm::FileOperationJob> job(operation.job());
+
+    // Rendezvous in preparation, not in a replacement copy implementation.
+    // FileOperation's earlier blocking prepared handler still runs normally.
+    // Keep the real worker here until its delayed dialog has requested pause:
+    // otherwise a fast copy may finish before the 1 s dialog factory timer.
+    std::promise<void> releaseWorker;
+    const auto released = releaseWorker.get_future().share();
+    const auto preparationReached = std::make_shared<std::atomic_bool>(false);
+    const auto rendezvousExpired = std::make_shared<std::atomic_bool>(false);
+    connect(job, &Fm::FileOperationJob::preparedToRun, &operation,
+        [released, preparationReached, rendezvousExpired] {
+            *preparationReached = true;
+            *rendezvousExpired = released.wait_for(std::chrono::seconds(15)) != std::future_status::ready;
+        }, Qt::DirectConnection);
+    bool workerReleased = false;
+    const auto release = [&] {
+        if(!workerReleased) {
+            workerReleased = true;
+            releaseWorker.set_value();
+        }
+    };
+
+    QElapsedTimer pauseClock;
+    pauseClock.start();
+    // One finite I/O budget, shared by checkpoint ACK and completion, rather
+    // than a 5 s pause SLA or QTRY's implicit extended-timeout second attempt.
+    // GIO may spend seconds inside one copy_file_range before the callback.
+    QDeadlineTimer ioDeadline(180000);
+    QPointer<ExplorerTransferController> controller;
+    QPointer<QPushButton> pause;
+    const QString copiedPath = QDir(destination).filePath(QFileInfo(source).fileName());
+    const char* phase = "preparing";
+    int responsiveTicks = 0;
+    const auto trace = [&] {
+        const auto s = controller ? controller->snapshot() : ExplorerTransferController::Snapshot{};
+        qInfo().noquote() << "PAUSE_TRACE" << "ms=" << pauseClock.elapsed() << "phase=" << phase
+            << "controller=" << bool(controller) << "state=" << int(s.state)
+            << "request=" << (job && job->pauseRequested()) << "ack=" << (job && job->isPauseAcknowledged())
+            << "current=" << s.currentFileBytes << "finished=" << s.finishedBytes << "total=" << s.totalBytes
+            << "disk=" << QFileInfo(copiedPath).size() << "gui_ticks=" << responsiveTicks
+            << "caption=" << (pause ? pause->text() : QStringLiteral("no-dialog"));
+    };
+    QTimer diagnosticTimer;
+    diagnosticTimer.setInterval(500);
+    connect(&diagnosticTimer, &QTimer::timeout, &operation, trace);
+    QTimer responsivenessProbe;
+    responsivenessProbe.setInterval(25);
+    connect(&responsivenessProbe, &QTimer::timeout, &operation, [&] { ++responsiveTicks; });
+    const auto cleanup = qScopeGuard([&] {
+        diagnosticTimer.stop();
+        responsivenessProbe.stop();
+        release();
+        Fm::FileOperation::setDialogFactory(nullptr);
+        if(job && finished.isEmpty()) {
+            job->cancel();
+            // Do not leave a paused worker accessing an already removed fixture
+            // when an assertion fails. Cancellation still needs a GIO checkpoint.
+            if(!QTest::qWaitFor([&] { return !finished.isEmpty(); }, 180000)) {
+                root.setAutoRemove(false);
+                qCritical().noquote() << "pause test cleanup timed out; retained active fixture" << root.path();
+            }
+        }
+    });
+    diagnosticTimer.start();
+    responsivenessProbe.start();
+    trace();
     QVERIFY(operation.run());
-    QTRY_VERIFY_WITH_TIMEOUT(capturedTransferDialog, 10000);
-    auto* pause = capturedTransferDialog->findChild<QPushButton*>(QStringLiteral("pauseButton"));
+    QVERIFY2(QTest::qWaitFor([&] { return capturedTransferDialog && preparationReached->load(); }, 10000),
+             "real delayed dialog / preparation rendezvous not reached");
+    controller = capturedTransferDialog->findChild<ExplorerTransferController*>();
+    pause = capturedTransferDialog->findChild<QPushButton*>(QStringLiteral("pauseButton"));
+    QVERIFY(controller);
     QVERIFY(pause);
     QVERIFY(pause->isVisible());
+    QVERIFY(pause->isEnabled());
+    QVERIFY(!job->isPauseAcknowledged());
+    phase = "factory-visible-worker-held";
+    trace();
     QTest::mouseClick(pause, Qt::LeftButton);
-    QTRY_COMPARE_WITH_TIMEOUT(pause->text(), QStringLiteral("Retomar"), 5000);
-    const QString copiedPath = QDir(destination).filePath(QFileInfo(source).fileName());
+    const qint64 requestedAt = pauseClock.elapsed();
+    QVERIFY(job->pauseRequested());
+    QVERIFY(!job->isPauseAcknowledged());
+    QCOMPARE(controller->snapshot().state, ExplorerTransferController::State::Pausing);
+    QCOMPARE(pause->text(), QStringLiteral("Pausando…"));
+    QVERIFY(!pause->isEnabled());
+    phase = "request-without-ack-worker-held";
+    trace();
+    // Exercise an actual GUI dispatch while the worker cannot ACK. This makes
+    // the test deterministically reject an optimistic/placebo Resume caption.
+    const int ticksBeforeAck = responsiveTicks;
+    QTest::qWait(75);
+    QVERIFY(responsiveTicks > ticksBeforeAck);
+    QVERIFY(!job->isPauseAcknowledged());
+    QCOMPARE(pause->text(), QStringLiteral("Pausando…"));
+    const qint64 releasedAt = pauseClock.elapsed();
+    release();
+    phase = "awaiting-gio-checkpoint";
+    QVERIFY2(QTest::qWaitFor([&] {
+        return !finished.isEmpty() || (controller && controller->snapshot().paused
+            && pause && pause->text() == QStringLiteral("Retomar") && pause->isEnabled());
+    }, int(ioDeadline.remainingTime())), "real pause ACK / UI not observed within the shared 180 s I/O budget");
+    QVERIFY2(finished.isEmpty(), "copy completed before a partial-copy pause ACK");
+    QVERIFY(controller);
+    QVERIFY(job->pauseRequested());
+    QVERIFY(job->isPauseAcknowledged());
+    QVERIFY(controller->snapshot().paused);
+    QCOMPARE(pause->text(), QStringLiteral("Retomar"));
+    const qint64 ackObservedAt = pauseClock.elapsed();
+    const qint64 ackLatencyMs = ackObservedAt - requestedAt;
     const qint64 pausedBytes = QFileInfo(copiedPath).size();
     QVERIFY(pausedBytes > 0);
     QVERIFY(pausedBytes < qint64(fixtureBytes));
-    QTest::qWait(300);
-    QCOMPARE(QFileInfo(copiedPath).size(), pausedBytes);
+    QVERIFY(!rendezvousExpired->load());
+    phase = "ack-partial-copy";
+    trace();
+    const int ticksWhilePaused = responsiveTicks;
+    // Check throughout the interval, not just two equal endpoint samples.
+    QElapsedTimer stableClock;
+    stableClock.start();
+    while(stableClock.elapsed() < 300) {
+        QTest::qWait(10);
+        QCOMPARE(QFileInfo(copiedPath).size(), pausedBytes);
+        QVERIFY(job->isPauseAcknowledged());
+    }
+    QVERIFY(responsiveTicks >= ticksWhilePaused + 5);
+    const qint64 stableMs = stableClock.elapsed();
+    const int pausedGuiTicks = responsiveTicks - ticksWhilePaused;
     const QString capture = qEnvironmentVariable("EXPLORER_TRANSFER_UI_SCREENSHOT");
     if(!capture.isEmpty()) QVERIFY(capturedTransferDialog->grab().save(capture));
     QTest::mouseClick(pause, Qt::LeftButton);
-    QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 180000);
+    QVERIFY(!job->pauseRequested());
+    phase = "resumed";
+    trace();
+    QVERIFY2(QTest::qWaitFor([&] { return finished.count() == 1; }, int(ioDeadline.remainingTime())),
+             "resume did not complete within the shared 180 s I/O budget");
     QCOMPARE(QFileInfo(copiedPath).size(), qint64(fixtureBytes));
     qInfo().noquote() << "LIVE_TRANSFER_UI"
                       << "fixture_bytes=" << fixtureBytes
                       << "paused_bytes=" << pausedBytes
+                      << "ack_latency_ms=" << ackLatencyMs
+                      << "checkpoint_wait_ms=" << ackObservedAt - releasedAt
+                      << "elapsed_ms=" << pauseClock.elapsed()
+                      << "stable_ms=" << stableMs
+                      << "paused_gui_ticks=" << pausedGuiTicks
                       << "pause_button_ack_label=" << QStringLiteral("Retomar")
                       << "completed_bytes=" << QFileInfo(copiedPath).size()
                       << "screenshot=" << (capture.isEmpty() ? QStringLiteral("not-requested") : capture);
-    Fm::FileOperation::setDialogFactory(nullptr);
 }
 
 void ExplorerTransferControllerTest::defaultDialogFactoryReceivesPointerBasedErrorWithoutTestRegistration() {

@@ -1,7 +1,6 @@
 #include "explorertransfercontroller.h"
 
 #include <QString>
-#include <QMutexLocker>
 #include <QMetaObject>
 #include "core/fileoperationjob.h"
 #include "core/filetransferjob.h"
@@ -11,30 +10,22 @@ ExplorerTransferController::ExplorerTransferController(Fm::FileOperationJob* job
     timer_.setInterval(100);
     connect(&timer_, &QTimer::timeout, this, &ExplorerTransferController::sample);
     if(!job_) {
-        state_.store(State::Detached);
+        state_ = State::Detached;
         return;
     }
     connect(job_, &Fm::FileOperationJob::preparedToRun,
             this, &ExplorerTransferController::onPrepared, Qt::QueuedConnection);
-    // Capture final counters synchronously before libfm-qt's auto-delete can destroy the job.
-    connect(job_, &Fm::Job::finished, this, [this] {
-        Snapshot final = readJobSnapshot();
-        final.state = State::Finished;
-        final.running = false;
-        final.cancellationRequested = cancellationRequested_.load();
-        final.cancelled = final.cancellationRequested;
-        {
-            QMutexLocker lock(&finalSnapshotMutex_);
-            finalSnapshot_ = final;
-            hasFinalSnapshot_ = true;
-        }
-        state_.store(State::Finished);
-        QMetaObject::invokeMethod(this, &ExplorerTransferController::onFinishedObserved, Qt::QueuedConnection);
-    }, Qt::DirectConnection);
+    completion_ = job->completion();
+    // Only queued QObject deliveries. No worker callback captures this, even
+    // while an earlier FileOperation finished handler destroys the dialog.
+    connect(job_, &Fm::Job::finished, this,
+            &ExplorerTransferController::onFinishedObserved, Qt::QueuedConnection);
     connect(job_, &Fm::Job::cancelled, this, [this] {
-        if(!cancellationRequested_.exchange(true)) {
-            if(state_.load() != State::Finished && state_.load() != State::Detached)
-                state_.store(State::Cancelling);
+        if(!cancellationRequested_) {
+            cancellationRequested_ = true;
+            const auto current = snapshot().state;
+            if(current != State::Finished && current != State::Detached)
+                state_ = State::Cancelling;
             Q_EMIT cancellationRequested();
         }
     }, Qt::QueuedConnection);
@@ -47,12 +38,12 @@ ExplorerTransferController::~ExplorerTransferController() {
 
 ExplorerTransferController::Snapshot ExplorerTransferController::readJobSnapshot() const {
     Snapshot result;
-    result.state = state_.load();
+    result.state = state_;
     result.running = result.state == State::Preparing || result.state == State::Running ||
                      result.state == State::Pausing || result.state == State::Paused || result.state == State::Cancelling;
-    result.cancellationRequested = cancellationRequested_.load();
+    result.cancellationRequested = cancellationRequested_;
     result.cancelled = result.cancellationRequested;
-    if(started_.load())
+    if(started_)
         result.elapsedSeconds = elapsed_.elapsed() / 1000.0;
     if(!job_)
         return result;
@@ -80,16 +71,33 @@ ExplorerTransferController::Snapshot ExplorerTransferController::readJobSnapshot
     return result;
 }
 
-ExplorerTransferController::Snapshot ExplorerTransferController::snapshot() const {
-    if(state_.load() == State::Finished) {
-        QMutexLocker lock(&finalSnapshotMutex_);
-        if(hasFinalSnapshot_)
-            return finalSnapshot_;
+bool ExplorerTransferController::terminalSnapshot(Snapshot& result) const {
+    if(!completion_) return false;
+    std::lock_guard<std::mutex> lock{completion_->mutex};
+    if(!completion_->ready) return false;
+    result.state = State::Finished;
+    result.hasTotals = completion_->hasTotals;
+    result.totalBytes = completion_->totalBytes;
+    result.finishedBytes = completion_->finishedBytes;
+    result.currentFileTotalBytes = completion_->currentTotal;
+    result.currentFileBytes = completion_->currentDone;
+    if(completion_->currentFile) {
+        const auto path = completion_->currentFile.toString();
+        result.source = QString::fromUtf8(path.get());
     }
-    if(state_.load() == State::Detached) {
-        Snapshot result;
+    result.cancellationRequested = completion_->cancellationRequested;
+    result.cancelled = result.cancellationRequested;
+    if(started_)
+        result.elapsedSeconds = qMax(0.0, std::chrono::duration<double>(completion_->completedAt - startedAt_).count());
+    return true;
+}
+
+ExplorerTransferController::Snapshot ExplorerTransferController::snapshot() const {
+    Snapshot result;
+    if(terminalSnapshot(result)) return result;
+    if(state_ == State::Detached || !job_) {
         result.state = State::Detached;
-        result.cancellationRequested = cancellationRequested_.load();
+        result.cancellationRequested = cancellationRequested_;
         result.cancelled = result.cancellationRequested;
         return result;
     }
@@ -97,9 +105,10 @@ ExplorerTransferController::Snapshot ExplorerTransferController::snapshot() cons
 }
 
 bool ExplorerTransferController::attachLate() {
-    State expected = State::Idle;
-    if(!job_ || !state_.compare_exchange_strong(expected, State::Running))
+    if(!job_ || snapshot().state != State::Idle)
         return false;
+    state_ = State::Running;
+    startedAt_ = std::chrono::steady_clock::now();
     started_ = true;
     elapsed_.start();
     timer_.start();
@@ -108,9 +117,10 @@ bool ExplorerTransferController::attachLate() {
 }
 
 bool ExplorerTransferController::markStarted() {
-    State expected = State::Idle;
-    if(!job_ || !state_.compare_exchange_strong(expected, State::Preparing))
+    if(!job_ || snapshot().state != State::Idle)
         return false;
+    state_ = State::Preparing;
+    startedAt_ = std::chrono::steady_clock::now();
     started_ = true;
     elapsed_.start();
     timer_.start();
@@ -118,71 +128,84 @@ bool ExplorerTransferController::markStarted() {
 }
 
 void ExplorerTransferController::cancel() {
-    const auto current = state_.load();
+    const auto current = snapshot().state;
     if(!job_ || (current != State::Preparing && current != State::Running &&
                  current != State::Pausing && current != State::Paused && current != State::Cancelling))
         return;
-    if(cancellationRequested_.exchange(true)) return;
-    state_.store(State::Cancelling);
-    job_->cancel();
+    if(cancellationRequested_) return;
+    // Reserve the intent before entering GLib: cancelled handlers may call
+    // cancel() again synchronously (or dispatch the queued notification).
+    cancellationRequested_ = true;
+    QPointer<ExplorerTransferController> alive(this);
+    const bool accepted = job_->requestCancellation();
+    if(!alive) return;
+    if(!accepted) {
+        // Completion won the backend cut; no cancellation was performed.
+        cancellationRequested_ = false;
+        return;
+    }
+    if(snapshot().state != State::Finished) state_ = State::Cancelling;
     Q_EMIT cancellationRequested();
 }
 
 bool ExplorerTransferController::supportsPause() const {
     auto* transfer = dynamic_cast<Fm::FileTransferJob*>(job_.data());
-    const auto current = state_.load();
-    return transfer && transfer->supportsCooperativePause() &&
-           current != State::Finished && current != State::Detached && current != State::Cancelling;
+    const auto current = snapshot().state;
+    return current != State::Finished && current != State::Detached && current != State::Cancelling &&
+           transfer && transfer->supportsCooperativePause() && snapshot().state != State::Finished;
 }
 
 bool ExplorerTransferController::pause() {
-    const auto current = state_.load();
+    const auto current = snapshot().state;
     if(!supportsPause() || (current != State::Preparing && current != State::Running))
         return false;
     auto* transfer = dynamic_cast<Fm::FileTransferJob*>(job_.data());
-    if(!transfer || !transfer->pause()) return false;
-    state_.store(State::Pausing);
+    if(!transfer || !transfer->pause() || snapshot().state == State::Finished) return false;
+    state_ = State::Pausing;
     return true;
 }
 
 bool ExplorerTransferController::resume() {
-    const auto current = state_.load();
+    const auto current = snapshot().state;
     if(current != State::Pausing && current != State::Paused) return false;
     auto* transfer = dynamic_cast<Fm::FileTransferJob*>(job_.data());
     if(!transfer || !transfer->pauseRequested()) return false;
     transfer->resume();
-    state_.store(State::Running);
+    if(snapshot().state == State::Finished) return false;
+    state_ = State::Running;
     return true;
 }
 
 void ExplorerTransferController::sample() {
-    if(state_.load() == State::Detached || state_.load() == State::Finished) {
+    const auto current = snapshot().state;
+    if(current == State::Detached || current == State::Finished) {
         timer_.stop();
         return;
     }
     if(auto* transfer = dynamic_cast<Fm::FileTransferJob*>(job_.data())) {
-        if(transfer->isPauseAcknowledged() && state_.load() == State::Pausing)
-            state_.store(State::Paused);
-        else if(!transfer->pauseRequested() && state_.load() == State::Pausing)
-            state_.store(State::Running);
+        if(transfer->isPauseAcknowledged() && state_ == State::Pausing)
+            state_ = State::Paused;
+        else if(!transfer->pauseRequested() && state_ == State::Pausing)
+            state_ = State::Running;
     }
     Q_EMIT telemetryUpdated();
 }
 
 void ExplorerTransferController::onPrepared() {
-    if(state_.load() == State::Preparing)
-        state_.store(State::Running);
+    if(snapshot().state == State::Preparing)
+        state_ = State::Running;
     Q_EMIT telemetryUpdated();
 }
 
 void ExplorerTransferController::onFinishedObserved() {
+    state_ = State::Finished;
     timer_.stop();
+    QPointer<ExplorerTransferController> alive(this);
     Q_EMIT telemetryUpdated();
-    Q_EMIT finished();
+    if(alive) Q_EMIT finished();
 }
 
 void ExplorerTransferController::onJobDestroyed() {
-    if(state_.load() != State::Finished)
-        state_.store(State::Detached);
+    state_ = snapshot().state == State::Finished ? State::Finished : State::Detached;
     timer_.stop();
 }
