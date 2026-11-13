@@ -63,16 +63,53 @@ this harness does not create replacement reference evidence.
 
 ## First real-image checkpoint
 
-The currently available static inputs are the pre-existing
+The historical static checkpoint used the pre-existing
 `.state/reference/explorer-window.png` and `.state/proof-x11/explorer-window.png`
-from the primary checkout. They are both 1104x642, but the phase-2 reference
-manifest directory may not yet contain a published run. A comparison between
-these files is a descriptive initial checkpoint only: the reference image is
+from the primary checkout, both 1104x642. A comparison between these files is
+a descriptive initial checkpoint only: the reference image is
 not a manifest-backed phase-2 run, the X11 capture is Linux evidence, and a
 shared image size does not establish all environment/state equivalence. Do not
 label this result Windows parity. When the designated operator publishes
 `STATIC_READY.json`, validate that manifest and compare only matched measured
 cases using their actual metadata and regions.
 
-Synthetic images in the unit tests are explicitly algorithm fixtures, never
-reported as Windows captures. Run `python3 -m unittest discover -s tests/fidelity -v`.
+## Portable unit tests and opt-in real evidence integration
+
+Synthetic images in the unit tests are algorithm fixtures, never reported as
+Windows captures and never bundled Microsoft assets. The default CTest
+`fidelity-harness` does not need the primary checkout's ignored `.state` tree:
+
+```sh
+/usr/bin/python3 -m unittest discover -s tests/fidelity -v
+```
+
+The existing recorder unit suites (no VM/GUI) are registered separately as
+`reference-capture-unit`, `reference-capture-ids-unit`, and
+`reference-timeline-unit`. These test input encoding/ID guards and timeline
+math, not real hover, keyboard, pressed, cancellation, or Windows parity.
+
+Real evidence integration is deliberately outside default discovery, with no
+hard-coded home directory. Running it without an explicit root reports honest
+skips. Supplying a root opts in; missing files then fail, not silently skip:
+
+```sh
+FIDELITY_REAL_EVIDENCE_ROOT=/absolute/path/to/.state/fidelity/reference/phase2 \
+FIDELITY_EVIDENCE_REPORT_DIR="$PWD/.state/evidence-review" \
+  /usr/bin/python3 -m unittest discover -s tests/fidelity/integration -v
+```
+
+The integration targets the historical `20261031T0003-0300` producer formats
+and `20261031T0022-0300` run with 152 actual PNGs. It validates all referenced
+files and ROIs, checks 96 DPI/100% scale, preserved source metadata/timestamps,
+and normalization twice, then executes the real CLI and pixel timeline.
+Reports are written only outside the supplied evidence root; originals are
+read-only inputs. Omit `FIDELITY_EVIDENCE_REPORT_DIR` to use temporary reports.
+
+For the 152-frame run, `refresh_rate_hz` is explicitly null: the container is
+valid but `quality_gaps=["refresh_hz"]` and `equality_eligible=false`.
+`real-152-validation.json` records environment parity/equivalence as
+`not_evaluated`. `real-152-timeline.json` records descriptive measured pixel
+changes, event brackets, and actual sampled intervals; its equivalence remains
+`not_evaluated` because no matched candidate or measured acceptance criteria
+are supplied. These artifacts do not prove exact animation durations, complete
+state coverage, refresh cadence, or Windows/Linux parity.

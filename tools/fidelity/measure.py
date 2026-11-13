@@ -7,6 +7,10 @@ import json
 import math
 import platform
 import sys
+import os
+import stat
+import secrets
+from io import BytesIO
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -86,21 +90,47 @@ def _resolve_artifact(value: str, base_dir: Path):
     return resolved
 
 
-def _has_measured_value(value: Any):
+_MEASUREMENT_METADATA = {"name", "id", "label", "unit", "units", "description", "source", "provenance", "limitations"}
+
+
+def _validate_measurement_numbers(value: Any):
+    # Traverse every leaf before searching for an observation: any() must not
+    # let an earlier valid value hide NaN/Infinity in a neighbouring measurement.
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("measurement numbers must be finite")
+    if isinstance(value, dict):
+        for item in value.values():
+            _validate_measurement_numbers(item)
+    elif isinstance(value, list):
+        for item in value:
+            _validate_measurement_numbers(item)
+
+
+def _contains_observed_value(value: Any):
     if value is None:
         return False
-    if isinstance(value, bool):
-        return True
-    if isinstance(value, (int, float)):
-        return math.isfinite(value)
+    if isinstance(value, (bool, int, float)):
+        return True  # Finite numbers were checked separately; zero/False are data.
     if isinstance(value, str):
-        text = value.strip().lower()
-        return bool(text) and not any(marker in text for marker in ("unknown", "not measured", "not observed"))
+        text = value.strip().lower().replace("_", " ").replace("-", " ")
+        return bool(text) and text not in {"null", "none", "n/a", "nan", "infinity"} and not any(
+            marker in text for marker in ("unknown", "not measured", "not observed", "unmeasured"))
     if isinstance(value, dict):
-        return bool(value) and any(_has_measured_value(item) for item in value.values())
+        return any(_contains_observed_value(item) for key, item in value.items()
+                   if key not in _MEASUREMENT_METADATA)
     if isinstance(value, list):
-        return bool(value) and any(_has_measured_value(item) for item in value)
+        return any(_contains_observed_value(item) for item in value)
     return False
+
+
+def _has_measured_value(value: Any):
+    """Inspect observed payloads, never metric names/units/descriptions."""
+    _validate_measurement_numbers(value)
+    if isinstance(value, list):
+        # The container defines named records; auxiliary fields are not payloads.
+        return any(_contains_observed_value(record.get("value"))
+                   for record in value if isinstance(record, dict))
+    return _contains_observed_value(value)
 
 
 def _normalize_manifest_frames(frames: list[Any]):
@@ -133,9 +163,23 @@ def _normalize_manifest_frames(frames: list[Any]):
             region = [0, 0, width, height]
             extra = {"screen_origin": origin, "region_coordinate_space": "screen"}
         elif isinstance(region, list):
-            extra = {"region_coordinate_space": "image"}
+            extra = {"region_coordinate_space": frame.get("region_coordinate_space", "image")}
+        timestamp_provenance = frame.get("timestamp_provenance", {
+            "field": field, "source_value": frame[field], "source_unit": unit})
+        if not isinstance(timestamp_provenance, dict) or set(timestamp_provenance) != {"field", "source_value", "source_unit"}:
+            raise ValueError("timestamp_provenance must contain field, source_value and source_unit")
+        source_field = timestamp_provenance["field"]
+        units = {"timestamp_ms": "ms", "elapsed_ms": "ms", "monotonic_ns": "ns"}
+        if not isinstance(source_field, str) or source_field not in units or timestamp_provenance["source_unit"] != units[source_field]:
+            raise ValueError("timestamp_provenance field and source_unit must name a supported timestamp")
+        source_value = timestamp_provenance["source_value"]
+        if type(source_value) not in (int, float) or not math.isfinite(source_value):
+            raise ValueError("timestamp_provenance source_value must be finite numeric data")
+        source_ms = source_value / 1_000_000 if units[source_field] == "ns" else source_value
+        if source_ms != timestamp or (source_field in frame and frame[source_field] != source_value):
+            raise ValueError("timestamp_provenance does not match frame timestamp")
         normalized.append({**frame, **extra, "timestamp_ms": timestamp, "region": region,
-                           "timestamp_provenance": {"field": field, "source_value": frame[field], "source_unit": unit}})
+                           "timestamp_provenance": timestamp_provenance})
     return normalized
 
 
@@ -276,7 +320,24 @@ def evaluate_criteria(metrics: dict[str, Any], criteria: dict[str, Any] | None,
 _ENV_ALIASES = {"locale": "language", "resolution": "resolution_px",
                 "client_rect": "client_rect_px", "refresh_hz": "refresh_rate_hz_reported"}
 _ENV_FIELDS = ("build", "theme", "locale", "dpi", "scale", "resolution", "client_rect", "refresh_hz", "capture_method")
-_ALLOWED_STATUS = {"measured", "blocked", "not_observed"}
+_ALLOWED_STATUS = {"measured", "partial", "blocked", "not_observed"}
+
+
+def _normalize_environment(env):
+    normalized_env = {**env, **{key: env[key] if key in env else env.get(_ENV_ALIASES.get(key, key), "unknown")
+                              for key in _ENV_FIELDS}}
+    if "refresh_hz" not in env and "refresh_rate_hz" in env:
+        normalized_env["refresh_hz"] = env["refresh_rate_hz"] if env["refresh_rate_hz"] is not None else "unknown"
+    if isinstance(env.get("dpi"), dict):
+        measured_dpi = env["dpi"].get("GetDpiForWindow")
+        measured_scale = env["dpi"].get("scale_percent")
+        normalized_env["dpi"] = measured_dpi if type(measured_dpi) in (int, float) else "unknown"
+        if "scale" not in env:
+            normalized_env["scale"] = measured_scale / 100 if type(measured_scale) in (int, float) else "unknown"
+    if "client_rect" not in env and isinstance(env.get("client_rect_px"), dict):
+        rect = env["client_rect_px"].get("client_rect")
+        normalized_env["client_rect"] = rect if isinstance(rect, list) else "unknown"
+    return normalized_env
 
 
 def validate_manifest(manifest: Any, base_dir: Path | None = None):
@@ -285,17 +346,16 @@ def validate_manifest(manifest: Any, base_dir: Path | None = None):
     env = manifest.get("environment")
     if not isinstance(env, dict):
         raise ValueError("environment must be an object")
-    normalized_env = {**env, **{key: env.get(_ENV_ALIASES.get(key, key), "unknown") for key in _ENV_FIELDS}}
-    if isinstance(env.get("dpi"), dict):
-        measured_dpi = env["dpi"].get("GetDpiForWindow")
-        measured_scale = env["dpi"].get("scale_percent")
-        normalized_env["dpi"] = measured_dpi if type(measured_dpi) in (int, float) else "unknown"
-        normalized_env["scale"] = measured_scale / 100 if type(measured_scale) in (int, float) else "unknown"
-    if isinstance(env.get("client_rect_px"), dict):
-        rect = env["client_rect_px"].get("client_rect")
-        normalized_env["client_rect"] = rect if isinstance(rect, list) else "unknown"
-    if env.get("refresh_rate_hz") is None:
-        normalized_env["refresh_hz"] = "unknown"
+    provenance = manifest.get("provenance", {})
+    if not isinstance(provenance, dict):
+        raise ValueError("provenance must be an object")
+    source_env = provenance.get("producer_environment", env)
+    if not isinstance(source_env, dict):
+        raise ValueError("provenance producer_environment must be an object")
+    normalized_env = _normalize_environment(env)
+    source_normalized = _normalize_environment(source_env)
+    if source_normalized != normalized_env:
+        raise ValueError("provenance producer_environment does not match effective environment")
     quality_gaps = []
     for key in _ENV_FIELDS:
         value = normalized_env[key]
@@ -312,16 +372,20 @@ def validate_manifest(manifest: Any, base_dir: Path | None = None):
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
             if key not in quality_gaps:
                 quality_gaps.append(key)
-    # These producer fields explicitly report approximations/untrusted values.
-    if "client_rect_px" in env and "approx" in str(env["client_rect_px"]).lower() and "client_rect" not in quality_gaps:
-        quality_gaps.append("client_rect")
-    if "refresh_rate_hz_reported" in env:
-        if "refresh_hz" not in quality_gaps:
+    # Neither claimed provenance nor a normalized canonical alias can erase
+    # the producer's explicitly reported/approximate quality limitation.
+    for producer in (env, source_env):
+        if "client_rect" not in producer and "approx" in str(producer.get("client_rect_px", "")).lower():
+            quality_gaps.append("client_rect")
+        if "refresh_hz" not in producer and "refresh_rate_hz" not in producer and "refresh_rate_hz_reported" in producer:
             quality_gaps.append("refresh_hz")
     quality_gaps = list(dict.fromkeys(quality_gaps))
     cases = manifest.get("cases")
     if not isinstance(cases, list) or not cases:
         raise ValueError("cases must be a non-empty list")
+    artifacts = manifest.get("artifacts", [])
+    if not isinstance(artifacts, list) or any(not isinstance(item, str) or not item for item in artifacts):
+        raise ValueError("manifest artifacts must be a list of non-empty path strings")
     ids = set()
     for case in cases:
         if not isinstance(case, dict) or not isinstance(case.get("id"), str) or not case["id"]:
@@ -330,14 +394,14 @@ def validate_manifest(manifest: Any, base_dir: Path | None = None):
             raise ValueError("case ids must be unique")
         ids.add(case["id"])
         if case.get("status") not in _ALLOWED_STATUS:
-            raise ValueError("case status must be measured, blocked, or not_observed")
+            raise ValueError("case status must be measured, partial, blocked, or not_observed")
         if not isinstance(case.get("artifacts"), list) or not isinstance(case.get("measurements"), (list, dict)) or not isinstance(case.get("limitations"), list):
             raise ValueError("case artifacts and limitations must be lists; measurements must be list or object")
+        has_observation = _has_measured_value(case["measurements"])
         if case["status"] == "measured":
             if not case["artifacts"] or any(not isinstance(item, str) or not item for item in case["artifacts"]):
                 raise ValueError("measured case must include at least one supporting artifact")
-            measurements = case["measurements"]
-            if not _has_measured_value(measurements):
+            if not has_observation:
                 raise ValueError("measured case must include at least one measurement")
     raw_frames = manifest.get("frames", [])
     if not isinstance(raw_frames, list):
@@ -354,7 +418,7 @@ def validate_manifest(manifest: Any, base_dir: Path | None = None):
         if any(type(value) is not int for value in region) or x < 0 or y < 0 or width <= 0 or height <= 0:
             raise ValueError("frame region must use non-negative integer x/y and positive integer width/height")
     if base_dir is not None:
-        paths = []
+        paths = list(artifacts)
         for case in cases:
             paths.extend(case["artifacts"])
         paths.extend(f["file"] for f in frames)
@@ -373,10 +437,83 @@ def validate_manifest(manifest: Any, base_dir: Path | None = None):
     normalized["provenance"] = {"adapter": "schema-v1-alias-and-measurement-container-normalizer",
                                 "producer_environment": dict(env),
                                 "source_frames": raw_frames,
-                                "source_schema_version": manifest["schema_version"]}
+                                "source_schema_version": manifest["schema_version"], **provenance}
     return {"status": "valid", "schema_version": 1, "case_count": len(cases), "frame_count": len(frames),
             "environment": normalized_env, "quality_gaps": quality_gaps,
             "equality_eligible": not quality_gaps, "normalized_manifest": normalized}
+
+
+def _check_output_paths(paths, protected_paths=(), protected_roots=()):
+    """Preflight every destination, including existing physical components."""
+    sources = [Path(p).resolve() for p in protected_paths]
+    roots = [Path(p).resolve() for p in protected_roots]
+    for source in sources:
+        roots.extend(p for p in source.parents if p.name == "phase2"
+                     and p.parent.name == "reference" and p.parent.parent.name == "fidelity"
+                     and p.parent.parent.parent.name == ".state")
+    destinations = []
+    for value in paths:
+        path = Path(value).absolute()
+        if ".." in path.parts:
+            raise ValueError("output path must not contain parent traversal")
+        for component in (path, *path.parents):
+            if component.is_symlink():
+                raise ValueError("output path must not contain symlinks")
+            if component != path and component.exists() and not component.is_dir():
+                raise ValueError("output parent must be a directory")
+        physical = path.resolve()
+        # All planned destinations are files: neither may parent the other.
+        if any(physical.is_relative_to(previous) or previous.is_relative_to(physical)
+               or (path.exists() and previous.exists()
+                   and os.path.samefile(path, previous)) for previous in destinations):
+            raise ValueError("output paths collide with another planned destination")
+        destinations.append(physical)
+        if any(physical.is_relative_to(root) for root in roots):
+            raise ValueError("output path overlaps protected evidence root")
+        if physical in sources or (path.exists() and any(
+                source.exists() and os.path.samefile(path, source) for source in sources)):
+            raise ValueError("output path overlaps source evidence")
+        if path.exists():
+            info = path.stat(follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError("output must be an unlinked regular file")
+
+
+def _write_output(path, payload, protected_paths=(), protected_roots=()):
+    """Atomic replacement through pinned no-follow directory descriptors."""
+    _check_output_paths([path], protected_paths, protected_roots)
+    path = Path(path).absolute()
+    directory = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    temporary = None
+    try:
+        for part in path.parts[1:-1]:
+            try:
+                os.mkdir(part, dir_fd=directory)
+            except FileExistsError:
+                pass
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        try:
+            info = os.stat(path.name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            info = None
+        if info is not None and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
+            raise ValueError("output must be a non-symlink, unlinked regular file")
+        temporary = ".fidelity-" + secrets.token_hex(16)
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=directory)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # rename replaces the directory entry itself, never follows a raced-in symlink.
+        os.replace(temporary, path.name, src_dir_fd=directory, dst_dir_fd=directory)
+        temporary = None
+    finally:
+        if temporary is not None:
+            os.unlink(temporary, dir_fd=directory)
+        os.close(directory)
 
 
 def _parse_region(text: str):
@@ -400,6 +537,22 @@ def _compare(args):
             raise ValueError(f"evidence image not found: {p}")
     ref, cand = Image.open(ref_path), Image.open(cand_path)
     regions = args.region or [("full", None)]
+    protected = [ref_path, cand_path]
+    criteria = None
+    if args.criteria:
+        criteria_path = Path(args.criteria).resolve()
+        protected.append(criteria_path)
+        criteria = json.loads(criteria_path.read_text())
+        source = criteria.get("source") if isinstance(criteria, dict) else None
+        if not isinstance(source, dict):
+            raise ValueError("criteria source evidence must provide path and sha256")
+        source_path = source.get("path")
+        if not isinstance(source_path, str):
+            raise ValueError("criteria source evidence must provide path and sha256")
+        protected.append(_resolve_artifact(source_path, criteria_path.parent))
+    outputs = [args.report] + [f"{prefix}.{name}.png" for prefix in (args.heatmap, args.overlay)
+                              if prefix for name, _ in regions]
+    _check_output_paths(outputs, protected)
     output_regions = []
     for name, crop in regions:
         result = compare_region(ref, cand, crop)
@@ -409,10 +562,12 @@ def _compare(args):
             box = _crop_box(crop, ref.size)
             r, c = ref.convert("RGBA").crop(box), cand.convert("RGBA").crop(box)
             diff = ImageChops.difference(r, c).convert("RGB")
-            if args.heatmap:
-                ImageEnhance.Contrast(diff).enhance(4).save(f"{args.heatmap}.{name}.png")
-            if args.overlay:
-                Image.blend(r.convert("RGB"), c.convert("RGB"), .5).save(f"{args.overlay}.{name}.png")
+            for prefix, image in ((args.heatmap, ImageEnhance.Contrast(diff).enhance(4)),
+                                  (args.overlay, Image.blend(r.convert("RGB"), c.convert("RGB"), .5))):
+                if prefix:
+                    buffer = BytesIO()
+                    image.save(buffer, format="PNG")
+                    _write_output(f"{prefix}.{name}.png", buffer.getvalue(), protected)
     report = {"schema_version": 1, "generated_utc": datetime.now(timezone.utc).isoformat(),
               "status": "not_evaluated", "equivalence": "not_evaluated",
               "reference": {"path": str(ref_path), "sha256": _sha256(ref_path), "state": args.reference_state},
@@ -421,15 +576,13 @@ def _compare(args):
               "capture_metadata": {"reference_label": args.reference_label, "candidate_label": args.candidate_label},
               "regions": output_regions}
     if args.criteria:
-        criteria = json.loads(Path(args.criteria).read_text())
         # Explicit criteria may evaluate named region metrics, never a hidden global aggregate.
         for region in output_regions:
             region["evaluation"] = evaluate_criteria(region["color"], criteria, Path(args.criteria).resolve().parent)
         evaluations = [r["evaluation"] for r in output_regions]
         report["status"] = "measured"
         report["equivalence"] = "pass" if all(e["equivalence"] == "pass" for e in evaluations) else "fail"
-    Path(args.report).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.report).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    _write_output(args.report, (json.dumps(report, indent=2, sort_keys=True) + "\n").encode(), protected)
     print(json.dumps({"report": str(Path(args.report).resolve()), "status": report["status"],
                       "equivalence": report["equivalence"], "regions": len(output_regions)}))
 
@@ -441,7 +594,10 @@ def _timeline(args):
     manifest = json.loads(path.read_text())
     transfer = None
     validation = None
-    if "frames" in manifest and "start_utc" in manifest:
+    # Shared container declarations take precedence over legacy metadata.
+    # schema_version alone is not a family discriminator for producer logs.
+    if (isinstance(manifest, dict) and "frames" in manifest and "start_utc" in manifest
+            and "environment" not in manifest and "cases" not in manifest):
         transfer = adapt_transfer_timeline(manifest, path.parent)
         frames = transfer["frames"]
     else:
@@ -466,14 +622,30 @@ def _timeline(args):
               "pillow": PILLOW_VERSION}, "timelines": [measure_timeline(frames, path.parent)]}
     event_associations = {}
     if validation is not None:
-        for case in manifest.get("cases", []):
-            measurements = case.get("measurements", {})
-            events = measurements.get("input_events", []) if isinstance(measurements, dict) else []
+        for case in validation["normalized_manifest"]["cases"]:
+            events = []
+            for record in case["measurements"]:
+                if isinstance(record, dict) and record.get("name") == "input_events":
+                    value = record.get("value")
+                    # Explicit absence is not an observed event list. Do not use
+                    # recursive observation detection here: malformed event
+                    # objects/lists must still reach the strict checks below.
+                    if value is None or (isinstance(value, str) and not _contains_observed_value(value)):
+                        continue
+                    if not isinstance(value, list) or any(not isinstance(event, dict) for event in value):
+                        raise ValueError("input_events must be a list of event objects")
+                    events.extend(value)
             if events:
                 event_associations[case["id"]] = associate_timeline_events(report["timelines"][0], events)
     report["event_associations"] = event_associations
-    Path(args.report).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.report).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    protected = [path, *[_resolve_artifact(frame["file"], path.parent) for frame in frames]]
+    if validation is not None:
+        normalized = validation["normalized_manifest"]
+        artifacts = list(normalized.get("artifacts", []))
+        for case in normalized["cases"]:
+            artifacts.extend(case["artifacts"])
+        protected.extend(_resolve_artifact(item, path.parent) for item in artifacts)
+    _write_output(args.report, (json.dumps(report, indent=2, sort_keys=True) + "\n").encode(), protected)
     print(json.dumps({"report": str(Path(args.report).resolve()), "status": report["status"],
                       "equivalence": report["equivalence"], "frames": len(frames)}))
 

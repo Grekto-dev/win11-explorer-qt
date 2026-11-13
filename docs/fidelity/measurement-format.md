@@ -14,17 +14,59 @@ A UTF-8 JSON manifest contains:
   `capture_method`. Values describe the actual capture; do not fill unknowns
   with guesses. The validator losslessly adapts the published producer aliases
   `language`, `resolution_px`, `client_rect_px`, and
-  `refresh_rate_hz_reported`; it records canonical fields in a normalized copy
-  and retains provenance. Missing/unmeasured values become `unknown`, never
-  inferred DPI, scale, client geometry, or refresh rate.
+  `refresh_rate_hz_reported` (or `refresh_rate_hz`); it records canonical fields
+  in a normalized copy and retains provenance. A present canonical field wins,
+  including an explicit null; aliases are fallback only. An absent
+  `refresh_rate_hz` does not erase canonical `refresh_hz`; an explicit null in
+  that producer field means unknown when no canonical value exists and does not
+  fall through to a reported rate. `refresh_rate_hz_reported` alone remains an
+  untrusted-rate quality gap. Missing/unmeasured values become `unknown`, never
+  inferred DPI, scale, client geometry, or refresh rate. Normalizing again
+  preserves the original producer environment, source frames, timestamp units,
+  and screen origins in the existing provenance, rather than wrapping copies.
+  A supplied `provenance.producer_environment` must normalize to the same
+  effective environment (including retained producer fields); incomplete or
+  conflicting claims are rejected. Quality checks also inspect the effective
+  input, so a claimed provenance cannot erase a reported-rate gap. This is
+  contract consistency, not cryptographic attestation of the producer.
 - `fixtures`: optional fixture metadata. If present, describe synthetic input,
   logical/allocated sizes, and hashes actually calculated.
+- `artifacts`: optional top-level list of non-empty path strings (for example
+  the source archive or contact sheet). All are validated, even when they do
+  not also appear under a case or frame.
 - `cases`: non-empty list of unique `id`s with `status` exactly `measured`,
-  `blocked`, or `not_observed`, plus `artifacts`, `measurements`, and
-  `limitations`. Producer `measurements` may be a list or a keyed object and is
-  normalized to a list in the returned copy. A `measured` case must contain at
-  least one supporting artifact and one measurement; blocked/not-observed
-  cases may be empty. Status is evidence availability, not equivalence.
+  `partial`, `blocked`, or `not_observed`, plus `artifacts`, `measurements`, and
+  `limitations`. A `measured` case must contain at least one supporting artifact
+  and a real observed value. `partial` explicitly describes incomplete evidence,
+  not a measured/equivalent result; partial/blocked/not-observed cases may retain
+  empty containers or explicit unknowns without manufacturing values. Status is
+  evidence availability, not equivalence.
+
+  Measurements have two supported producer forms:
+
+  - Named records: `[{"name":"duration_ms","value":0,"unit":"ms"}]`.
+    Only the `value` payload of a named record counts as an observation. A
+    missing `value`, even with `sample_count: 3`, cannot make the case measured.
+    The `name`, `unit`, and `description` cannot make null/unknown payloads measured.
+  - Raw keyed object: `{"duration_ms":0,"held":false,"visual_state":"idle"}`.
+    Metric keys identify values; they are not observations themselves. The
+    adapter preserves this object as `producer_measurements` and generates
+    equivalent name/value records without dropping zero, false, null, or
+    descriptive observed states. Nested payloads/lists may contain observations.
+    The container determines the format: `{"name":"cronometro","value":null,
+    "duration_ms":0,"held":false}` is still keyed and retains both observations;
+    coincidental `name`/`value` keys do not turn it into a named record.
+
+  Metadata keys `name`, `id`, `label`, `unit`, `units`, `description`, `source`,
+  `provenance`, and `limitations` do not count as observed leaves. To measure a
+  field with a reserved metadata name, use it as a metric name with a `value`
+  payload. Null, empty containers/text, and explicit unknown/not-measured/
+  not-observed markers (including underscore/hyphen spellings) are not evidence
+  of an observation. Numeric zero and boolean false are valid observations.
+  All numeric leaves in every case's measurements must be finite, including
+  nested leaves and non-measured cases: a valid adjacent measure or textual
+  identifier never masks NaN/Infinity. The original payloads are not rewritten
+  to replace unknowns with numbers.
 - `frames`: optional list of `{file, timestamp_ms, region}` records. Timestamps
   are monotonic milliseconds from the capture clock and strictly increasing;
   normalized `region` is `[x,y,width,height]` in local image pixels. List input
@@ -40,7 +82,26 @@ A UTF-8 JSON manifest contains:
   they were equivalent static states or establish causality.
   For published producer frames, `elapsed_ms` is copied as-is and
   `monotonic_ns` is converted to milliseconds by the exact unit factor
-  `1,000,000`; original fields and values remain under provenance. `region_px`
+  `1,000,000`; original fields and values remain under provenance. A supplied
+  frame `timestamp_provenance` must be an object with exactly `field`,
+  `source_value`, and `source_unit`: supported fields are `timestamp_ms` and
+  `elapsed_ms` (ms), or `monotonic_ns` (ns). The source must be finite numeric
+  data matching the canonical timestamp and the original field if still present.
+  The original field may be absent in an already canonical frame; legitimate
+  provenance is preserved across repeated normalization. Explicit null, malformed
+  containers, unsupported units, and conflicting values are rejected with a
+  controlled CLI error. Raw keyed and named-record `input_events` produce the
+  same event associations after normalization. Missing `input_events` payloads,
+  null, empty text, and the explicit unknown/not-observed/not-measured textual
+  markers described above produce no associations, without rewriting payloads
+  or promoting case status. This also applies to a measured case supported by
+  another actual observation (including zero or false); unknown events alone
+  cannot support a measured case. An observed event payload must be a list of
+  objects with finite numeric, non-boolean `timestamp_ms` values. Unknown records
+  never hide a malformed adjacent record or event; empty lists simply contribute
+  no associations. These event-shape checks are enforced by the timeline consumer;
+  general manifest validation still checks containers/observations and finitude.
+  `region_px`
   is adapted to local-image `region` without changing its coordinates.
   A producer `region` object `{x,y,width,height}` is interpreted as an explicit
   screen-space ROI origin plus captured dimensions: the normalized image crop is
@@ -58,7 +119,12 @@ A UTF-8 JSON manifest contains:
 Relative paths are resolved from the manifest directory and must remain within
 it. Producer absolute paths are accepted only when their resolved targets
 remain inside the authorized `.state/fidelity/reference/phase2/` evidence tree.
-Symlink traversal is checked after resolution. All paths must exist. Publish
+Symlink traversal is checked after resolution. Containment is enforced before
+checking the resolved target's file existence or opening its contents. Top-level `artifacts`,
+`cases[].artifacts`, and `frames[].file` all use the same resolver. File
+existence/containment is checked when a base directory is supplied (the CLI
+always supplies the manifest directory); in-memory validation without a base
+cannot certify file existence. All referenced targets must be regular files. Publish
 manifests atomically after verifying all referenced files.
 Use `python3 tools/fidelity/measure.py validate <manifest.json>` to check the
 contract and artifacts. Unknown environment values must be represented as
@@ -66,6 +132,18 @@ explicit descriptive values only if the producer knows them; schema validation
 requires a structurally valid container, not fabricated completeness. The
 validator reports `quality_gaps` and `equality_eligible`; a valid container with
 unknown environment values is not eligible for a parity/equality claim.
+
+Timeline dispatch gives shared-container declarations (`environment` or `cases`)
+precedence over legacy metadata. Such documents must pass shared schema v1
+validation even if they also carry `start_utc`, `input`, or `elapsed_ms` extras;
+invalid/ambiguous shared containers cannot fall back to a less strict adapter.
+Raw and normalized shared inputs retain the same quality gaps and associations.
+`schema_version` alone is not a format-family discriminator: producer logs can
+have their own version metadata. Without shared-container declarations, the
+legacy signature requires both `start_utc` and `frames`, and the adapter then
+requires measured `elapsed_ms` on every frame. A lone `start_utc` does not
+identify a supported log. Intermediate guest logs are not silently promoted
+to shared manifests or given a new adapter.
 
 The published `transfer-ui-timeline.json` producer format is adapted explicitly:
 its `elapsed_ms` values are preserved as measured timestamps. Its screenshots
@@ -97,3 +175,23 @@ describes only the explicitly bounded metrics, never universal visual parity.
 Optional heatmap and overlay files are derived artifacts and do not alter
 metrics. Preserve source captures unchanged. Synthetic test fixtures verify
 algorithm behavior only and are not reference/Windows evidence.
+
+Report, heatmap, and overlay destinations are preflighted together, including
+collisions between destinations (equal prefixes, PNG/report overlap, or repeated
+region names that reuse a derived path). Every destination has a file role:
+ancestor/descendant conflicts between planned files are rejected in either order,
+even if neither exists yet. Existing non-directory parent components are also
+rejected during preflight, before an earlier heatmap or overlay can be replaced.
+Resolved paths and existing file aliases are checked before the first result
+write; rejected plans leave previous artifacts intact. This is not a global
+transaction for otherwise valid derived-output plans. Symlink components, parent
+traversal, non-regular/multiply-linked targets,
+source-file aliases, and writes into the recognized phase2 evidence root are
+rejected. Each write uses an exclusive temporary file, no-follow directory
+handles, and atomic replacement, rather than truncating the destination.
+The opt-in real-evidence integration applies the same checks to both JSON
+outputs before invoking the CLI. It inventories manifest/support/frame hashes
+before and after, verifies PNG format, and requires 152 distinct resolved frame
+paths, not 152 distinct content hashes (identical captures are legitimate).
+Synthetic sandbox regressions exercise unsafe destinations; never point an
+attack fixture at original Windows captures.
