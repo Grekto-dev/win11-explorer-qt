@@ -57,6 +57,8 @@ if(BUILD_TESTING)
         ${PROJECT_SOURCE_DIR}/tests/test_private_libfm_guards.py -v)
     add_test(NAME private-libfm-cache-selection COMMAND ${Python3_EXECUTABLE}
         ${PROJECT_SOURCE_DIR}/tests/test_private_libfm_cmake.py -v)
+    set_tests_properties(private-libfm-cache-selection PROPERTIES
+        ENVIRONMENT "L4_TEST_PREFIX=${LIBFMQT_OVERLAY_PREFIX}")
     set_tests_properties(overlay-path-safety private-libfm-package-guards
         private-libfm-cache-selection PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
 endif()

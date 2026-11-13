@@ -76,16 +76,29 @@ clones/copias mock e sentinels; nunca apontar um teste destrutivo ao SDK real):
 ```bash
 /usr/bin/python3 tests/test_overlay_safety.py -v
 /usr/bin/python3 tests/test_private_libfm_guards.py -v
+/usr/bin/python3 tests/test_private_libfm_fixture_safety.py -v
 /usr/bin/python3 tests/test_private_libfm_cmake.py -v
 uv tool run --from cmake ctest --test-dir .state/build --output-on-failure
 ```
 
-O último teste Python requer um overlay já construído e copia esse prefixo para
-um segundo prefixo privado; configura com `fm-qt6_DIR` obsoleto no SDK e depois
+O teste `test_private_libfm_cmake.py` requer um overlay já construído. No CTest,
+`LIBFMQT_OVERLAY_PREFIX` configurado é transmitido explicitamente como
+`L4_TEST_PREFIX`, sem depender dessa variável no shell. Para execução standalone
+com prefixo customizado, use
+`L4_TEST_PREFIX="$PWD/.state/overlay-custom" /usr/bin/python3 tests/test_private_libfm_cmake.py -v`.
+A cópia, as fontes do probe e os builds ficam em um diretório temporário exclusivo
+`private-libfm-*` dentro de `.state`, removido ao terminar, inclusive em falhas.
+Os caminhos físicos da cópia e do cleanup não podem coincidir nem se sobrepor
+(como ancestral, descendente ou alias por symlink) ao input. Nenhum prefixo fixo
+ou overlay de entrada é removido. Os logs persistem em
+`.state/authorized-build/private-libfm-*/`. O teste de segurança separado usa
+somente markers próprios em sandbox, incluindo a colisão com o antigo nome
+`cache-test-prefix`, e executa CTest com apenas um prefixo customizado existente.
+O teste de cache configura com `fm-qt6_DIR` obsoleto no SDK e depois
 com cache no overlay anterior. Um consumer mínimo compilado chama a API nova
 `FileOperation::setDialogFactory`, relinka após a troca e verifica com `dladdr`
-o caminho real da biblioteca carregada, sem abrir GUI. Os três testes também
-são registrados no CTest.
+o caminho real da biblioteca carregada, registrando também `ldd`, sem abrir GUI.
+Os três testes de overlay/pacote/cache continuam registrados no CTest.
 Os fixtures negativos de pacote verificam config e biblioteca por symlink,
 localização genérica/per-config externa, mapeamentos target/default/cache em
 single e multi-config, headers individuais e subdiretórios por symlink. Ambos
