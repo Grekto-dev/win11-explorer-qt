@@ -45,13 +45,17 @@ A UTF-8 JSON manifest contains:
   Measurements have two supported producer forms:
 
   - Named records: `[{"name":"duration_ms","value":0,"unit":"ms"}]`.
-    Only the `value` payload of a named record counts as an observation. The
-    `name`, `unit`, and `description` cannot make null/unknown payloads measured.
+    Only the `value` payload of a named record counts as an observation. A
+    missing `value`, even with `sample_count: 3`, cannot make the case measured.
+    The `name`, `unit`, and `description` cannot make null/unknown payloads measured.
   - Raw keyed object: `{"duration_ms":0,"held":false,"visual_state":"idle"}`.
     Metric keys identify values; they are not observations themselves. The
     adapter preserves this object as `producer_measurements` and generates
     equivalent name/value records without dropping zero, false, null, or
     descriptive observed states. Nested payloads/lists may contain observations.
+    The container determines the format: `{"name":"cronometro","value":null,
+    "duration_ms":0,"held":false}` is still keyed and retains both observations;
+    coincidental `name`/`value` keys do not turn it into a named record.
 
   Metadata keys `name`, `id`, `label`, `unit`, `units`, `description`, `source`,
   `provenance`, and `limitations` do not count as observed leaves. To measure a
@@ -150,8 +154,11 @@ Optional heatmap and overlay files are derived artifacts and do not alter
 metrics. Preserve source captures unchanged. Synthetic test fixtures verify
 algorithm behavior only and are not reference/Windows evidence.
 
-Report, heatmap, and overlay destinations are preflighted together. Symlink
-components, parent traversal, non-regular/multiply-linked existing targets,
+Report, heatmap, and overlay destinations are preflighted together, including
+collisions between destinations (equal prefixes, PNG/report overlap, or repeated
+region names that reuse a derived path). Resolved paths and existing file aliases
+are checked before the first result write; rejected plans leave previous artifacts
+intact. Symlink components, parent traversal, non-regular/multiply-linked targets,
 source-file aliases, and writes into the recognized phase2 evidence root are
 rejected. Each write uses an exclusive temporary file, no-follow directory
 handles, and atomic replacement, rather than truncating the destination.

@@ -116,8 +116,6 @@ def _contains_observed_value(value: Any):
         return bool(text) and text not in {"null", "none", "n/a", "nan", "infinity"} and not any(
             marker in text for marker in ("unknown", "not measured", "not observed", "unmeasured"))
     if isinstance(value, dict):
-        if "name" in value and "value" in value:
-            return _contains_observed_value(value["value"])
         return any(_contains_observed_value(item) for key, item in value.items()
                    if key not in _MEASUREMENT_METADATA)
     if isinstance(value, list):
@@ -128,6 +126,10 @@ def _contains_observed_value(value: Any):
 def _has_measured_value(value: Any):
     """Inspect observed payloads, never metric names/units/descriptions."""
     _validate_measurement_numbers(value)
+    if isinstance(value, list):
+        # The container defines named records; auxiliary fields are not payloads.
+        return any(_contains_observed_value(record.get("value"))
+                   for record in value if isinstance(record, dict))
     return _contains_observed_value(value)
 
 
@@ -449,6 +451,7 @@ def _check_output_paths(paths, protected_paths=(), protected_roots=()):
         roots.extend(p for p in source.parents if p.name == "phase2"
                      and p.parent.name == "reference" and p.parent.parent.name == "fidelity"
                      and p.parent.parent.parent.name == ".state")
+    destinations = []
     for value in paths:
         path = Path(value).absolute()
         if ".." in path.parts:
@@ -457,6 +460,10 @@ def _check_output_paths(paths, protected_paths=(), protected_roots=()):
             if component.is_symlink():
                 raise ValueError("output path must not contain symlinks")
         physical = path.resolve()
+        if any(physical == previous or (path.exists() and previous.exists()
+               and os.path.samefile(path, previous)) for previous in destinations):
+            raise ValueError("output paths collide with another planned destination")
+        destinations.append(physical)
         if any(physical.is_relative_to(root) for root in roots):
             raise ValueError("output path overlaps protected evidence root")
         if physical in sources or (path.exists() and any(
