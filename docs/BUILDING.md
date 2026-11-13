@@ -43,9 +43,22 @@ untracked e alterações locais não entram no overlay. `LICENSE` (LGPL) e
 `cmake/PrivateLibfm.cmake` invalida explicitamente `fm-qt6_DIR` antes da busca
 Config restrita ao prefixo solicitado. Além do arquivo de configuração,
 verifica o target shared importado, os caminhos físicos de todas as localizações
-importadas anunciadas por configuração e os includes de libfm expostos pelo
-target (inclusive system includes). Dependências como GLib continuam podendo
-vir do SDK. Tanto `LIBFMQT_SOURCE_DIR` (nome legado) quanto
+importadas anunciadas e as localizações efetivamente resolvidas por
+`LOCATION_<CONFIG>` para cada configuração do gerador (ou `LOCATION` sem
+build type). Isso inclui `MAP_IMPORTED_CONFIG_<CONFIG>` e os defaults/cache
+`CMAKE_MAP_IMPORTED_CONFIG_<CONFIG>`, mesmo quando o destino não consta em
+`IMPORTED_CONFIGURATIONS`. A resolução fica com o próprio CMake, preservando
+ordem e entradas vazias dos mapeamentos. Referências primárias:
+[LOCATION](https://cmake.org/cmake/help/latest/prop_tgt/LOCATION_CONFIG.html),
+[MAP_IMPORTED_CONFIG](https://cmake.org/cmake/help/latest/prop_tgt/MAP_IMPORTED_CONFIG_CONFIG.html)
+e `cmTarget::GetMappedConfig` em `Source/cmTarget.cxx` do CMake v3.18.0.
+Os includes de libfm expostos pelo target (inclusive system includes) e cada
+arquivo/diretório da árvore instalada são validados fisicamente. Cada entrada
+é verificada antes de enumerar seu conteúdo: symlinks de subdiretório que
+escapam são recusados sem percorrer a árvore externa. Isso cobre os headers
+`core/job.h`, `core/fileoperationjob.h`, `core/filetransferjob.h` e suas
+dependências internas, não apenas os sentinels. Dependências como GLib
+continuam podendo vir do SDK. Tanto `LIBFMQT_SOURCE_DIR` (nome legado) quanto
 `LIBFMQT_INCLUDE_DIR` devem agora ser o diretório de headers instalado no
 próprio prefixo: `PREFIX/include/libfm-qt6`. Não misture headers internos do
 checkout com uma biblioteca de outro build. A configuração independente do
@@ -74,8 +87,13 @@ com cache no overlay anterior. Um consumer mínimo compilado chama a API nova
 o caminho real da biblioteca carregada, sem abrir GUI. Os três testes também
 são registrados no CTest.
 Os fixtures negativos de pacote verificam config e biblioteca por symlink,
-localização genérica e por-config externa e headers externos. Os testes de
-fonte verificam que arquivos ocultos/untracked e `AUTHORS` sujo não são copiados,
+localização genérica/per-config externa, mapeamentos target/default/cache em
+single e multi-config, headers individuais e subdiretórios por symlink. Ambos
+os testes de seleção criam seus diretórios de logs, sem depender de execução
+anterior. Mutações opcionais `FM_GUARD_MUTATION=map` e
+`FM_GUARD_MUTATION=headers` retiram só a guarda correspondente na cópia do
+módulo usada pelos fixtures e devem deixar seus testes negativos vermelhos.
+Os testes de fonte verificam que arquivos ocultos/untracked e `AUTHORS` sujo não são copiados,
 preservando o `LICENSE` exato do pin.
 
 O harness de overlay validado por hashes e os patches aplicados ficam em `patches/libfm-qt/` e `scripts/fidelity/build-libfm-overlay.sh`. A API cooperativa de pausa só é oferecida para uma cópia local de um arquivo regular com o checkpoint GIO; os demais modos mantêm a apresentação de transferência sem botão de pausa. O cancelamento continua sendo o cancelamento real de `Fm::FileOperation`.

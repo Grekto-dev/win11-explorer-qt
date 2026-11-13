@@ -10,6 +10,7 @@ SDK = (ROOT / '.deps/prefix').resolve()
 
 class PrivateLibfm(unittest.TestCase):
     def test_stale_cache_then_prefix_switch(self):
+        (ROOT / '.state/build-safety-logs').mkdir(parents=True, exist_ok=True)
         overlay = Path(os.environ.get('L4_TEST_PREFIX', ROOT / '.state/libfm-overlay-prefix'))
         alternate = ROOT / '.state/cache-test-prefix'
         build = ROOT / '.state/cache-regression-build'
