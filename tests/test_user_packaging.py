@@ -32,7 +32,10 @@ def add_docs(prefix: Path):
     dest.mkdir(parents=True, exist_ok=True)
     pkg = load('pkg_licenses')
     for name in pkg.REQUIRED_DOCS:
-        (dest / name).write_text(f'text of {name}\n')
+        if name == 'LICENSE.ICU':  # make-deb.sh re-checks the pinned sha256, so a fake text would be refused
+            shutil.copy2(ROOT / 'packaging/licenses/LICENSE.ICU', dest / name)
+        else:
+            (dest / name).write_text(f'text of {name}\n')
 
 
 def fake_prefix(base: Path) -> Path:
@@ -469,8 +472,8 @@ class VerifyXcbOwner(unittest.TestCase):
         self.assertEqual(p.stdout.readline().strip(), 'ready')
         return p
 
-    def check(self):
-        env = dict(CLEAN_ENV, VERIFY_XCB_SOCKET_DIR=str(self.dir), VERIFY_XCB_OWNER_CHECK_ONLY='1')
+    def check(self, path=None):
+        env = dict(CLEAN_ENV, **({'PATH': path} if path else {}), VERIFY_XCB_SOCKET_DIR=str(self.dir), VERIFY_XCB_OWNER_CHECK_ONLY='1')
         prefix = self.dir / 'prefix'
         (prefix / 'bin').mkdir(parents=True, exist_ok=True)
         (prefix / 'bin/win11-explorer-qt').write_text('#!/bin/sh\n')
@@ -482,8 +485,23 @@ class VerifyXcbOwner(unittest.TestCase):
         # the exe is called Xvfb but the cmdline says nothing about it: only /proc/PID/exe is trusted
         pid = self.spawn('Xvfb').pid
         res = self.check()
-        self.assertEqual(res.returncode, 0, res.stderr)
+        # the owner check passed, but NO app ran: that must not look like success (exit 0 / PASS)
+        self.assertEqual(res.returncode, 3, res.stderr)
+        self.assertIn('OWNER-CHECK-ONLY (no app run)', res.stdout)
+        self.assertNotIn('PASS', res.stdout)
         self.assertIn(f'pid {pid}', res.stdout)
+
+    def test_abstract_socket_without_a_visible_pid_is_refused_fail_closed(self):
+        # an abstract socket exists but `ss` shows no users:(..pid=..) for it (other uid): refuse, do not continue
+        self.spawn('Xvfb')
+        fake = self.dir / 'fakebin'
+        fake.mkdir()
+        (fake / 'ss').write_text('#!/bin/sh\n/usr/bin/ss "$@" | awk \'$5 ~ /^@/ {sub(/users:.*/, "")} {print}\'\n')
+        (fake / 'ss').chmod(0o755)
+        res = self.check(path=f'{fake}:/usr/bin:/bin')
+        self.assertNotIn(res.returncode, (0, 3), (res.stdout, res.stderr))
+        self.assertIn('abstract', res.stderr)
+        self.assertNotIn('OWNER-CHECK-ONLY', res.stdout)
 
     def test_cmdline_that_merely_mentions_xephyr_is_not_enough(self):
         self.spawn('someprog', cmdline_decoy='Xephyr')
@@ -708,6 +726,28 @@ class SwapRobustness(unittest.TestCase):
         self.assertTrue(unrelated.exists())
         self.assertTrue(foreign.exists())
 
+    def test_orphan_stage_with_an_impossible_huge_pid_is_ignored_not_a_crash(self):
+        # os.kill(10**23, 0) raises OverflowError: that used to abort EVERY later run of make-portable-prefix.sh
+        huge = self.stage('9' * 23)
+        huge_unmarked = self.dir / ('.prefix.new.' + '9' * 40)
+        huge_unmarked.mkdir()
+        (huge_unmarked / 'precious').write_text('keep')
+        dead = self.stage(dead_pid())
+        self.mod.clean_orphans(self.prefix, self.prev)  # must not raise
+        self.assertTrue(huge.exists(), 'a directory whose pid is invalid is not ours to delete')
+        self.assertEqual((huge_unmarked / 'precious').read_text(), 'keep')
+        self.assertFalse(dead.exists(), 'the real orphan is still cleaned')
+        self.assertFalse(self.mod.pid_alive(10 ** 23))
+
+    def test_publish_validates_prev_even_when_the_prefix_does_not_exist(self):
+        self.prev.mkdir()
+        (self.prev / 'precious').write_text('keep')
+        stage = self.stage()
+        with self.assertRaises(SystemExit):
+            self.mod.publish(self.prefix, stage, self.prev)
+        self.assertEqual((self.prev / 'precious').read_text(), 'keep')
+        self.assertFalse(stage.exists())
+
     def test_orphan_stage_symlink_is_not_followed(self):
         target = Path(self.tmp.name) / 'elsewhere'
         make_prefix_dir(target, 'other')
@@ -815,29 +855,100 @@ def apt_known(name):
 _REAL_DEB = {}
 
 
+def ci_required(environ=None):
+    environ = os.environ if environ is None else environ
+    return bool(environ.get('CI') or environ.get('WIN11_REQUIRE_BUILD_TREE'))
+
+
+def missing_build_inputs(root=ROOT, environ=None, which=shutil.which):
+    """Why a real prefix cannot be assembled here ([] = it can). Explicit WIN11_TEST_PREFIX needs nothing."""
+    environ = os.environ if environ is None else environ
+    if environ.get('WIN11_TEST_PREFIX'):
+        return []
+    root = Path(root)
+    why = []
+    if not ((root / '.state/install/bin/win11-explorer-qt').is_file()
+            and list((root / '.state/libfm-overlay-prefix/lib').glob('libfm-qt6.so*')) and (root / '.deps').is_dir()):
+        why.append('build tree missing (.state/install, .state/libfm-overlay-prefix, .deps): run scripts/build.sh, '
+                   'or point WIN11_TEST_PREFIX at an existing prefix')
+    for tool in ('readelf', 'dpkg'):
+        if not which(tool):
+            why.append(f'{tool} not found')
+    pe = load('portable_prefix')
+    system_pe = which('patchelf', path=pe.TRUSTED_BIN_PATH)
+    pinned = root / '.state/tools' / f'patchelf-{pe.PATCHELF_PIN}' / 'bin/patchelf'
+    if not (system_pe and os.path.realpath(system_pe).startswith('/usr/')) and not pinned.is_file():
+        why.append(f'patchelf not available (neither /usr/bin/patchelf nor {pinned}): populate .state/tools '
+                   f'(see docs/INSTALL.md) or `sudo apt install patchelf`')
+    return why
+
+
+def require_inputs(case, why, environ=None):
+    """The Depends completeness test must not pass silently: in CI (CI / WIN11_REQUIRE_BUILD_TREE) missing
+    inputs are a FAILURE; elsewhere a skip whose reason says exactly what to provide."""
+    if not why:
+        return
+    msg = 'Depends completeness NOT verified: ' + '; '.join(why)
+    if ci_required(environ):
+        case.fail(msg)
+    case.skipTest(msg)
+
+
 def real_prefix_deb(case):
     """A .deb built from a real prefix (WIN11_TEST_PREFIX, or assembled from .state/install + the overlay)."""
     if 'deb' in _REAL_DEB:
         return _REAL_DEB['deb']
+    require_inputs(case, missing_build_inputs())
     tmp = tempfile.mkdtemp(prefix='p4-realdeb-')
     case.addClassCleanup(shutil.rmtree, tmp, True)
     prefix = os.environ.get('WIN11_TEST_PREFIX')
     if not prefix:
-        if not ((ROOT / '.state/install/bin/win11-explorer-qt').is_file() and list((ROOT / '.state/libfm-overlay-prefix/lib').glob('libfm-qt6.so*'))
-                and (ROOT / '.deps').is_dir() and shutil.which('readelf') and shutil.which('dpkg')):
-            case.skipTest('no built tree (.state/install, overlay, .deps) and no WIN11_TEST_PREFIX')
         home = Path(tmp) / 'home'
         home.mkdir()
         prefix = str(Path(tmp) / 'p' / 'win11-explorer-qt')
         res = subprocess.run(['bash', str(ROOT / 'scripts/make-portable-prefix.sh'), '--prefix', prefix],
                              env=dict(CLEAN_ENV, HOME=str(home)), text=True, capture_output=True)
-        case.assertEqual(res.returncode, 0, res.stderr)
+        case.assertEqual(res.returncode, 0, f'make-portable-prefix.sh failed (a REAL failure, not a skip):\n{res.stderr}')
     out = Path(tmp) / 'deb'
     res = subprocess.run(['bash', str(ROOT / 'scripts/make-deb.sh'), '--prefix', prefix, '--out', str(out), '--without-debug'],
                          env=dict(CLEAN_ENV, HOME=tmp), text=True, capture_output=True)
-    case.assertEqual(res.returncode, 0, res.stderr)
+    case.assertEqual(res.returncode, 0, f'make-deb.sh failed:\n{res.stderr}')
     _REAL_DEB['deb'] = next(out.glob('*.deb'))
     return _REAL_DEB['deb']
+
+
+class CompletenessGate(unittest.TestCase):
+    """The completeness test may not turn into a silent skip in CI, and a missing patchelf is explained."""
+    def test_missing_build_tree_is_reported_with_what_to_do(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            why = missing_build_inputs(Path(tmp), environ={})
+        self.assertTrue(any('build tree missing' in w and 'WIN11_TEST_PREFIX' in w for w in why), why)
+
+    def test_missing_patchelf_says_how_to_provide_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            why = missing_build_inputs(Path(tmp), environ={}, which=lambda name, path=None: None if name == 'patchelf' else '/usr/bin/true')
+        pe = [w for w in why if 'patchelf' in w]
+        self.assertEqual(len(pe), 1, why)
+        self.assertIn('.state/tools', pe[0])
+        self.assertIn('apt install patchelf', pe[0])
+
+    def test_explicit_prefix_needs_no_build_tree(self):
+        self.assertEqual(missing_build_inputs(Path('/nonexistent'), environ={'WIN11_TEST_PREFIX': '/x'}), [])
+
+    def test_ci_turns_missing_inputs_into_a_failure_not_a_skip(self):
+        for env in ({'CI': 'true'}, {'WIN11_REQUIRE_BUILD_TREE': '1'}):
+            with self.assertRaises(AssertionError) as cm:
+                require_inputs(self, ['build tree missing'], environ=env)
+            self.assertIn('Depends completeness NOT verified', str(cm.exception))
+            self.assertIn('build tree missing', str(cm.exception))
+
+    def test_outside_ci_it_is_a_skip_with_the_reason(self):
+        with self.assertRaises(unittest.SkipTest) as cm:
+            require_inputs(self, ['patchelf not available'], environ={})
+        self.assertIn('patchelf not available', str(cm.exception))
+
+    def test_nothing_missing_does_not_skip_or_fail(self):
+        require_inputs(self, [], environ={'CI': '1'})
 
 
 class DebPackage(unittest.TestCase):
@@ -848,7 +959,7 @@ class DebPackage(unittest.TestCase):
                'libpng16-16t64', 'zlib1g', 'libgtk-3-0t64', 'gvfs', 'libopengl0', 'libgssapi-krb5-2',
                'libjpeg-turbo8'}
 
-    def build(self, tmp, with_docs=True, extra=None):
+    def build(self, tmp, with_docs=True, extra=None, icu_text=None):
         prefix = fake_prefix(Path(tmp))
         (prefix / 'lib').mkdir()
         (prefix / 'lib/libmenu-cache.so.3').write_text('bundled copy hardcodes /usr/lib/menu-cache')
@@ -859,6 +970,8 @@ class DebPackage(unittest.TestCase):
             shutil.copy2(rel, prefix / 'lib' / Path(rel).name)
         if with_docs:
             add_docs(prefix)
+            if icu_text is not None:
+                (prefix / 'share/doc/win11-explorer-qt/LICENSE.ICU').write_text(icu_text)
         out = Path(tmp) / 'out'
         res = subprocess.run(['bash', str(ROOT / 'scripts/make-deb.sh'), '--prefix', str(prefix), '--out', str(out)],
                              env=dict(CLEAN_ENV, HOME=tmp), text=True, capture_output=True)
@@ -957,6 +1070,19 @@ class DebPackage(unittest.TestCase):
             self.assertNotEqual(res.returncode, 0)
             self.assertIn('license', res.stderr.lower())
             self.assertEqual(list(out.glob('*.deb')) if out.exists() else [], [])
+
+    def test_deb_refuses_a_prefix_whose_icu_license_is_not_the_pinned_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            res, out = self.build(tmp, icu_text='Copyright 1991-2022 the Debian libicu74 copyright file ' * 20)
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn('LICENSE.ICU', res.stderr)
+            self.assertIn('f3005e195ff74d8812cc1f182a1c446fab678d70a10e3dada497585befee5416', res.stderr)
+            self.assertEqual(list(out.glob('*.deb')) if out.exists() else [], [])
+
+    def test_deb_accepts_the_pinned_icu_license(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            res, out = self.build(tmp)
+            self.assertEqual(res.returncode, 0, res.stderr)
 
     def test_version_is_validated(self):
         with tempfile.TemporaryDirectory() as tmp:

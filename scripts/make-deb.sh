@@ -23,6 +23,11 @@ docs="$prefix/share/doc/win11-explorer-qt"
 for d in LICENSE LICENSE.libfm-qt.LGPL-2.1 LICENSE.Qt-LGPL-3.0 LICENSE.Qt-GPL-3.0 LICENSE.ICU THIRD_PARTY_NOTICES.md; do
     [[ -s "$docs/$d" ]] || { printf 'The prefix lacks the license document %s (redistributing Qt/ICU without it is not allowed); rebuild the prefix\n' "$d" >&2; exit 1; }
 done
+# The prefix may be old or hand-edited: re-impose the pinned ICU text (same constant the assembler checks).
+icu_sha="$(/usr/bin/python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import pkg_licenses; print(pkg_licenses.ICU_LICENSE_SHA256)' "$repo/scripts")" \
+    || { echo "cannot read pkg_licenses.ICU_LICENSE_SHA256" >&2; exit 1; }
+[[ "$(sha256sum -- "$docs/LICENSE.ICU" | cut -d' ' -f1)" == "$icu_sha" ]] || {
+    printf 'LICENSE.ICU in the prefix is not the pinned ICU 73.2 text (sha256 %s); rebuild the prefix with make-portable-prefix.sh\n' "$icu_sha" >&2; exit 1; }
 reqs="$(/usr/bin/python3 "$repo/scripts/elf_requirements.py" "$prefix")" || { echo "cannot derive minimum glibc/libstdc++ from the ELF files" >&2; exit 1; }
 glibc_min="$(sed -n 's/.*glibc=\([0-9.]*\).*/\1/p' <<<"$reqs")"
 gcc_min="$(sed -n 's/.*libstdcxx_pkg=\([0-9.]*\)$/\1/p' <<<"$reqs")"

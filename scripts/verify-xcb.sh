@@ -31,9 +31,15 @@ check_owner "$owner_pid" "socket"
 aowner="$(owner_of "$asock")"
 if [[ -n "$aowner" ]]; then
     [[ "$aowner" == "$owner_pid" ]] || { echo "abstract socket $asock belongs to pid $aowner, not to the owner $owner_pid of $sock" >&2; exit 1; }
+elif grep -qF -- " $asock" /proc/net/unix 2>/dev/null && [[ -z "$(ss -xlpn 2>/dev/null | awk -v s="$asock" '$5==s && /pid=/')" ]]; then
+    # fail closed: the abstract name is taken (libxcb connects to it FIRST) but its owner is not visible (other uid)
+    echo "abstract socket $asock exists but its owner pid is not visible: cannot prove it is the nested server" >&2; exit 1
 fi
-echo "display $display owned by pid $owner_pid: $(readlink "/proc/$owner_pid/exe") (abstract socket: ${aowner:+same pid}${aowner:-not listed})"
-[[ -z "${VERIFY_XCB_OWNER_CHECK_ONLY:-}" ]] || exit 0
+echo "display $display owned by pid $owner_pid: $(readlink "/proc/$owner_pid/exe") (abstract socket: ${aowner:+same pid $aowner}${aowner:-not listed})"
+if [[ -n "${VERIFY_XCB_OWNER_CHECK_ONLY:-}" ]]; then   # test hook; deliberately NOT a success
+    echo "OWNER-CHECK-ONLY (no app run): the owner check passed but no application was started; this is NOT a success"
+    exit 3
+fi
 tmp="$(mktemp -d)"
 # The app (env -> dbus-run-session -> dbus-daemon + app) runs in its own session/process group, so that
 # the cleanup can kill the whole group instead of just the first process.

@@ -296,8 +296,12 @@ def check_prev(prev):
 
 
 def pid_alive(pid):
+    """True if `pid` may be a live process. A pid that cannot exist (> 2**22 on Linux; os.kill raises
+    OverflowError/ValueError) is False here, so callers decide by name pattern, not by a crash."""
     try:
         os.kill(pid, 0)
+    except (OverflowError, ValueError):
+        return False
     except ProcessLookupError:
         return False
     except PermissionError:
@@ -305,6 +309,7 @@ def pid_alive(pid):
     return True
 
 
+MAX_PID = 2 ** 22  # Linux pid_max ceiling
 STAGE_DIRS = {'bin', 'libexec', 'lib', 'plugins', 'share'}
 
 
@@ -316,8 +321,10 @@ def clean_orphans(prefix, prev):
     pat = re.compile(re.escape(f'.{prefix.name}.new.') + r'(\d+)$')
     for p in sorted(prefix.parent.iterdir()):
         m = pat.match(p.name)
-        if not m or p.is_symlink() or not p.is_dir() or pid_alive(int(m.group(1))):
+        if not m or p.is_symlink() or not p.is_dir():
             continue
+        if int(m.group(1)) > MAX_PID or pid_alive(int(m.group(1))):
+            continue  # a name with an impossible pid was not made by us: leave it alone
         if has_marker(p) or not (p / MARKER).exists() and {c.name for c in p.iterdir()} <= STAGE_DIRS:
             shutil.rmtree(p, ignore_errors=True)
     if os.path.lexists(prev) and not os.path.lexists(prefix) and not prev.is_symlink() and prev.is_dir() and has_marker(prev):
@@ -331,8 +338,8 @@ def publish(prefix, stage, prev):
     prefix, stage, prev = Path(prefix), Path(stage), Path(prev)
     moved = False
     try:
+        check_prev(prev)  # always: the final rmtree(prev) must never reach an unvalidated directory
         if os.path.lexists(prefix):
-            check_prev(prev)
             if os.path.lexists(prev):
                 shutil.rmtree(prev)
             os.rename(prefix, prev)
