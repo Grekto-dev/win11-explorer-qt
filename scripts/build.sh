@@ -53,6 +53,7 @@ fi
 "$python" "$repo/scripts/fidelity/overlay-preflight.py" "$repo" "$repo/.deps/src/libfm-qt" \
     "$repo/.state/build" "$repo/.state/install" "$overlay_prefix"
 export LIBFMQT_OVERLAY_PREFIX="$overlay_prefix"
+export LIBFMQT_OVERLAY_BUILD_TYPE="$build_type"
 "$repo/scripts/fidelity/build-libfm-overlay.sh"
 overlay_source="$overlay_prefix/include/libfm-qt6"
 if [[ ! -f "$overlay_source/core/filetransferjob.h" || ! -f "$overlay_prefix/include/libfm-qt6/fm-qt6_export.h" ]]; then

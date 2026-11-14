@@ -115,3 +115,11 @@ O harness de overlay validado por hashes e os patches aplicados ficam em `patche
 Testes pesados materializam arquivos reais (incluindo 2 GiB e, no teste da pausa visual, 4 GiB), verificam espaço livre antes de escrever e validam destino/progresso/ACK. Não use o suite pesado em disco com menos de 12 GiB livres. `EXPLORER_TRANSFER_UI_SCREENSHOT=/caminho/arquivo.png` grava a captura do diálogo observado pelo QtTest. A aplicação em execução para prova visual deve usar um display isolado Xephyr e uma sessão D-Bus privada; nunca `:0` nem a VM Windows.
 
 A configuração do SDK inclui os caminhos locais absolutos definidos por `.deps/env.sh`; esse SDK não é relocável. Nenhuma compilação/execução deste procedimento instala dependências de sistema ou muda o gerenciador padrão de arquivos.
+
+
+## Instalação estável (uso diário)
+
+`scripts/build.sh RelWithDebInfo` (padrão) compila o app **e** o overlay da libfm-qt otimizados (`LIBFMQT_OVERLAY_BUILD_TYPE` acompanha o tipo; `Debug` continua disponível). O prefixo relocável, o atalho de usuário e a prova de relocação estão em [INSTALL.md](INSTALL.md): `scripts/make-portable-prefix.sh`, `scripts/install-user.sh`, `scripts/verify-relocation.py`.
+
+
+Empacotamento para uso diário (prefixo relocável, `.deb`, requisitos como `patchelf` fixado por versão/hash e rede): `docs/INSTALL.md`.

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-or-later. Original artwork for this fork. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="back" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e0a82e"/><stop offset="1" stop-color="#c88a12"/>
+    </linearGradient>
+    <linearGradient id="front" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffd662"/><stop offset="1" stop-color="#f2b930"/>
+    </linearGradient>
+  </defs>
+  <path d="M24 56a14 14 0 0 1 14-14h58l22 24h98a14 14 0 0 1 14 14v112a14 14 0 0 1-14 14H38a14 14 0 0 1-14-14z" fill="url(#back)"/>
+  <rect x="24" y="92" width="208" height="122" rx="14" fill="url(#front)"/>
+  <rect x="44" y="112" width="70" height="14" rx="7" fill="#fff" opacity=".55"/>
+  <circle cx="196" cy="168" r="26" fill="#0f6cbd"/>
+  <path d="M184 168h24m-10-10 10 10-10 10" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
