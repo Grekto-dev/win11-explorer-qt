@@ -32,7 +32,9 @@ public:
     // One point of the speed graph: x = fraction of the total bytes already
     // transferred, y = average rate over the interval since the previous
     // sample. Only ever derived from real byte counters.
-    struct SpeedSample { double fraction; double bytesPerSecond; };
+    // intervalSeconds is the time the sample covers (bytes = bytesPerSecond * intervalSeconds), kept so
+    // decimation conserves bytes.
+    struct SpeedSample { double fraction; double bytesPerSecond; double intervalSeconds = 0; };
     // Records a sample from a real (bytes, total, elapsed ms) observation.
     // Returns false (and records nothing) for non-advancing time or bytes.
     bool recordSpeedSample(std::uint64_t bytes, std::uint64_t total, qint64 atMs);
@@ -95,6 +97,7 @@ private:
     bool haveLastObservation_ = false;
     std::uint64_t lastBytes_ = 0;
     qint64 lastMs_ = 0;
+    std::uint64_t lastTotal_ = 0;
 };
 
 Fm::FileOperationDialog* createExplorerTransferDialog(Fm::FileOperation* operation);

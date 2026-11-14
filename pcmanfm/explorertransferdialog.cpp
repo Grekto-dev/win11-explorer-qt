@@ -136,12 +136,11 @@ protected:
             const double plotH = (h - 4) * 0.85;
             const int bottom = h - 2;
             QPolygonF poly;
-            poly << QPointF(1, bottom);
             bool first = true;
             for(const auto& s : samples_) {
                 const double x = 1 + std::clamp(s.fraction, 0.0, 1.0) * (w - 2);
                 const double y = bottom - (peak > 0 ? s.bytesPerSecond / peak : 0) * plotH;
-                if(first) { poly << QPointF(1, y); first = false; }
+                if(first) { poly << QPointF(x, bottom); first = false; }   // starts at the first REAL sample
                 poly << QPointF(x, y);
             }
             poly << QPointF(poly.last().x(), bottom);
@@ -339,25 +338,51 @@ void ExplorerTransferDialog::setRemainingTime(unsigned int seconds) {
 }
 
 bool ExplorerTransferDialog::recordSpeedSample(std::uint64_t bytes, std::uint64_t total, qint64 atMs) {
-    if(!haveLastObservation_) {
-        haveLastObservation_ = true;
-        lastBytes_ = bytes;
-        lastMs_ = atMs;
-        return false;                       // a rate needs an interval
-    }
-    if(atMs <= lastMs_ || bytes < lastBytes_ || total == 0) return false;
-    if(bytes == lastBytes_) {               // stalled/paused: record no invented zero, keep the clock current
-        lastMs_ = atMs;
+    const auto rebase = [&] { haveLastObservation_ = true; lastBytes_ = bytes; lastMs_ = atMs; lastTotal_ = total; };
+    if(total == 0) return false;
+    if(!haveLastObservation_) {             // a rate needs an interval
+        rebase();
         return false;
     }
+    if(total != lastTotal_) {               // the x scale changed: the old series cannot be mixed in
+        const bool hadSamples = !samples_.isEmpty();
+        samples_.clear();
+        rebase();
+        if(hadSamples) updatePresentation();
+        return false;
+    }
+    if(atMs <= lastMs_) return false;
+    if(bytes < lastBytes_) {                // counter went backwards: restart from here
+        rebase();
+        return false;
+    }
+    if(bytes == lastBytes_) return false;   // stalled: the clock stays, so the next rate averages over the stall
     SpeedSample sample;
-    sample.bytesPerSecond = double(bytes - lastBytes_) * 1000.0 / double(atMs - lastMs_);
+    sample.intervalSeconds = double(atMs - lastMs_) / 1000.0;
+    sample.bytesPerSecond = double(bytes - lastBytes_) / sample.intervalSeconds;
     sample.fraction = std::min(1.0, double(bytes) / double(total));
-    lastBytes_ = bytes;
-    lastMs_ = atMs;
-    constexpr int kMaxSamples = 4096;
-    if(samples_.size() >= kMaxSamples) samples_.remove(0);
+    rebase();
+    if(!samples_.isEmpty() && sample.fraction < samples_.last().fraction) return false;   // keep x monotonic
     samples_.append(sample);
+    // Bounded: merge adjacent pairs (bytes and time conserved, x of the later one) when the vector is full.
+    constexpr int kMaxSamples = 512;
+    if(samples_.size() > kMaxSamples) {
+        QVector<SpeedSample> merged;
+        merged.reserve(samples_.size() / 2 + 1);
+        int i = 0;
+        for(; i + 1 < samples_.size(); i += 2) {
+            const SpeedSample& x = samples_[i];
+            const SpeedSample& y = samples_[i + 1];
+            SpeedSample m;
+            m.intervalSeconds = x.intervalSeconds + y.intervalSeconds;
+            m.bytesPerSecond = m.intervalSeconds > 0
+                ? (x.bytesPerSecond * x.intervalSeconds + y.bytesPerSecond * y.intervalSeconds) / m.intervalSeconds : 0;
+            m.fraction = y.fraction;
+            merged.append(m);
+        }
+        if(i < samples_.size()) merged.append(samples_[i]);
+        samples_ = merged;
+    }
     updatePresentation();
     return true;
 }
@@ -395,10 +420,12 @@ void ExplorerTransferDialog::updatePresentation() {
 
 void ExplorerTransferDialog::applyTransferState(ExplorerTransferController::State state, bool pauseAcknowledged) {
     using State = ExplorerTransferController::State;
+    const bool wasPaused = paused_;
     if(state == State::Cancelling) cancelRequested_ = true;
     // Paused only after a real backend ACK; Cancelling keeps the last known pause state.
     if(state == State::Paused || (state == State::Pausing && pauseAcknowledged)) paused_ = true;
     else if(state == State::Running || state == State::Preparing || state == State::Pausing) paused_ = false;
+    if(wasPaused && !paused_) haveLastObservation_ = false;   // Retomar: the pause must not be averaged into a rate
     auto* pause = static_cast<GlyphButton*>(pauseButton_);
     if(cancelRequested_) {
         pause->setGlyph(paused_ ? QStringLiteral("resume") : QStringLiteral("pause"));
