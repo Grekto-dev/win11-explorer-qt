@@ -312,10 +312,10 @@ int main(int argc, char** argv) {
     if(!home.isValid()) return 2;
     const QByteArray root = QFile::encodeName(home.path());
     qputenv("HOME", root);
-    qputenv("XDG_DATA_HOME", root + "/data");
-    qputenv("XDG_CONFIG_HOME", root + "/config");
-    qputenv("XDG_CACHE_HOME", root + "/cache");
-    qputenv("XDG_STATE_HOME", root + "/state");
+    qputenv("XDG_DATA_HOME", QByteArray(root).append("/data"));
+    qputenv("XDG_CONFIG_HOME", QByteArray(root).append("/config"));
+    qputenv("XDG_CACHE_HOME", QByteArray(root).append("/cache"));
+    qputenv("XDG_STATE_HOME", QByteArray(root).append("/state"));
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QDir().mkpath(home.path() + QStringLiteral("/data"));
     QApplication app(argc, argv);
