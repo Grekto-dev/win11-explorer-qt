@@ -114,7 +114,7 @@ QByteArray readFile(const QString& path) {
     return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray("<unreadable>");
 }
 QStringList names(const QString& dir) {
-    return QDir(dir).entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden, QDir::Name);
+    return QDir(dir).entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDir::Name);
 }
 // Wait for the FileOperation to finish (it auto-destroys afterwards).
 bool waitFinished(Fm::FileOperation* op, int timeoutMs = 20000) {
@@ -333,6 +333,72 @@ private Q_SLOTS:
         QCOMPARE(readFile(sentinel), QByteArray("S"));
         QCOMPARE(names(dst), QStringList{QStringLiteral("link.txt")});
         QVERIFY2(QFileInfo(dst + QStringLiteral("/link.txt")).isSymLink(), "a symlink source is copied as a symlink");
+    }
+    // The link kinds a destination symlink can have besides "points at a file": broken, and pointing at a
+    // directory. The link is replaced by the new regular file; nothing it pointed at is created or touched.
+    void overwriteOverBrokenDestinationSymlinkReplacesTheLinkAndCreatesNothingAtTheTarget() {
+        const QString src = dir(QStringLiteral("bl-src")), dst = dir(QStringLiteral("bl-dst")), outside = dir(QStringLiteral("bl-outside"));
+        const QString missing = outside + QStringLiteral("/does-not-exist.txt");
+        QVERIFY(writeFile(src + QStringLiteral("/link.txt"), "new"));
+        QVERIFY(QFile::link(missing, dst + QStringLiteral("/link.txt")));
+        QVERIFY(QFileInfo(dst + QStringLiteral("/link.txt")).isSymLink());
+        QVERIFY(!QFileInfo::exists(missing));
+        resetCounters(Ask::Overwrite);
+        QVERIFY(waitFinished(Fm::FileOperation::copyFiles({P(src + QStringLiteral("/link.txt"))}, P(dst))));
+        QCOMPARE(gAskCount, 1);
+        QCOMPARE(gErrorCount, 0);
+        QVERIFY2(!QFileInfo(dst + QStringLiteral("/link.txt")).isSymLink(), "the broken link was kept instead of replaced");
+        QCOMPARE(readFile(dst + QStringLiteral("/link.txt")), QByteArray("new"));
+        QVERIFY2(!QFileInfo::exists(missing) && !QFileInfo(missing).isSymLink(), "something was created at the link's target");
+        QCOMPARE(names(outside), QStringList{});
+        QCOMPARE(names(dst), QStringList{QStringLiteral("link.txt")});
+    }
+    void overwriteOverDestinationSymlinkToDirectoryReplacesTheLinkAndLeavesTheDirectoryIntact() {
+        const QString src = dir(QStringLiteral("dl-src")), dst = dir(QStringLiteral("dl-dst")), pointed = dir(QStringLiteral("dl-pointed"));
+        QVERIFY(writeFile(pointed + QStringLiteral("/keep.txt"), "keep"));
+        QVERIFY(writeFile(src + QStringLiteral("/link.txt"), "new"));
+        QVERIFY(QFile::link(pointed, dst + QStringLiteral("/link.txt")));
+        QVERIFY(QFileInfo(dst + QStringLiteral("/link.txt")).isDir());  // through the link
+        resetCounters(Ask::Overwrite);
+        QVERIFY(waitFinished(Fm::FileOperation::copyFiles({P(src + QStringLiteral("/link.txt"))}, P(dst))));
+        QCOMPARE(gErrorCount, 0);
+        QVERIFY2(!QFileInfo(dst + QStringLiteral("/link.txt")).isSymLink(), "the link was kept instead of replaced");
+        QCOMPARE(readFile(dst + QStringLiteral("/link.txt")), QByteArray("new"));
+        QVERIFY(QFileInfo(pointed).isDir());
+        QCOMPARE(names(pointed), QStringList{QStringLiteral("keep.txt")});  // no file dropped INTO the directory
+        QCOMPARE(readFile(pointed + QStringLiteral("/keep.txt")), QByteArray("keep"));
+        QCOMPARE(names(dst), QStringList{QStringLiteral("link.txt")});
+    }
+    // A destination symlink in a READ-ONLY folder: no temp sibling is possible, the GIO fallback refuses (it
+    // cannot unlink the link). Error reported; link, its target (file / directory / nothing) and no .fm-*.partial.
+    void overwriteOverDestinationSymlinkInReadOnlyFolderReportsErrorAndChangesNothing_data() {
+        QTest::addColumn<int>("kind");  // 0 file, 1 directory, 2 broken
+        QTest::newRow("link-to-file") << 0;
+        QTest::newRow("link-to-directory") << 1;
+        QTest::newRow("broken-link") << 2;
+    }
+    void overwriteOverDestinationSymlinkInReadOnlyFolderReportsErrorAndChangesNothing() {
+        if(geteuid() == 0) QSKIP("root ignores directory permissions");
+        QFETCH(int, kind);
+        const QString tag = QString::fromLatin1(QTest::currentDataTag());
+        const QString src = dir(QStringLiteral("rl-src-") + tag), dst = dir(QStringLiteral("rl-dst-") + tag), outside = dir(QStringLiteral("rl-out-") + tag);
+        const QString target = outside + QStringLiteral("/target");
+        if(kind == 0) QVERIFY(writeFile(target, "precious"));
+        if(kind == 1) { QVERIFY(QDir().mkpath(target)); QVERIFY(writeFile(target + QStringLiteral("/keep.txt"), "keep")); }
+        QVERIFY(writeFile(src + QStringLiteral("/link.txt"), "new"));
+        QVERIFY(QFile::link(target, dst + QStringLiteral("/link.txt")));
+        QVERIFY(QFile::setPermissions(dst, QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+        const auto restore = qScopeGuard([&] { QFile::setPermissions(dst, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner); });
+        resetCounters(Ask::Overwrite);
+        const bool finished = waitFinished(Fm::FileOperation::copyFiles({P(src + QStringLiteral("/link.txt"))}, P(dst)));
+        QVERIFY(finished);
+        QVERIFY2(gErrorCount >= 1, "the refusal must be reported");
+        const QFileInfo link(dst + QStringLiteral("/link.txt"));
+        QVERIFY2(link.isSymLink() && link.symLinkTarget() == target, "the destination link was modified or replaced");
+        if(kind == 0) QCOMPARE(readFile(target), QByteArray("precious"));
+        if(kind == 1) { QCOMPARE(names(target), QStringList{QStringLiteral("keep.txt")}); QCOMPARE(readFile(target + QStringLiteral("/keep.txt")), QByteArray("keep")); }
+        if(kind == 2) QCOMPARE(names(outside), QStringList{});
+        QCOMPARE(names(dst), QStringList{QStringLiteral("link.txt")});  // no .fm-*.partial left
     }
     // The destination's rwx bits are reapplied but never its setuid/setgid/sticky bits.
     void overwriteDoesNotPropagateSpecialModeBitsOfTheOldFile() {
