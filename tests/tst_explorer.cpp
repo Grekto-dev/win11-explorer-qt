@@ -210,11 +210,36 @@ private Q_SLOTS:
         QWidget* hit = fx.dialog->childAt(where);
         QVERIFY(!qobject_cast<QPushButton*>(hit) || hit == fx.child<QPushButton>("transferCancelButton"));
         QVERIFY(hit != pause);
-        // Move/Trash/Delete never advertise pause either.
+    }
+
+    // Review G1: exercises the real supportsPause() gate (controller created from a real job with a destination),
+    // not a dialog that never had a controller.
+    void transferDialogPauseGateFollowsBackendCapability() {
+        // Positive: single regular local file COPY advertises pause -> visible, enabled, focusable.
+        {
+            TransferDialogFixture fx(Fm::FileOperation::Copy, QStringLiteral("fixture3g.bin"), QString(), true);
+            QVERIFY(fx.dialog);
+            fx.dialog->show();
+            auto* pause = fx.child<QPushButton>("pauseButton");
+            QVERIFY(fx.dialog->findChild<ExplorerTransferController*>());
+            QVERIFY(pause->isVisible() && pause->isEnabled());
+            QVERIFY(pause->focusPolicy() != Qt::NoFocus);
+        }
         for(auto type : {Fm::FileOperation::Move, Fm::FileOperation::Trash, Fm::FileOperation::Delete}) {
-            TransferDialogFixture other(type);
+            TransferDialogFixture other(type, QStringLiteral("fixture3g.bin"), QString(), true);
             QVERIFY(other.dialog);
-            QVERIFY(!other.child<QPushButton>("pauseButton")->isVisibleTo(other.dialog.get()));
+            QVERIFY2(other.operation->job(), "real job expected so the controller gate is actually evaluated");
+            other.dialog->show();
+            auto* pause = other.child<QPushButton>("pauseButton");
+            QVERIFY(!pause->isVisibleTo(other.dialog.get()));
+            QVERIFY(!pause->isVisible());
+            QVERIFY(!other.dialog->findChild<ExplorerTransferController*>());   // gate rejected -> controller dropped
+            QVERIFY(!pause->hasFocus());
+            // Tab through the whole chain: focus never lands on the hidden pause button.
+            for(int i = 0; i < 6; ++i) {
+                QTest::keyClick(other.dialog.get(), Qt::Key_Tab);
+                QVERIFY(QApplication::focusWidget() != pause);
+            }
         }
     }
 
