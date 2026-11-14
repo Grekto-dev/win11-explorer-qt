@@ -26,6 +26,8 @@ mkdir -p "$stage/DEBIAN" "$stage/opt" "$stage/usr/bin" "$stage/usr/share/applica
 cp -a -- "$prefix" "$stage/opt/win11-explorer-qt"
 rm -f -- "$stage/opt/win11-explorer-qt/.win11-explorer-qt-prefix"
 ((strip_debug)) && rm -rf -- "$stage/opt/win11-explorer-qt/lib/debug"
+# libmenu-cache3 (Depends) provides the library and a matching menu-cached path; the bundled copy hardcodes /usr/lib/menu-cache.
+rm -f -- "$stage/opt/win11-explorer-qt/lib/libmenu-cache.so.3"
 ln -s "$dest/bin/win11-explorer-qt" "$stage/usr/bin/win11-explorer-qt"
 text="$(<"$prefix/share/win11-explorer-qt/win11-explorer-qt.desktop.in")"
 printf '%s\n' "${text//@BINDIR@/$dest/bin}" > "$stage/usr/share/applications/win11-explorer-qt.desktop"

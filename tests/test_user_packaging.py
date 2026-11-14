@@ -178,6 +178,9 @@ class DebPackage(unittest.TestCase):
     def test_deb_has_system_paths_explicit_depends_and_no_dev_tree(self):
         with tempfile.TemporaryDirectory() as tmp:
             prefix = fake_prefix(Path(tmp))
+            (prefix / 'lib').mkdir()
+            (prefix / 'lib/libmenu-cache.so.3').write_text('bundled copy hardcodes /usr/lib/menu-cache')
+            (prefix / 'lib/libQt6Core.so.6').write_text('qt')
             out = Path(tmp) / 'out'
             result = subprocess.run(['bash', str(ROOT / 'scripts/make-deb.sh'), '--prefix', str(prefix),
                                      '--out', str(out)], env=dict(CLEAN_ENV, HOME=tmp), text=True, capture_output=True)
@@ -192,6 +195,8 @@ class DebPackage(unittest.TestCase):
             self.assertIn('./opt/win11-explorer-qt/bin/win11-explorer-qt', listing)
             self.assertIn('./usr/share/applications/win11-explorer-qt.desktop', listing)
             self.assertIn('./usr/bin/win11-explorer-qt -> /opt/win11-explorer-qt/bin/win11-explorer-qt', listing)
+            self.assertIn('./opt/win11-explorer-qt/lib/libQt6Core.so.6', listing)
+            self.assertNotIn('libmenu-cache.so', listing, 'the system libmenu-cache3 must be used')
             self.assertNotIn('.deps', listing)
             self.assertNotIn('./etc/', listing)
             desktop = subprocess.run(['dpkg-deb', '--fsys-tarfile', str(debs[0])], capture_output=True).stdout
