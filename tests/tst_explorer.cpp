@@ -350,6 +350,69 @@ private Q_SLOTS:
             QVERIFY(!fx.child<QPushButton>("pauseButton")->isVisibleTo(fx.dialog.get()));
         }
     }
+    // Capture only: with EXPLORER_TEST_ARTIFACTS set, renders the dialog (grab, DPR 1)
+    // in the states of the measured Windows frames into <dir>/transfer-dialog/*.png;
+    // without it nothing is written. Consumed by tools/fidelity/compare_transfer_dialog.py.
+    void transferDialogCapturesMeasuredStatesWhenArtifactsRequested() {
+        const QString artifacts = qEnvironmentVariable("EXPLORER_TEST_ARTIFACTS");
+        if(artifacts.isEmpty())
+            return;   // capture disabled: writes nothing, still passes
+        const QString dir = QDir(artifacts).filePath(QStringLiteral("transfer-dialog"));
+        QVERIFY(QDir().mkpath(dir));
+        const auto save = [&](TransferDialogFixture& fx, const QString& name) {
+            QCOMPARE(fx.dialog->devicePixelRatioF(), 1.0);
+            QVERIFY(QTest::qWaitForWindowExposed(fx.dialog.get()));
+            QCoreApplication::processEvents();   // let layout/stylesheet polish settle before grab()
+            QImage img = fx.dialog->grab().toImage();
+            QVERIFY(!img.isNull());
+            QVERIFY2(img.save(QDir(dir).filePath(name)), qPrintable(name));
+        };
+        using State = ExplorerTransferController::State;
+        constexpr std::uint64_t total = 3ULL << 30;   // 3 GiB, like the measured fixture
+        {   // A: running, collapsed, 79 %
+            TransferDialogFixture fx;
+            QVERIFY(fx.dialog);
+            fx.dialog->setPauseAvailable(true);
+            fx.dialog->show();
+            fx.dialog->setPercent(79);
+            fx.dialog->applyTransferState(State::Running, false);
+            save(fx, QStringLiteral("running-79.png"));
+        }
+        {   // B: paused 32 %, collapsed then expanded with real-counter speed samples
+            TransferDialogFixture fx;
+            QVERIFY(fx.dialog);
+            fx.dialog->setPauseAvailable(true);
+            fx.dialog->show();
+            fx.dialog->setPercent(32);
+            fx.dialog->applyTransferState(State::Paused, true);
+            save(fx, QStringLiteral("paused-32.png"));
+            // Byte observations 0 -> 32 % of 3 GiB at varying rates (recordSpeedSample = same path as libfm's feed).
+            const double steps[] = {0.02, 0.05, 0.09, 0.14, 0.19, 0.23, 0.27, 0.30, 0.32};
+            const qint64 dt[] = {0, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000};
+            qint64 t = 0;
+            for(int i = 0; i < 9; ++i) {
+                t += dt[i];
+                fx.dialog->recordSpeedSample(std::uint64_t(steps[i] * double(total)), total, t);
+            }
+            QVERIFY(fx.dialog->speedSamples().size() >= 5);
+            QTest::mouseClick(fx.child<QPushButton>("transferDetailsButton"), Qt::LeftButton);
+            QVERIFY(fx.dialog->detailsExpanded());
+            fx.dialog->setDataTransferred(std::uint64_t(0.32 * double(total)), total);
+            save(fx, QStringLiteral("paused-32-expanded.png"));
+        }
+        {   // C: cancelling at 53 % (paused first, as in the measured sequence)
+            TransferDialogFixture fx;
+            QVERIFY(fx.dialog);
+            fx.dialog->setPauseAvailable(true);
+            fx.dialog->show();
+            fx.dialog->setPercent(53);
+            fx.dialog->applyTransferState(State::Paused, true);
+            fx.dialog->applyTransferState(State::Cancelling, false);
+            QCOMPARE(fx.dialog->windowTitle(), QStringLiteral("Cancelando - 53% concluído"));
+            save(fx, QStringLiteral("cancelling-53.png"));
+        }
+    }
+
     void defaultSettingsMatchExplorerDensity() {
         PCManFM::Settings settings;
         settings.load(QStringLiteral("defaults-test"));
