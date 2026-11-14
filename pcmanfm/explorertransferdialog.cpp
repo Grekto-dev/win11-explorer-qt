@@ -210,9 +210,11 @@ ExplorerTransferDialog::ExplorerTransferDialog(Fm::FileOperation* operation)
     summary_->setStyleSheet(QStringLiteral("QLabel{color:#D0D0D0;font-size:12px;}"));
     summary_->setText(tr("Copiando 1 item"));
     progressText_->setObjectName(QStringLiteral("transferPercent"));
+    progressText_->setTextFormat(Qt::PlainText);
     progressText_->setStyleSheet(QStringLiteral("QLabel{font-size:14px;}"));
     progressText_->setText(tr("0% concluído"));
     for(QLabel* l : {detailName_, detailRemaining_, detailItems_}) {
+        l->setTextFormat(Qt::PlainText);   // file names are untrusted: never interpreted as rich text
         l->setStyleSheet(QStringLiteral("QLabel{font-size:12px;}"));
         l->hide();
     }
