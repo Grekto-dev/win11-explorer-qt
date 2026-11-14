@@ -9,7 +9,9 @@ Icon=win11-explorer-qt
 Terminal=false
 Categories=System;FileTools;FileManager;Qt;
 # Offered in "Open with" for folders only; this file never claims the default
-# handler (the installer neither runs xdg-mime nor update-desktop-database).
+# handler. scripts/install-user.sh runs only `update-desktop-database -q` on the
+# user's ~/.local/share/applications (so GLib lists the app in "Open with"); it
+# never runs xdg-mime nor touches mimeapps.list. The .deb has no maintainer scripts.
 MimeType=inode/directory;
 StartupNotify=true
 StartupWMClass=win11-explorer-qt

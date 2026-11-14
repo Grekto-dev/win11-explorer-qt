@@ -465,6 +465,139 @@ class AtomicAssembly(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in (tmp / 'a').iterdir()), ['prefix'], 'no staging leftovers')
 
 
+MARKER_TEXT = 'created by scripts/make-portable-prefix.sh\n'
+
+
+def make_prefix_dir(path: Path, text='x'):
+    (path / 'bin').mkdir(parents=True)
+    (path / 'bin/win11-explorer-qt').write_text(text)
+    (path / '.win11-explorer-qt-prefix').write_text(MARKER_TEXT)
+    return path
+
+
+def dead_pid():
+    pid = 4_000_000
+    while True:
+        try:
+            os.kill(pid, 0)
+            pid += 1
+        except ProcessLookupError:
+            return pid
+        except PermissionError:
+            pid += 1
+
+
+class SwapRobustness(unittest.TestCase):
+    def setUp(self):
+        self.mod = load('portable_prefix')
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name) / 'a'
+        self.dir.mkdir()
+        self.prefix = self.dir / 'prefix'
+        self.prev = self.dir / '.prefix.prev'
+
+    def stage(self, pid=None):
+        return make_prefix_dir(self.dir / f'.prefix.new.{pid or os.getpid()}', 'new')
+
+    def test_publish_replaces_prefix_and_drops_prev(self):
+        make_prefix_dir(self.prefix, 'old')
+        stage = self.stage()
+        self.mod.publish(self.prefix, stage, self.prev)
+        self.assertEqual((self.prefix / 'bin/win11-explorer-qt').read_text(), 'new')
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ['prefix'])
+
+    def test_prev_without_marker_is_never_removed_and_stage_is_cleaned(self):
+        make_prefix_dir(self.prefix, 'old')
+        self.prev.mkdir()
+        (self.prev / 'precious').write_text('keep')
+        stage = self.stage()
+        with self.assertRaises(SystemExit):
+            self.mod.publish(self.prefix, stage, self.prev)
+        self.assertEqual((self.prev / 'precious').read_text(), 'keep')
+        self.assertEqual((self.prefix / 'bin/win11-explorer-qt').read_text(), 'old')
+        self.assertFalse(stage.exists(), 'stage must not be left behind')
+
+    def test_prev_symlink_is_refused_not_followed_and_stage_is_cleaned(self):
+        make_prefix_dir(self.prefix, 'old')
+        target = Path(self.tmp.name) / 'elsewhere'
+        make_prefix_dir(target, 'other')
+        self.prev.symlink_to(target)
+        stage = self.stage()
+        with self.assertRaises(SystemExit):
+            self.mod.publish(self.prefix, stage, self.prev)
+        self.assertTrue((target / 'bin/win11-explorer-qt').is_file())
+        self.assertFalse(stage.exists())
+
+    def test_failure_of_the_first_rename_cleans_stage_and_keeps_prefix(self):
+        make_prefix_dir(self.prefix, 'old')
+        stage = self.stage()
+        real = os.rename
+        def boom(src, dst):
+            if Path(src) == self.prefix:
+                raise OSError(16, 'Device or resource busy')
+            return real(src, dst)
+        self.mod.os.rename = boom
+        self.addCleanup(setattr, self.mod.os, 'rename', real)
+        with self.assertRaises(OSError):
+            self.mod.publish(self.prefix, stage, self.prev)
+        self.mod.os.rename = real
+        self.assertEqual((self.prefix / 'bin/win11-explorer-qt').read_text(), 'old')
+        self.assertFalse(stage.exists())
+        self.assertFalse(self.prev.exists())
+
+    def test_failure_of_the_second_rename_restores_prefix_and_cleans_stage(self):
+        make_prefix_dir(self.prefix, 'old')
+        stage = self.stage()
+        real = os.rename
+        def boom(src, dst):
+            if Path(src) == stage:
+                raise OSError(18, 'Invalid cross-device link')
+            return real(src, dst)
+        self.mod.os.rename = boom
+        self.addCleanup(setattr, self.mod.os, 'rename', real)
+        with self.assertRaises(OSError):
+            self.mod.publish(self.prefix, stage, self.prev)
+        self.mod.os.rename = real
+        self.assertEqual((self.prefix / 'bin/win11-explorer-qt').read_text(), 'old')
+        self.assertFalse(stage.exists())
+        self.assertFalse(self.prev.exists())
+
+    def test_orphan_stages_of_dead_pids_are_removed_live_ones_kept(self):
+        dead = self.stage(dead_pid())
+        live = self.stage(os.getppid())
+        unrelated = self.dir / '.prefix.new.notapid'
+        unrelated.mkdir()
+        foreign = self.dir / ('.other.new.%d' % dead_pid())
+        foreign.mkdir()
+        self.mod.clean_orphans(self.prefix, self.prev)
+        self.assertFalse(dead.exists())
+        self.assertTrue(live.exists())
+        self.assertTrue(unrelated.exists())
+        self.assertTrue(foreign.exists())
+
+    def test_orphan_stage_symlink_is_not_followed(self):
+        target = Path(self.tmp.name) / 'elsewhere'
+        make_prefix_dir(target, 'other')
+        link = self.dir / f'.prefix.new.{dead_pid()}'
+        link.symlink_to(target)
+        self.mod.clean_orphans(self.prefix, self.prev)
+        self.assertTrue((target / 'bin/win11-explorer-qt').is_file())
+
+    def test_lone_prev_left_by_a_kill_in_the_swap_window_is_restored(self):
+        make_prefix_dir(self.prev, 'old')
+        self.mod.clean_orphans(self.prefix, self.prev)
+        self.assertEqual((self.prefix / 'bin/win11-explorer-qt').read_text(), 'old')
+        self.assertFalse(self.prev.exists())
+
+    def test_lone_prev_without_marker_is_not_touched(self):
+        self.prev.mkdir()
+        (self.prev / 'precious').write_text('keep')
+        self.mod.clean_orphans(self.prefix, self.prev)
+        self.assertEqual((self.prev / 'precious').read_text(), 'keep')
+        self.assertFalse(self.prefix.exists())
+
+
 class LicenseDocs(unittest.TestCase):
     def test_license_docs_installed_for_redistributed_components(self):
         pkg = load('pkg_licenses')
@@ -702,6 +835,27 @@ class DebPackage(unittest.TestCase):
                                       '--out', str(Path(tmp) / 'o'), '--version', bad],
                                      env=dict(CLEAN_ENV, HOME=tmp), text=True, capture_output=True)
                 self.assertNotEqual(res.returncode, 0, repr(bad))
+
+
+class DocsAccuracy(unittest.TestCase):
+    def test_desktop_template_does_not_claim_the_installer_skips_update_desktop_database(self):
+        text = (ROOT / 'packaging/win11-explorer-qt.desktop.in').read_text()
+        self.assertNotIn('neither runs xdg-mime nor update-desktop-database', text)
+        self.assertIn('xdg-mime', text)  # still states that mimeapps/xdg-mime are never touched
+        self.assertIn('update-desktop-database', text)
+        mod = load('render_desktop')
+        self.assertIn('update-desktop-database', mod.render(text, '/opt/x/bin'))
+
+    def test_install_md_says_dt_rpath_not_runpath_for_the_elf_files(self):
+        text = (ROOT / 'docs/INSTALL.md').read_text()
+        self.assertNotIn('RUNPATH', text)
+        self.assertIn('DT_RPATH', text)
+        self.assertNotIn('RUNPATH', (ROOT / 'packaging/win11-explorer-qt.sh').read_text())
+
+    def test_install_md_documents_the_swap_window_recovery_and_closing_the_app(self):
+        text = (ROOT / 'docs/INSTALL.md').read_text()
+        for needle in ('.prev', '.new.', 'feche o app', 'recuper', 'janela'):
+            self.assertIn(needle, text)
 
 
 class Docs(unittest.TestCase):

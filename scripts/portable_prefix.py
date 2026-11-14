@@ -212,7 +212,7 @@ def assemble(a, repo, deps, qt_root, sdk, sysroot, overlay, install, binary, fm_
             if r.returncode:
                 die(f'{cmd[0]} failed on {target}: {r.stderr}')
 
-    # RUNPATHs: relative only. ($ORIGIN-based; transitive deps need each lib's own RUNPATH.)
+    # RPATHs (DT_RPATH via --force-rpath): relative only. ($ORIGIN-based; transitive deps need each lib's own RPATH.)
     pe, pe_desc = patchelf_cmd(repo)
     def setrpath(path, value):
         r = run(pe + ['--force-rpath', '--set-rpath', value, str(path)])  # DT_RPATH wins over an inherited LD_LIBRARY_PATH
@@ -236,7 +236,7 @@ def assemble(a, repo, deps, qt_root, sdk, sysroot, overlay, install, binary, fm_
     report += ['', '# Build tool', f'patchelf: {pe_desc}']
     (stage / 'share/win11-explorer-qt/BUNDLED.txt').write_text('\n'.join(report) + '\n')
 
-    # Self-check: relative RUNPATHs, nothing resolving into the dev tree, xcb present and resolvable.
+    # Self-check: relative RPATHs, nothing resolving into the dev tree, xcb present and resolvable.
     errors = []
     if not (stage / 'plugins/platforms/libqxcb.so').is_file():
         errors.append('plugins/platforms/libqxcb.so is missing')
@@ -247,7 +247,7 @@ def assemble(a, repo, deps, qt_root, sdk, sysroot, overlay, install, binary, fm_
         for m in re.finditer(r'\((?:RUNPATH|RPATH)\)[^\[]*\[([^\]]*)\]', dyn):
             for entry in m.group(1).split(':'):
                 if not entry.startswith('$ORIGIN'):
-                    errors.append(f'{p}: absolute RUNPATH {entry}')
+                    errors.append(f'{p}: absolute RPATH {entry}')
         found, missing = ldd(p, None)
         errors += [f'{p}: unresolved {m}' for m in missing]
         for soname, resolved in found.items():
@@ -259,6 +259,82 @@ def assemble(a, repo, deps, qt_root, sdk, sysroot, overlay, install, binary, fm_
         die(f'{len(errors)} relocation problems in {prefix}')
     size = sum(f.stat().st_size for f in stage.rglob('*') if f.is_file())
     return f'({size / 1048576:.1f} MiB, {len(bundle)} bundled libs, {len(plugins)} plugins)'
+
+
+def has_marker(path):
+    marker = Path(path) / MARKER
+    try:
+        return marker.is_file() and not marker.is_symlink() and marker.read_text().startswith(MARKER_TEXT.strip())
+    except OSError:
+        return False
+
+
+def remove_tree(path):
+    """rmtree that never follows or chokes on a symlink at the top."""
+    if os.path.islink(path):
+        os.unlink(path)
+    else:
+        shutil.rmtree(path)
+
+
+def check_prev(prev):
+    """`.NAME.prev` may only be deleted/restored if it is a real directory carrying our marker."""
+    if not os.path.lexists(prev):
+        return
+    if os.path.islink(prev) or not os.path.isdir(prev) or not has_marker(prev):
+        die(f'{prev} exists but is not a prefix created by this script (symlink or no valid {MARKER}); '
+            'refusing to delete it; move it away and retry')
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+STAGE_DIRS = {'bin', 'libexec', 'lib', 'plugins', 'share'}
+
+
+def clean_orphans(prefix, prev):
+    """Housekeeping for interrupted runs: remove `.NAME.new.<pid>` staging directories whose pid is dead
+    (never symlinks, never a directory that is not ours) and put a lone `.NAME.prev` (kill between the two
+    renames) back in place."""
+    prefix, prev = Path(prefix), Path(prev)
+    pat = re.compile(re.escape(f'.{prefix.name}.new.') + r'(\d+)$')
+    for p in sorted(prefix.parent.iterdir()):
+        m = pat.match(p.name)
+        if not m or p.is_symlink() or not p.is_dir() or pid_alive(int(m.group(1))):
+            continue
+        if has_marker(p) or not (p / MARKER).exists() and {c.name for c in p.iterdir()} <= STAGE_DIRS:
+            shutil.rmtree(p, ignore_errors=True)
+    if os.path.lexists(prev) and not os.path.lexists(prefix) and not prev.is_symlink() and prev.is_dir() and has_marker(prev):
+        os.rename(prev, prefix)
+        print(f'note: restored {prefix} from {prev} (an earlier update was interrupted)', file=sys.stderr)
+
+
+def publish(prefix, stage, prev):
+    """Swap `stage` into place. The old prefix stays as `.NAME.prev` until the new one is in place;
+    any failure cleans the stage and puts the old prefix back."""
+    prefix, stage, prev = Path(prefix), Path(stage), Path(prev)
+    moved = False
+    try:
+        if os.path.lexists(prefix):
+            check_prev(prev)
+            if os.path.lexists(prev):
+                shutil.rmtree(prev)
+            os.rename(prefix, prev)
+            moved = True
+        os.rename(stage, prefix)
+    except BaseException:
+        if moved and not os.path.lexists(prefix) and prev.is_dir():
+            os.rename(prev, prefix)
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
+    shutil.rmtree(prev, ignore_errors=True)
 
 
 def main():
@@ -287,27 +363,18 @@ def main():
         if not marker.is_file() or not marker.read_text().startswith(MARKER_TEXT.strip()):
             die(f'{prefix} exists and is not a prefix created by this script (no valid {MARKER}); refusing to touch it')
     prefix.parent.mkdir(parents=True, exist_ok=True)
-    stage = prefix.parent / f'.{prefix.name}.new.{os.getpid()}'
     prev = prefix.parent / f'.{prefix.name}.prev'
-    if stage.exists():
-        shutil.rmtree(stage)
+    clean_orphans(prefix, prev)
+    check_prev(prev)  # fail before the ~1 s assembly, not after it
+    stage = prefix.parent / f'.{prefix.name}.new.{os.getpid()}'
+    if stage.is_symlink() or stage.exists():
+        remove_tree(stage)
     try:
         summary = assemble(a, repo, deps, qt_root, sdk, sysroot, overlay, install, binary, fm_libs, prefix, stage)
     except BaseException:
         shutil.rmtree(stage, ignore_errors=True)  # the previous prefix was never touched
         raise
-    # Swap: previous install stays as .prev until the new one is in place.
-    if prev.exists():
-        shutil.rmtree(prev)
-    if prefix.exists():
-        os.rename(prefix, prev)
-    try:
-        os.rename(stage, prefix)
-    except OSError:
-        if prev.exists():
-            os.rename(prev, prefix)
-        raise
-    shutil.rmtree(prev, ignore_errors=True)
+    publish(prefix, stage, prev)
     print(f'prefix ready: {prefix} {summary}')
 
 
