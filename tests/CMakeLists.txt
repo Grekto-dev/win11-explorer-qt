@@ -65,6 +65,11 @@ if(ENABLE_HEAVY_TRANSFER_TESTS)
     set_tests_properties(fileops-safety PROPERTIES TIMEOUT 180 LABELS "transfer;fileops"
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;LD_LIBRARY_PATH=${_private_fm_prefix}/lib:$ENV{LD_LIBRARY_PATH}")
 
+    # Wrapper (signal cleanup) and guard (forged HOME/bus refused) of the test above; no GUI, no real trash.
+    add_test(NAME fileops-safety-wrapper COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/transfer/test_fileops_safety_wrapper.py)
+    set_tests_properties(fileops-safety-wrapper PROPERTIES TIMEOUT 120 LABELS "transfer;fileops"
+        ENVIRONMENT "FILEOPS_TEST_BINARY=$<TARGET_FILE:tst_fileops_safety>;LD_LIBRARY_PATH=${_private_fm_prefix}/lib:$ENV{LD_LIBRARY_PATH}")
+
     # Deterministic Job cancellation lifetime regression. The executable
     # interposes pthread_cond_broadcast, so its symbols must be exported.
     find_package(Threads REQUIRED)

@@ -1,7 +1,7 @@
 diff -ruN a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
 --- a/src/core/filetransferjob.cpp
 +++ b/src/core/filetransferjob.cpp
-@@ -1,9 +1,56 @@
+@@ -1,9 +1,54 @@
  #include "filetransferjob.h"
  #include "totalsizejob.h"
  #include "fileinfo_p.h"
@@ -9,8 +9,6 @@ diff -ruN a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
 +#include <QCoreApplication>
 +#include <QString>
 +#include <glib/gstdio.h>
-+#include <climits>
-+#include <cstdlib>
 +#include <sys/stat.h>
  
  namespace Fm {
@@ -58,7 +56,7 @@ diff -ruN a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
  FileTransferJob::FileTransferJob(FilePathList srcPaths, Mode mode):
      FileOperationJob{},
      srcPaths_{std::move(srcPaths)},
-@@ -133,9 +180,95 @@
+@@ -133,9 +178,103 @@
          auto size = g_file_info_get_attribute_uint64(srcInfo.get(), G_FILE_ATTRIBUTE_STANDARD_SIZE);
          setCurrentFileProgress(size, 0);
  
@@ -67,33 +65,36 @@ diff -ruN a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
 -                       (GFileProgressCallback)&gfileCopyProgressCallback, this, &err)) {
 +        // Never let a failed write destroy or half-replace data (audit FO-01/FO-02):
 +        // - overwriting a NATIVE destination writes the new content to a private temporary sibling and
-+        //   renames it over the destination only when complete (the original survives any failure);
-+        //   it keeps the original's permissions and, for a symlink, replaces the link's target;
++        //   renames it over the destination's OWN path only when complete (the original survives any failure).
++        //   Like GIO before this patch, a destination that is a symlink is REPLACED by the new regular file:
++        //   the link's target (possibly outside this folder / on another filesystem) is never touched.
++        //   The destination's rwx permissions win over the source's (as cp does; the new content can become
++        //   more permissive than the source) and setuid/setgid/sticky are never carried over;
 +        //   not kept: owner/ACL/xattrs of the old file, and hardlinks to it (the other names keep the old data);
 +        // - a destination is removed after a failed/cancelled copy ONLY when the existence query said
-+        //   NOT_FOUND explicitly before the copy. Unknown or present => nothing is deleted.
++        //   NOT_FOUND explicitly before the copy AND no OVERWRITE was requested (so the create was exclusive and the
++        //   file is provably ours). Unknown, present, or an OVERWRITE retry => nothing is deleted.
 +        const Presence destPresence = queryPresence(destPath, cancellable().get());
 +        const bool overwrite = (flags & G_FILE_COPY_OVERWRITE) != 0;
 +        bool ok = false;
 +        bool done = false;
 +        if(overwrite && destPath.isNative() && destPresence != Presence::Absent) {
 +            done = true;
-+            // Write through a symlink like before: the final target is what gets replaced.
-+            FilePath targetPath = destPath;
++            // The temp lives next to destPath itself (no realpath: a symlink is never followed).
 +            guint32 targetMode = 0;
 +            bool haveMode = false;
 +            if(CStrPtr localName = destPath.localPath()) {
-+                char resolved[PATH_MAX];
-+                if(::realpath(localName.get(), resolved) && g_strcmp0(resolved, localName.get()) != 0) {
-+                    targetPath = FilePath::fromLocalPath(resolved);
-+                }
 +                struct stat st;
-+                if(::stat(CStrPtr{g_file_get_path(targetPath.gfile().get())}.get(), &st) == 0 && S_ISREG(st.st_mode)) {
-+                    targetMode = st.st_mode & 07777;
++                // lstat: only a REGULAR old file lends its permissions (never through a link).
++                if(::lstat(localName.get(), &st) == 0 && S_ISREG(st.st_mode)) {
++                    targetMode = st.st_mode & 0777;
 +                    haveMode = true;
 +                }
 +            }
-+            const auto targetParent = targetPath.parent();
++            // chmod(2) follows symlinks: a symlink SOURCE is copied as a link, so its temp is a link as well and
++            // chmod would change the mode of the link's unrelated target. Only ever chmod a regular temp file.
++            const bool srcIsRegular = g_file_info_get_file_type(srcInfo.get()) == G_FILE_TYPE_REGULAR;
++            const auto targetParent = destPath.parent();
 +            FilePath tempPath;
 +            GErrorPtr copyErr;
 +            bool copied = false;
@@ -116,10 +117,15 @@ diff -ruN a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
 +                }
 +            }
 +            if(copied) {
-+                if(haveMode) {
-+                    g_chmod(CStrPtr{g_file_get_path(tempPath.gfile().get())}.get(), int(targetMode));
++                if(haveMode && srcIsRegular) {
++                    if(CStrPtr tempName = tempPath.localPath()) {
++                        struct stat tst;
++                        if(::lstat(tempName.get(), &tst) == 0 && S_ISREG(tst.st_mode)) {
++                            g_chmod(tempName.get(), int(targetMode));
++                        }
++                    }
 +                }
-+                ok = g_file_move(tempPath.gfile().get(), targetPath.gfile().get(),
++                ok = g_file_move(tempPath.gfile().get(), destPath.gfile().get(),
 +                                 GFileCopyFlags(G_FILE_COPY_OVERWRITE | G_FILE_COPY_NOFOLLOW_SYMLINKS), nullptr,
 +                                 nullptr, nullptr, &copyErr);
 +            }
@@ -147,9 +153,9 @@ diff -ruN a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
 +        if(!done) {
 +            ok = g_file_copy(srcPath.gfile().get(), destPath.gfile().get(), GFileCopyFlags(flags), cancellable().get(),
 +                             (GFileProgressCallback)&gfileCopyProgressCallback, this, &err);
-+            if(!ok && destPresence == Presence::Absent && err.domain() == G_IO_ERROR && err.code() != G_IO_ERROR_EXISTS &&
++            if(!ok && !overwrite && destPresence == Presence::Absent && err.domain() == G_IO_ERROR && err.code() != G_IO_ERROR_EXISTS &&
 +               err.code() != G_IO_ERROR_INVALID_FILENAME && err.code() != G_IO_ERROR_FILENAME_TOO_LONG) {
-+                // NOT_FOUND was explicit before the copy, so this operation created the file: drop the partial content.
++                // NOT_FOUND was explicit and the create was exclusive (no OVERWRITE), so we created the file: drop the partial content.
 +                g_file_delete(destPath.gfile().get(), nullptr, nullptr);
 +            }
 +        }
@@ -157,7 +163,7 @@ diff -ruN a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
              retry = handleError(err, srcPath, srcInfo, destPath, flags);
          }
          else {
-@@ -381,12 +514,8 @@
+@@ -381,12 +520,8 @@
              // the user wants retry the operation again
              retry = true;
          }
@@ -172,7 +178,7 @@ diff -ruN a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
      }
      return retry;
  }
-@@ -401,7 +530,14 @@
+@@ -401,7 +536,14 @@
          false
      };
      if(!srcInfo || isCancelled()) {
@@ -188,7 +194,7 @@ diff -ruN a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
          return false;
      }
  
-@@ -411,14 +547,28 @@
+@@ -411,14 +553,28 @@
  
      bool ret;
      switch(mode_) {
@@ -222,7 +228,7 @@ diff -ruN a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
          break;
      }
      case Mode::LINK:
-@@ -446,7 +596,15 @@
+@@ -446,7 +602,15 @@
      };
  
      if(!destDirInfo || isCancelled()) {

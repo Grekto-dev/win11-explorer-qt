@@ -13,6 +13,7 @@
 #include <QMimeData>
 #include <QMessageBox>
 #include <QPointer>
+#include <QScopeGuard>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <atomic>
@@ -71,6 +72,8 @@ Fm::FileOperationDialog* scriptDialogFactory(Fm::FileOperation* operation) {
 // the calls made by libfm-qt (through the PLT) land here first and forward to the real GIO.
 std::atomic<bool> gQueryFaultArmed{false};
 std::atomic<int> gQueryFaults{0};
+std::atomic<bool> gQueryFaultNotFound{false};  // inject NOT_FOUND (a lying "absent") instead of TIMED_OUT
+std::atomic<int> gQueryFaultMinAsks{0};        // ... only once the conflict prompt was answered this many times
 QByteArray gQueryFaultName;
 std::atomic<bool> gMoveExistsArmed{false};
 std::atomic<int> gMoveFaults{0};
@@ -143,11 +146,16 @@ __attribute__((visibility("default"))) GFileInfo* g_file_query_info(GFile* file,
     if(gQueryFaultArmed.load() && attributes && std::strcmp(attributes, "standard::type") == 0 &&
        (flags & G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS)) {
         char* base = g_file_get_basename(file);
-        const bool hit = base && gQueryFaultName == base;
+        const bool hit = base && gQueryFaultName == base && gAskCount >= gQueryFaultMinAsks.load();
         g_free(base);
         if(hit) {
             ++gQueryFaults;
-            g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT, "injected transient query failure");
+            if(gQueryFaultNotFound.load()) {
+                g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "injected: destination reported absent");
+            }
+            else {
+                g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT, "injected transient query failure");
+            }
             return nullptr;
         }
     }
@@ -269,17 +277,98 @@ private Q_SLOTS:
         QCOMPARE(readFile(dst + QStringLiteral("/a.txt")), QByteArray("old"));
         QCOMPARE(names(dst), QStringList{QStringLiteral("a.txt")});  // no .fm-*.partial left behind
     }
-    // A destination symlink stays a symlink: the content is written through it to its target.
-    void overwriteThroughSymlinkKeepsLinkAndUpdatesTarget() {
-        const QString src = dir(QStringLiteral("sl-src")), dst = dir(QStringLiteral("sl-dst"));
+    // Behaviour of GIO before the overlay ("como hoje"): a destination symlink is REPLACED by a regular
+    // file; its target (also outside the folder / on another filesystem) is never written.
+    void overwriteOverDestinationSymlinkReplacesTheLinkAndLeavesTheTargetIntact_data() {
+        QTest::addColumn<bool>("otherFilesystem");
+        QTest::addColumn<bool>("relativeLink");
+        QTest::newRow("outside-folder-absolute") << false << false;
+        QTest::newRow("outside-folder-relative") << false << true;
+        QTest::newRow("other-filesystem") << true << false;
+    }
+    void overwriteOverDestinationSymlinkReplacesTheLinkAndLeavesTheTargetIntact() {
+        QFETCH(bool, otherFilesystem);
+        QFETCH(bool, relativeLink);
+        QVERIFY2(!otherFilesystem || shm_.isValid(), "needs a second filesystem (/dev/shm)");
+        const QString tag = QString::fromLatin1(QTest::currentDataTag());
+        const QString src = dir(QStringLiteral("sl-src-") + tag), dst = dir(QStringLiteral("sl-dst-") + tag);
+        const QString outside = otherFilesystem ? shm_.path() : dir(QStringLiteral("sl-outside-") + tag);
+        const QString target = outside + QStringLiteral("/important.txt");
+        const auto removeTarget = qScopeGuard([&] { QFile::remove(target); });  // /dev/shm is shared with other tests
         QVERIFY(writeFile(src + QStringLiteral("/link.txt"), "new"));
-        QVERIFY(writeFile(dst + QStringLiteral("/real.txt"), "old"));
-        QVERIFY(QFile::link(dst + QStringLiteral("/real.txt"), dst + QStringLiteral("/link.txt")));
+        QVERIFY(writeFile(target, "precious"));
+        QVERIFY(QFile::setPermissions(target, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ReadGroup));
+        const QString linkTo = relativeLink ? QDir(dst).relativeFilePath(target) : target;
+        QVERIFY(QFile::link(linkTo, dst + QStringLiteral("/link.txt")));
         resetCounters(Ask::Overwrite);
         QVERIFY(waitFinished(Fm::FileOperation::copyFiles({P(src + QStringLiteral("/link.txt"))}, P(dst))));
-        QVERIFY(QFileInfo(dst + QStringLiteral("/link.txt")).isSymLink());
-        QCOMPARE(readFile(dst + QStringLiteral("/real.txt")), QByteArray("new"));
-        QCOMPARE(names(dst), (QStringList{QStringLiteral("link.txt"), QStringLiteral("real.txt")}));
+        QCOMPARE(gAskCount, 1);
+        QCOMPARE(gErrorCount, 0);
+        QVERIFY2(readFile(target) == QByteArray("precious"), "the unrelated link TARGET was overwritten");
+        struct stat st;
+        QCOMPARE(::stat(QFile::encodeName(target).constData(), &st), 0);
+        QCOMPARE(int(st.st_mode & 07777), 0640);
+        const QFileInfo link(dst + QStringLiteral("/link.txt"));
+        QVERIFY2(!link.isSymLink(), "the destination symlink was kept instead of replaced");
+        QCOMPARE(readFile(dst + QStringLiteral("/link.txt")), QByteArray("new"));
+        QCOMPARE(names(dst), QStringList{QStringLiteral("link.txt")});  // no temp left, no extra file
+    }
+    // A SYMLINK source is copied as a link; the temp file is then a symlink too, and chmod(2) on it
+    // would change the mode of the link's (unrelated) target. The sentinel's mode must not move.
+    void symlinkSourceOverwriteNeverChangesTheModeOfTheLinkTarget() {
+        const QString src = dir(QStringLiteral("ss-src")), dst = dir(QStringLiteral("ss-dst")), sentinelDir = dir(QStringLiteral("ss-sentinel"));
+        const QString sentinel = sentinelDir + QStringLiteral("/secret.txt");
+        QVERIFY(writeFile(sentinel, "S"));
+        QVERIFY(QFile::setPermissions(sentinel, QFileDevice::ReadOwner | QFileDevice::WriteOwner));  // 0600
+        QVERIFY(QFile::link(sentinel, src + QStringLiteral("/link.txt")));
+        QVERIFY(writeFile(dst + QStringLiteral("/link.txt"), "old"));
+        QVERIFY(QFile::setPermissions(dst + QStringLiteral("/link.txt"), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ReadGroup |
+                                                                           QFileDevice::ReadOther));  // 0644: what the buggy chmod would apply
+        resetCounters(Ask::Overwrite);
+        QVERIFY(waitFinished(Fm::FileOperation::copyFiles({P(src + QStringLiteral("/link.txt"))}, P(dst))));
+        QCOMPARE(gAskCount, 1);
+        struct stat st;
+        QCOMPARE(::stat(QFile::encodeName(sentinel).constData(), &st), 0);
+        QVERIFY2(int(st.st_mode & 07777) == 0600, qPrintable(QStringLiteral("sentinel mode changed to %1").arg(int(st.st_mode & 07777), 0, 8)));
+        QCOMPARE(readFile(sentinel), QByteArray("S"));
+        QCOMPARE(names(dst), QStringList{QStringLiteral("link.txt")});
+        QVERIFY2(QFileInfo(dst + QStringLiteral("/link.txt")).isSymLink(), "a symlink source is copied as a symlink");
+    }
+    // The destination's rwx bits are reapplied but never its setuid/setgid/sticky bits.
+    void overwriteDoesNotPropagateSpecialModeBitsOfTheOldFile() {
+        const QString src = dir(QStringLiteral("sb-src")), dst = dir(QStringLiteral("sb-dst"));
+        QVERIFY(writeFile(src + QStringLiteral("/f.bin"), "new"));
+        QVERIFY(writeFile(dst + QStringLiteral("/f.bin"), "old"));
+        QCOMPARE(::chmod(QFile::encodeName(dst + QStringLiteral("/f.bin")).constData(), 02755), 0);  // setgid + rwxr-xr-x
+        resetCounters(Ask::Overwrite);
+        QVERIFY(waitFinished(Fm::FileOperation::copyFiles({P(src + QStringLiteral("/f.bin"))}, P(dst))));
+        QCOMPARE(readFile(dst + QStringLiteral("/f.bin")), QByteArray("new"));
+        struct stat st;
+        QCOMPARE(::stat(QFile::encodeName(dst + QStringLiteral("/f.bin")).constData(), &st), 0);
+        QVERIFY2((st.st_mode & 07000) == 0, qPrintable(QStringLiteral("special bits propagated: %1").arg(int(st.st_mode & 07777), 0, 8)));
+        QCOMPARE(int(st.st_mode & 0777), 0755);  // the destination's mode prevails over the source's
+    }
+    // Simple branch: an OVERWRITE retry whose probe says "absent" does not prove we created the file
+    // (someone may have re-created it): a failed copy must NOT delete the destination then.
+    void failedOverwriteRetryWithAbsentProbeDoesNotDeleteTheDestination() {
+        const QString src = dir(QStringLiteral("sg-src")), dst = dir(QStringLiteral("sg-dst"));
+        QVERIFY(writeFile(src + QStringLiteral("/big.bin"), pattern(3 << 20, 'N')));
+        QVERIFY(writeFile(dst + QStringLiteral("/big.bin"), pattern(5000, 'O')));
+        resetCounters(Ask::Overwrite);
+        gQueryFaultName = "big.bin";
+        gQueryFaults = 0;
+        gQueryFaultNotFound = true;
+        gQueryFaultMinAsks = 1;  // the first (conflict-detecting) probe is real; the post-prompt retry probe lies
+        gQueryFaultArmed = true;
+        {
+            WriteLimit limit(1 << 20);
+            QVERIFY(waitFinished(Fm::FileOperation::copyFiles({P(src + QStringLiteral("/big.bin"))}, P(dst))));
+        }
+        gQueryFaultArmed = false;
+        gQueryFaultNotFound = false;
+        gQueryFaultMinAsks = 0;
+        QVERIFY2(gQueryFaults >= 1, "the fault hook was never reached: the test would be vacuous");
+        QVERIFY2(QFile::exists(dst + QStringLiteral("/big.bin")), "destination deleted although the OVERWRITE flag was set");
     }
     // A read-only folder (no sibling temp possible) falls back to the previous GIO in-place replace,
     // which refuses (it cannot remove the old name): clear error, original content untouched, no temp.
@@ -464,11 +553,23 @@ int main(int argc, char** argv) {
     // if HOME is the user's real home.
     const QByteArray iso = qgetenv("FILEOPS_SAFETY_HOME");
     const struct passwd* pw = getpwuid(getuid());
-    const bool ok = !iso.isEmpty() && qgetenv("HOME") == iso && qgetenv("XDG_DATA_HOME").startsWith(QByteArray(iso).append('/')) &&
+    // The bus must be the one dbus-run-session started for THIS run (wrapper: FILEOPS_SAFETY_BUS=1 injected
+    // by `dbus-run-session -- env ...`, parent process = dbus-run-session, address != the inherited bus).
+    const QByteArray bus = qgetenv("DBUS_SESSION_BUS_ADDRESS");
+    bool privateBus = qgetenv("FILEOPS_SAFETY_BUS") == "1" && !bus.isEmpty() && bus != qgetenv("FILEOPS_SAFETY_INHERITED_BUS");
+    if(privateBus) {
+        char comm[64] = {};
+        if(FILE* f = std::fopen(QByteArray(QByteArrayLiteral("/proc/") % QByteArray::number(qlonglong(getppid())) % QByteArrayLiteral("/comm")).constData(), "r")) {
+            if(!std::fgets(comm, sizeof comm, f)) comm[0] = 0;
+            std::fclose(f);
+        }
+        privateBus = std::strncmp(comm, "dbus-run-sessio", 15) == 0;  // comm is truncated to 15 chars
+    }
+    const bool ok = privateBus && !iso.isEmpty() && qgetenv("HOME") == iso && qgetenv("XDG_DATA_HOME").startsWith(QByteArray(iso).append('/')) &&
                     qgetenv("XDG_RUNTIME_DIR").startsWith(QByteArray(iso).append('/')) && (!pw || iso != QByteArray(pw->pw_dir)) &&
                     iso.contains("fileops-safety-home-");
     if(!ok) {
-        std::fprintf(stderr, "tst_fileops_safety: refusing to run outside run-fileops-safety.sh (HOME must be a private temp dir)\n");
+        std::fprintf(stderr, "tst_fileops_safety: refusing to run outside run-fileops-safety.sh (HOME and the D-Bus session must be the private ones)\n");
         return 2;
     }
     qputenv("QT_QPA_PLATFORM", "offscreen");
