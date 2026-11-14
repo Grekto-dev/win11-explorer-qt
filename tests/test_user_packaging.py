@@ -504,6 +504,40 @@ class VerifyXcbOwner(unittest.TestCase):
         self.assertIn('abstract', res.stderr)
 
 
+class RelocationCoversOriginalPrefix(unittest.TestCase):
+    def setUp(self):
+        self.mod = load('verify_relocation')
+
+    def test_original_prefix_is_hidden_under_tmpfs_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp).resolve() / 'orig prefix'
+            src.mkdir()
+            hidden = self.mod.hidden_paths(src)
+            self.assertIn(str(src), hidden)
+            self.assertIn(str((ROOT / '.state').resolve()) if (ROOT / '.state').is_dir() else str(src), hidden)
+
+    def test_reloc_proof_fails_when_the_original_prefix_shows_up_in_maps_or_strace(self):
+        src = '/home/u/.local/opt/win11-explorer-qt'
+        maps = ['/home/u/.local/opt/win11-explorer-qt/lib/libQt6Core.so.6', '/tmp/moved/lib/libQt6Gui.so.6']
+        self.assertEqual(self.mod.src_in_maps(maps, src), [maps[0]])
+        self.assertEqual(self.mod.src_in_maps(maps[1:], src), [])
+        self.assertEqual(self.mod.src_in_maps(['/home/u/.local/opt/win11-explorer-qt-other/lib/x.so'], src), [])
+        strace = ('123 openat(AT_FDCWD, "/home/u/.local/opt/win11-explorer-qt/share/x.qm", O_RDONLY) = -1 ENOENT (No such file)\n'
+                  '123 openat(AT_FDCWD, "/tmp/moved/share/y.qm", O_RDONLY) = 3\n'
+                  '123 statx(AT_FDCWD, "/home/u/.local/opt/win11-explorer-qt", 0) = -1 ENOENT\n'
+                  '123 openat(AT_FDCWD, "/home/u/.local/opt/win11-explorer-qt-other/z", O_RDONLY) = 3\n')
+        self.assertEqual(self.mod.src_in_strace(strace, src),
+                         ['/home/u/.local/opt/win11-explorer-qt', '/home/u/.local/opt/win11-explorer-qt/share/x.qm'])
+
+    def test_workdir_inside_or_containing_the_original_prefix_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp).resolve() / 'p'
+            (src / 'work').mkdir(parents=True)
+            self.assertTrue(self.mod.overlaps_hidden(src / 'work', [str(src)]))
+            self.assertTrue(self.mod.overlaps_hidden(Path(tmp).resolve(), [str(src)]))
+            self.assertFalse(self.mod.overlaps_hidden(Path(tmp).resolve() / 'other', [str(src)]))
+
+
 class VerifyXcbCleanup(unittest.TestCase):
     def test_app_is_started_in_its_own_session_and_the_whole_group_is_killed(self):
         text = (ROOT / 'scripts/verify-xcb.sh').read_text()

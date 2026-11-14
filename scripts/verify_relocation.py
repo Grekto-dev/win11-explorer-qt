@@ -3,8 +3,8 @@
 """Prove a prefix is relocatable: copy it to a path with spaces/accents, run it with
 `env -i`, a minimal PATH, a POISONED LD_LIBRARY_PATH/QT_PLUGIN_PATH and a throw-away HOME
 (offscreen, private D-Bus session), first with the dev tree visible, then with the dev tree
-(<repo>/.state, the SDK behind <repo>/.deps) hidden under tmpfs in a mount namespace
-(`unshare -rm`). Checks --version, opening a folder, where every library came from, and the
+(<repo>/.state, the SDK behind <repo>/.deps) AND the original prefix (after the copy) hidden under tmpfs
+in a mount namespace (`unshare -rm`); the original prefix appearing in maps or strace fails the proof. Checks --version, opening a folder, where every library came from, and the
 `ldd` of the xcb platform plugin under `env -i`. Absolute-path reads outside the prefix
 (translations, data dirs) are listed by strace when available; they are reported, not hidden.
 Real xcb execution is `scripts/verify-xcb.sh`.
@@ -27,17 +27,42 @@ def check_xcb_plugin(prefix):
     return ok, f'ldd(libqxcb.so) env -i: rc={r.returncode} missing={missing} dev-tree={len(leaked)}'
 
 
-def hidden_paths():
+def hidden_paths(src=None):
+    """Directories covered by tmpfs in the private mount namespace: the dev tree and, after the copy was made,
+    the ORIGINAL prefix `src` (so the moved copy cannot be silently reading it)."""
     out = []
     for cand in (REPO / '.state', (REPO / '.deps').resolve()):
         if cand.is_dir():
             out.append(str(cand))
+    if src is not None:
+        out.append(str(Path(src).resolve()))
     return out
 
 
 def in_hidden(path, hidden):
     rp = str(Path(path).resolve())
     return any(rp == h or rp.startswith(h + '/') for h in hidden)
+
+
+def overlaps_hidden(path, hidden):
+    """True if `path` is inside, equal to or contains one of the hidden directories."""
+    rp = str(Path(path).resolve())
+    return any(rp == h or rp.startswith(h + '/') or h.startswith(rp.rstrip('/') + '/') for h in hidden)
+
+
+def _under(path, src):
+    src = str(src).rstrip('/')
+    return path == src or path.startswith(src + '/')
+
+
+def src_in_maps(maps, src):
+    """Mapped files that come from the original prefix."""
+    return [m for m in maps if _under(m, src)]
+
+
+def src_in_strace(text, src):
+    """Every path under the original prefix that the app touched (success or ENOENT), sorted, unique."""
+    return sorted({w for line in text.splitlines() for w in line.split('"')[1::2] if w.startswith('/') and _under(w, src)})
 
 
 def main():
@@ -52,6 +77,8 @@ def main():
     hidden = hidden_paths()
     if in_hidden(work, hidden) or in_hidden(src, hidden):
         sys.exit(f'error: workdir/prefix live inside the dev tree that this proof hides: {hidden}')
+    if overlaps_hidden(work, [str(src)]):
+        sys.exit(f'error: workdir {work} overlaps the original prefix {src}, which this proof hides after copying')
     moved = work / 'instalação com espaço' / 'Win11 Explorer'
     shutil.copytree(src, moved, symlinks=True)
     home = work / 'home'
@@ -76,7 +103,7 @@ def main():
     say('#', xreport)
     ok &= xok
     say(f'# moved prefix: {moved}')
-    say(f'# original prefix no longer used: {src}')
+    say(f'# original prefix {src}: copied; it is hidden under tmpfs for the run below and must not appear in maps/strace')
     r = subprocess.run([launcher, '--version'], env=env, text=True, capture_output=True, timeout=60)
     say(f'--version rc={r.returncode} out={r.stdout.strip()!r} err={r.stderr.strip()[:200]!r}')
     ok &= r.returncode == 0 and 'win11-explorer-qt' in r.stdout
@@ -94,7 +121,7 @@ def main():
                         text=True, capture_output=True, timeout=60)
     shadow = [l for l in r2.stderr.splitlines() if 'calling init:' in l and 'sysroot' in l]
     say(f'# informational (known limit): with the dev SYSROOT on LD_LIBRARY_PATH {len(shadow)} system libs (glib etc.) are shadowed')
-    bad = [f for f in found if '/.deps' in f or '/.state' in f or 'sysroot' in f]
+    bad = [f for f in found if '/.deps' in f or '/.state' in f or 'sysroot' in f or _under(f, src)]
     say(f'# libs from dev tree: {len(bad)}')
     ok &= not bad and bool(found)
     # run the app: primary opens the folder, second instance -n, then quit
@@ -135,8 +162,9 @@ if str_log and _sh.which('strace'):
 '''
     strace_log = work / 'strace.log'
     env['RELOC_STRACE_LOG'] = str(strace_log)
+    hidden = hidden_paths(src)  # dev tree + the original prefix (the copy was made above, before the namespace)
     hide = ' && '.join(f'mount -t tmpfs none {h!r}' for h in hidden) or 'true'
-    say(f'# dev tree hidden under tmpfs in a mount namespace: {hidden}')
+    say(f'# dev tree AND original prefix hidden under tmpfs in a mount namespace: {hidden}')
     r = subprocess.run(['unshare', '-rm', '/bin/sh', '-c', hide + ' && exec "$@"', 'sh',
                         'dbus-run-session', '--', '/usr/bin/python3', '-c', inner], env=env, text=True, capture_output=True, timeout=180)
     say(r.stdout.rstrip())
@@ -149,12 +177,22 @@ if str_log and _sh.which('strace'):
     maps = [l.split('maps:')[1].strip() for l in out.splitlines() if l.strip().startswith('maps:')]
     ok &= all('/.deps' not in m and '/.state' not in m and 'sysroot' not in m for m in maps)
     ok &= any(str(moved) in m for m in maps)
+    from_src = src_in_maps(maps, src)
+    say(f'# mapped files from the ORIGINAL prefix: {len(from_src)}')
+    for m in from_src[:10]:
+        say('  from original prefix:', m)
+    ok &= not from_src
     if strace_log.exists():
         seen = sorted({w for l in strace_log.read_text(errors='replace').splitlines() for w in l.split('"')[1::2]
                        if w.startswith('/') and (str(REPO) in w or '/.deps' in w or '/.state' in w) and 'ENOENT' in l})
         say(f'# absolute paths outside the prefix that the app TRIED to open (dev tree hidden, so they failed): {len(seen)}')
         for w in seen[:30]:
             say('  tried:', w)
+        hits = src_in_strace(strace_log.read_text(errors='replace'), src)
+        say(f'# strace: paths under the ORIGINAL prefix touched by the app: {len(hits)}')
+        for w in hits[:30]:
+            say('  original prefix touched:', w)
+        ok &= not hits
     else:
         say('# strace unavailable: absolute-path reads outside the prefix were NOT checked')
     say('RESULT:', 'PASS' if ok else 'FAIL')
