@@ -126,6 +126,12 @@ public:
 
     void chdir(Fm::FilePath newPath, bool addHistory = true);
 
+    // Navigation generation: bumped by every real chdir() and when the current folder is
+    // unmounted; deferred work (C05 restore, B1b mount wait) compares it to detect staleness.
+    quint64 navGeneration() const {
+        return navGeneration_;
+    }
+
     Fm::FolderView::ViewMode viewMode() {
         return folderSettings_.viewMode();
     }
@@ -297,6 +303,8 @@ Q_SIGNALS:
     void backwardRequested();
     void folderUnmounted();
     void backspacePressed();
+    // emitted after a failed navigation put the tab back on the previous folder
+    void previousFolderRestored();
 
 protected:
     virtual bool eventFilter(QObject* watched, QEvent* event);
@@ -338,6 +346,11 @@ private:
     QString statusText_[StatusTextNum];
     Fm::BrowseHistory history_; // browsing history
     Fm::FilePath lastFolderPath_; // last browsed folder
+    // C05: state before a history-adding chdir, to undo it if the new folder cannot be loaded
+    Fm::BrowseHistory restoreHistory_;
+    Fm::FilePath restorePath_;
+    bool restorePending_ = false;
+    quint64 navGeneration_ = 0; // bumped by every chdir(); stale deferred restores are dropped
     bool overrideCursor_;
     FolderSettings folderSettings_;
     QTimer* selectionTimer_;

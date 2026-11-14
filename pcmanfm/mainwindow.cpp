@@ -188,7 +188,22 @@ MainWindow::MainWindow(Fm::FilePath path):
     ui.actionSidePane->setChecked(settings.isSidePaneVisible());
     ui.sidePane->setIconSize(QSize(settings.sidePaneIconSize(), settings.sidePaneIconSize()));
     ui.sidePane->setMode(settings.sidePaneMode());
-    ui.sidePane->restoreHiddenPlaces(settings.getHiddenPlaces());
+    {
+        QSet<QString> hiddenPlaces = settings.getHiddenPlaces();
+        if(!Launcher::appChooserAvailable()) {
+            // menu://applications/ needs menu-cached (it would abort without it): hide the entry
+            // (only in this window, the saved list is left alone) and disable Go > Applications.
+            ui.actionApplications->setEnabled(false);
+            ui.actionApplications->setToolTip(tr("Unavailable: the libmenu-cache helper \"menu-cached\" was not found"));
+            hiddenPlaces << QString::fromUtf8(Fm::FilePath::fromUri("menu:///applications/").toString().get())
+                         << QString::fromUtf8(Fm::FilePath::fromUri("menu://applications/").toString().get());
+        }
+        ui.sidePane->restoreHiddenPlaces(hiddenPlaces);
+    }
+    // D-02: the tree's context menu is a Fm::FileMenu too; its "Other Applications" must be guarded
+    connect(ui.sidePane, &Fm::SidePane::prepareFileMenu, this, [this](Fm::FileMenu* menu) {
+        Launcher::guardFileMenu(menu, this);
+    });
     connect(ui.sidePane, &Fm::SidePane::chdirRequested, this, &MainWindow::onSidePaneChdirRequested);
     connect(ui.sidePane, &Fm::SidePane::openFolderInNewWindowRequested, this, &MainWindow::onSidePaneOpenFolderInNewWindowRequested);
     connect(ui.sidePane, &Fm::SidePane::openFolderInNewTabRequested, this, &MainWindow::onSidePaneOpenFolderInNewTabRequested);
@@ -399,11 +414,51 @@ MainWindow::MainWindow(Fm::FilePath path):
     }
 }
 
-MainWindow::~MainWindow() = default;
+MainWindow::~MainWindow() {
+    // The breadcrumb's address editor (Fm::PathEdit) reacts to losing focus by editing the
+    // PathBar's layout; if that happens while this window is being torn down it crashes
+    // (SIGSEGV in PathEdit::focusOutEvent -> PathBar::closeEditor). Close the editors and drop
+    // the focus while every widget is still alive.
+    const auto bars = findChildren<Fm::PathBar*>();
+    for(Fm::PathBar* bar : bars) {
+        QMetaObject::invokeMethod(bar, "closeEditor", Qt::DirectConnection);
+    }
+    if(QWidget* focused = focusWidget()) {
+        focused->clearFocus();
+    }
+}
 
 // Activate a view frame appropriately and give a special style to the inactive one(s).
 // NOTE: This function is called only with the split mode.
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    // C04: the breadcrumb bar creates a PathEdit child while editing and resolves its text
+    // itself (without expanding "~"); expand it right before Return is processed.
+    if(watched == pathBar_ && pathBar_ && event->type() == QEvent::ChildAdded) {
+        // the child is not a PathEdit yet while still being constructed: look it up later
+        QTimer::singleShot(0, this, [this] {
+            if(pathBar_) {
+                const auto edits = pathBar_->findChildren<Fm::PathEdit*>();
+                for(Fm::PathEdit* edit : edits) {
+                    edit->installEventFilter(this);
+                }
+            }
+        });
+    }
+    else if(event->type() == QEvent::KeyPress) {
+        if(auto* edit = qobject_cast<Fm::PathEdit*>(watched)) {
+            const int key = static_cast<QKeyEvent*>(event)->key();
+            if(edit != pathEntry_ && (key == Qt::Key_Return || key == Qt::Key_Enter)) {
+                const QString expanded = Application::normalizeTypedPath(edit->text());
+                if(expanded.isEmpty()) {
+                    edit->clear(); // blank input: consume it instead of navigating to "<cwd>/   "
+                    return true;
+                }
+                if(expanded != edit->text()) {
+                    edit->setText(expanded);
+                }
+            }
+        }
+    }
     if(qobject_cast<QWidget*>(watched)) {
         if(event->type() == QEvent::FocusIn
            // the event has happened inside the splitter
@@ -663,6 +718,7 @@ void MainWindow::createPathBar(bool usePathButtons) {
             }
             if(pathBar_ == nullptr) {
                 bar = pathBar_ = new Fm::PathBar(this);
+                pathBar_->installEventFilter(this);
                 connect(pathBar_, &Fm::PathBar::chdir, this, &MainWindow::onPathBarChdir);
                 connect(pathBar_, &Fm::PathBar::middleClickChdir, this, &MainWindow::onPathBarMiddleClickChdir);
                 connect(pathBar_, &Fm::PathBar::editingFinished, this, &MainWindow::onResetFocus);
@@ -710,6 +766,13 @@ int MainWindow::addTabWithPage(TabPage* page, ViewFrame* viewFrame, Fm::FilePath
     connect(page, &TabPage::forwardRequested, this, &MainWindow::on_actionGoForward_triggered);
     connect(page, &TabPage::backspacePressed, this, &MainWindow::on_actionGoUp_triggered);
     connect(page, &TabPage::folderUnmounted, this, &MainWindow::onFolderUnmounted);
+    connect(page, &TabPage::previousFolderRestored, this, [this, page] {
+        // C05: a failed navigation was rolled back; resync the address bar and icon
+        if(page == currentPage()) {
+            updateUIForCurrentPage(false);
+        }
+        setTabIcon(page);
+    });
 
     if(path) {
         page->chdir(path, true);
@@ -863,7 +926,11 @@ void MainWindow::onPathEntryReturnPressed() {
         pathEntry = static_cast<Fm::PathEdit*>(sender());
     }
     if(pathEntry != nullptr) {
-        QString text = pathEntry->text();
+        // C04: expand "~"/"$VAR"; C05 (minor): whitespace-only input is not a path
+        const QString text = Application::normalizeTypedPath(pathEntry->text());
+        if(text.isEmpty()) {
+            return;
+        }
         QByteArray utext = text.toLocal8Bit();
         chdir(Fm::FilePath::fromPathStr(utext.constData()));
     }
@@ -1398,9 +1465,18 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     }
 
     // remember last tab paths only if this is the last window
+    // D-11 (review): when another window stays open, keep the tab list saved so far instead of
+    // overwriting it with an empty one (a crash before the last window closes would lose it).
+    bool otherWindowOpen = false;
+    for(QWidget* w : QApplication::topLevelWidgets()) {
+        if(w != this && qobject_cast<MainWindow*>(w) && w->isVisible()) {
+            otherWindowOpen = true;
+            break;
+        }
+    }
     QStringList tabPaths;
     int splitNum = 0;
-    if(lastActive_ == nullptr && settings.reopenLastTabs()) {
+    if(lastActive_ == nullptr && !otherWindowOpen && settings.reopenLastTabs()) {
         for(int i = 0; i < ui.viewSplitter->count(); ++i) {
             if(ViewFrame* viewFrame = qobject_cast<ViewFrame*>(ui.viewSplitter->widget(i))) {
                 int n = viewFrame->getStackedWidget()->count();
@@ -1415,8 +1491,12 @@ void MainWindow::closeEvent(QCloseEvent* event) {
             }
         }
     }
-    settings.setTabPaths(tabPaths);
-    settings.setSplitViewTabsNum(splitNum);
+    if(!otherWindowOpen) {
+        settings.setTabPaths(tabPaths);
+        settings.setSplitViewTabsNum(splitNum);
+    }
+    // D-11: do not wait for aboutToQuit to persist (a crash would lose this)
+    static_cast<Application*>(qApp)->scheduleSettingsSave();
 }
 
 void MainWindow::onTabBarCurrentChanged(int index) {
@@ -2321,7 +2401,8 @@ void MainWindow::on_actionOpenAsRoot_triggered() {
                 GList* uris = g_list_prepend(nullptr, uri.get());
 
                 if(!g_app_info_launch_uris(appInfo.get(), uris, nullptr, &err)) {
-                    QMessageBox::critical(this, tr("Error"), QString::fromUtf8(err->message));
+                    QScopedPointer<QMessageBox> box(Application::makeErrorBox(this, tr("Error"), err.message()));
+                    box->exec();
                 }
 
                 g_list_free(uris);

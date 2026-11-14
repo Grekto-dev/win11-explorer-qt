@@ -29,6 +29,7 @@
 #include <QApplication>
 #include <QCursor>
 #include <QMessageBox>
+#include <QPointer>
 #include <QScrollBar>
 #include <QToolButton>
 #include <QLabel>
@@ -474,6 +475,23 @@ void TabPage::localizeTitle(const Fm::FilePath& path) {
 }
 
 void TabPage::onFolderFinishLoading() {
+    if(restorePending_) {
+        restorePending_ = false;
+        if(folder_ && !folder_->isValid() && restorePath_) {
+            // C05: the folder could not be loaded at all; go back to where we were
+            const quint64 generation = navGeneration_;
+            QTimer::singleShot(0, this, [this, generation] {
+                if(generation != navGeneration_) {
+                    return; // the user/app already navigated elsewhere: do not override it
+                }
+                const Fm::FilePath previous = restorePath_;
+                const Fm::BrowseHistory history = restoreHistory_;
+                chdir(previous, false);
+                history_ = history;
+                Q_EMIT previousFolderRestored();
+            });
+        }
+    }
     auto fi = folder_->info();
     if(fi) { // if loading of the folder fails, it's possible that we don't have FmFileInfo.
         title_ = fi->displayName();
@@ -537,7 +555,19 @@ void TabPage::onFolderError(const Fm::GErrorPtr& err, Fm::Job::ErrorSeverity sev
             if(!path.hasUriScheme("admin")) {
                 MountOperation* op = new MountOperation(true, this);
                 op->mountEnclosingVolume(path);
-                if(op->wait()) { // blocking event loop, wait for mount operation to finish.
+                // B1b (documented limit): the mount may need user interaction (password
+                // dialogs) while this slot runs inside the Folder's BlockingQueued error signal,
+                // so the answer must be known on return and an event loop is still nested here.
+                // Make it safe: never touch a destroyed tab or a folder that changed meanwhile.
+                QPointer<TabPage> self(this);
+                const quint64 generationBefore = navGeneration_;
+                const bool mounted = op->wait();
+                // compare the navigation generation, not a raw Folder pointer (reusable address)
+                if(!self || self->navGeneration_ != generationBefore) {
+                    response = Fm::Job::ErrorAction::CONTINUE;
+                    return;
+                }
+                if(mounted) { // blocking event loop, wait for mount operation to finish.
                     // This will reload the folder, which generates a new "start-loading"
                     // signal, so we get more "start-loading" signals than "finish-loading"
                     // signals. FIXME: This is a bug of libfm.
@@ -560,8 +590,13 @@ void TabPage::onFolderError(const Fm::GErrorPtr& err, Fm::Job::ErrorSeverity sev
          * https://sourceforge.net/tracker/?func=detail&aid=3411298&group_id=156956&atid=801864
          * */
 
-        // FIXME: consider replacing this modal dialog with an info bar to improve usability
-        QMessageBox::critical(this, tr("Error"), err.message());
+        // D-04: never nest an event loop here (this runs inside job/D-Bus driven code):
+        // show the error without blocking.
+        auto* box = new QMessageBox(QMessageBox::Critical, tr("Error"), err.message(), QMessageBox::Ok, this);
+        box->setTextFormat(Qt::PlainText); // messages/names from remote shares are not rich text
+        box->setAttribute(Qt::WA_DeleteOnClose);
+        box->setWindowModality(Qt::NonModal);
+        box->show();
     }
     response = Fm::Job::ErrorAction::CONTINUE;
 }
@@ -620,6 +655,9 @@ void TabPage::onFolderRemoved() {
 void TabPage::onFolderUnmount() {
     // the folder we're showing is unmounted, destroy the widget
     qDebug("folder unmount");
+    // B1b: whatever deferred/nested work was started for this folder (the NOT_MOUNTED mount wait in
+    // onFolderError, a pending C05 restore) is stale now: it must not act on the unmounted folder.
+    ++navGeneration_;
     // NOTE: We cannot delete the page or change its directory here
     // because unmounting might be done from places view, in which case,
     // the mount operation is a child of the places view and should be
@@ -650,6 +688,15 @@ QString TabPage::pathName() {
 
 void TabPage::chdir(Fm::FilePath newPath, bool addHistory) {
     // qDebug() << "TABPAGE CHDIR:" << newPath.toString().get();
+    // Review 2: menu://applications/ is built with menu_cache_lookup_sync, which aborts the whole
+    // process when menu-cached is missing. Refuse the navigation (non-blocking message).
+    if(Launcher::isMenuCachePath(newPath) && !Launcher::appChooserAvailable()) {
+        Launcher::showMenuUnavailableMessage(window());
+        if(folder_) {
+            return;
+        }
+        newPath = Fm::FilePath::homeDir(); // a brand new tab must still get a folder
+    }
     if(filterBar_){
         filterBar_->clear();
     }
@@ -662,12 +709,24 @@ void TabPage::chdir(Fm::FilePath newPath, bool addHistory) {
         if (newPath.hasUriScheme("admin") && !canOpenAdmin()) {
             return; // see canOpenAdmin() for a thorough explanation
         }
+    }
+    // Only a real navigation invalidates a pending restore (the early returns above must not).
+    restorePending_ = false;
+    ++navGeneration_;
+    if(folder_) {
 
         // reset the status selected text
         statusText_[StatusTextSelectedFiles] = QString();
 
         // remember the previous folder path that we have browsed.
         lastFolderPath_ = folder_->path();
+
+        // C05: remember how to undo this navigation if the new folder fails to load
+        restorePending_ = addHistory && folder_->isValid();
+        if(restorePending_) {
+            restorePath_ = folder_->path();
+            restoreHistory_ = history_;
+        }
 
         if(addHistory) {
             // store current scroll pos in the browse history

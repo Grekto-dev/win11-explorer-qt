@@ -242,6 +242,10 @@ void View::prepareFileMenu(Fm::FileMenu* menu) {
     menu->setConfirmTrash(app->settings().confirmTrash());
     menu->setUseTrash(app->settings().useTrash());
 
+    // D-02: "Other Applications" opens the libmenu-cache based chooser, which aborts the
+    // process when its helper is missing; fall back to an executable picker in that case.
+    Launcher::guardFileMenu(menu, window());
+
     // add some more menu items for dirs
     bool all_native = true;
     bool all_directory = true;

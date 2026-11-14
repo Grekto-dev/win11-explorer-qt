@@ -20,6 +20,23 @@
 
 #include "launcher.h"
 #include <QFileInfo>
+#include <QFile>
+#include <QFileDialog>
+#include <QPointer>
+#include <QAction>
+#include <libfm-qt6/filemenu.h>
+#include <QMessageBox>
+#include <QComboBox>
+#include <QSignalBlocker>
+#include <QEvent>
+#include <memory>
+#include <libfm-qt6/appchoosercombobox.h>
+#include <libfm-qt6/pathedit.h>
+#include <QLineEdit>
+#include <QMetaObject>
+#include <strings.h>
+#include <QStringList>
+#include <dlfcn.h>
 #include "mainwindow.h"
 #include "application.h"
 #include <libfm-qt6/core/filepath.h>
@@ -37,6 +54,257 @@ Launcher::Launcher(PCManFM::MainWindow* mainWindow):
 }
 
 Launcher::~Launcher() = default;
+
+namespace {
+int appChooserOverride = -1;
+
+// Path of the helper the *loaded* libmenu-cache will exec: it is a string compiled into the
+// library ("/usr/lib/menu-cache/menu-cached" for the sysroot build), so read it from the binary.
+QString readMenuCachedPathOfLoadedLibrary() {
+    void* sym = dlsym(RTLD_DEFAULT, "menu_cache_lookup");
+    Dl_info info;
+    if(!sym || !dladdr(sym, &info) || !info.dli_fname) {
+        return QString();
+    }
+    QFile lib(QString::fromLocal8Bit(info.dli_fname));
+    if(!lib.open(QIODevice::ReadOnly)) {
+        return QString();
+    }
+    const QByteArray data = lib.readAll();
+    const QByteArray tail("/menu-cached");
+    int idx = 0;
+    while((idx = data.indexOf(tail, idx)) >= 0) {
+        const int start = data.lastIndexOf('\0', idx) + 1;
+        const int end = data.indexOf('\0', idx);
+        const QByteArray candidate = data.mid(start, end < 0 ? -1 : end - start);
+        if(candidate.startsWith('/') && candidate.endsWith(tail)) {
+            return QString::fromLocal8Bit(candidate);
+        }
+        idx += tail.size();
+    }
+    return QString();
+}
+
+// The lookup reads the whole library: do it once (the loaded library cannot change).
+QString menuCachedPathOfLoadedLibrary() {
+    static const QString cached = readMenuCachedPathOfLoadedLibrary();
+    return cached;
+}
+
+// D-02 (all entry points): Fm::AppChooserComboBox (Properties -> "Open with" -> "Customize")
+// builds an AppChooserDialog -> AppMenuView -> menu_cache_lookup(), which g_error()s (SIGTRAP)
+// when the helper is missing. libfm-qt is not patched here: when the chooser is unavailable the
+// combo's own handler is detached and replaced by one that never builds the dialog.
+class AppChooserGuard : public QObject {
+public:
+    using QObject::QObject;
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if(event->type() == QEvent::Polish) {
+            if(auto* combo = qobject_cast<Fm::AppChooserComboBox*>(watched)) {
+                guard(combo);
+            }
+        }
+        // Review 3: every Fm::PathEdit (toolbar entry, the breadcrumb's inline editor); the
+        // focus-in is a second chance before PathEdit::focusInEvent reloads its completer.
+        if(event->type() == QEvent::Polish || event->type() == QEvent::FocusIn) {
+            if(auto* edit = qobject_cast<Fm::PathEdit*>(watched)) {
+                Launcher::guardPathEdit(edit);
+            }
+        }
+        return false;
+    }
+    static void guard(Fm::AppChooserComboBox* combo) {
+        if(Launcher::appChooserAvailable() || combo->property("explorerChooserGuarded").toBool()) {
+            return;
+        }
+        combo->setProperty("explorerChooserGuarded", true);
+        QObject::disconnect(combo, &QComboBox::currentIndexChanged, combo, nullptr);
+        auto previous = std::make_shared<int>(combo->currentIndex());
+        QObject::connect(combo, &QComboBox::currentIndexChanged, combo, [combo, previous](int index) {
+            if(index < 0) {
+                return;
+            }
+            if(index == combo->count() - 1) { // "Customize"
+                {
+                    QSignalBlocker blocker(combo);
+                    combo->setCurrentIndex(*previous);
+                }
+                Launcher::showChooserUnavailableMessage(combo->window());
+            }
+            else {
+                *previous = index;
+            }
+        });
+    }
+};
+}
+
+void Launcher::installAppChooserGuard(QObject* app) {
+    app->installEventFilter(new AppChooserGuard(app));
+}
+
+QString Launcher::menuCachedHelperPath() {
+    return menuCachedPathOfLoadedLibrary();
+}
+
+void Launcher::setAppChooserAvailableForTest(int state) {
+    appChooserOverride = state;
+}
+
+bool Launcher::appChooserAvailable() {
+    if(appChooserOverride >= 0) {
+        return appChooserOverride == 1;
+    }
+    if(!dlsym(RTLD_DEFAULT, "menu_cache_lookup")) {
+        return true; // libmenu-cache not in use: nothing can abort
+    }
+    const QString helper = menuCachedPathOfLoadedLibrary();
+    if(!helper.isEmpty()) {
+        return QFileInfo(helper).isExecutable();
+    }
+    static const QStringList candidates = {
+        QStringLiteral("/usr/lib/menu-cache/menu-cached"),
+        QStringLiteral("/usr/lib/x86_64-linux-gnu/menu-cache/menu-cached"),
+        QStringLiteral("/usr/lib/aarch64-linux-gnu/menu-cache/menu-cached"),
+        QStringLiteral("/usr/lib64/menu-cache/menu-cached"),
+        QStringLiteral("/usr/libexec/menu-cache/menu-cached")};
+    for(const QString& c : candidates) {
+        if(QFileInfo(c).isExecutable()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void Launcher::showNoAppMessage(QWidget* parent) {
+    auto* box = new QMessageBox(QMessageBox::Information, QObject::tr("No application associated"),
+                                QObject::tr("No application is associated with this file type."),
+                                QMessageBox::Ok, parent);
+    box->setTextFormat(Qt::PlainText);
+    box->setInformativeText(QObject::tr("Use \"Open with\" to choose an application."));
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    box->setObjectName(QStringLiteral("explorerNoAppMessage"));
+    box->setWindowModality(Qt::NonModal);
+    box->show(); // non-blocking on purpose
+}
+
+void Launcher::showChooserUnavailableMessage(QWidget* parent, const QString& text) {
+    auto* box = new QMessageBox(QMessageBox::Information, QObject::tr("Application chooser unavailable"),
+                                !text.isEmpty() ? text
+                                : QObject::tr("The application chooser is not available in this environment "
+                                              "(the libmenu-cache helper \"menu-cached\" was not found)."),
+                                QMessageBox::Ok, parent);
+    box->setTextFormat(Qt::PlainText);
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    box->setObjectName(QStringLiteral("explorerChooserUnavailableMessage"));
+    box->setWindowModality(Qt::NonModal);
+    box->show();
+}
+
+bool Launcher::isMenuCachePath(const Fm::FilePath& path) {
+    if(!path) {
+        return false;
+    }
+    const auto scheme = path.uriScheme();
+    return scheme && strcasecmp(scheme.get(), "menu") == 0;
+}
+
+bool Launcher::isMenuCacheText(const QString& text) {
+    int i = 0;
+    while(i < text.size() && text.at(i).isSpace()) {
+        ++i;
+    }
+    return text.mid(i, 5).compare(QLatin1String("menu:"), Qt::CaseInsensitive) == 0;
+}
+
+void Launcher::showMenuUnavailableMessage(QWidget* parent) {
+    showChooserUnavailableMessage(parent,
+        QObject::tr("The Applications view is not available in this environment "
+                    "(the libmenu-cache helper \"menu-cached\" was not found)."));
+}
+
+void Launcher::guardPathEdit(Fm::PathEdit* edit) {
+    if(!edit || edit->property("explorerMenuGuarded").toBool()) {
+        return;
+    }
+    edit->setProperty("explorerMenuGuarded", true);
+    // PathEdit::onTextChanged (private slot) is what starts the completer job. Take its place:
+    // forward every text but the ones that would enumerate a menu: location.
+    // (connected with a pointer-to-member, so a SIGNAL/SLOT-string disconnect cannot find it; drop
+    // every textChanged -> edit connection, the edit has no other one.)
+    QObject::disconnect(edit, &QLineEdit::textChanged, edit, nullptr);
+    QObject::connect(edit, &QLineEdit::textChanged, edit, [edit](const QString& text) {
+        if(menuCacheUnusable() && isMenuCacheText(text)) {
+            return; // would reach menu_cache_lookup_sync (abort without menu-cached)
+        }
+        QMetaObject::invokeMethod(edit, "onTextChanged", Qt::DirectConnection, Q_ARG(QString, text));
+    });
+    // text already there (set before the guard existed): its prefix may be loaded on focus-in
+    if(menuCacheUnusable() && isMenuCacheText(edit->text())) {
+        edit->clear();
+    }
+}
+
+bool Launcher::launchPaths(QWidget* parent, const Fm::FilePathList& paths) {
+    if(menuCacheUnusable()) {
+        Fm::FilePathList allowed;
+        bool dropped = false;
+        for(const auto& path : paths) {
+            if(isMenuCachePath(path)) {
+                dropped = true;
+            }
+            else {
+                allowed.push_back(path);
+            }
+        }
+        if(dropped) {
+            showMenuUnavailableMessage(parent ? parent : static_cast<QWidget*>(mainWindow_));
+            if(allowed.empty()) {
+                return false;
+            }
+            return Fm::FileLauncher::launchPaths(parent, allowed);
+        }
+    }
+    return Fm::FileLauncher::launchPaths(parent, paths);
+}
+
+void Launcher::guardFileMenu(Fm::FileMenu* menu, QWidget* parent) {
+    if(!menu || appChooserAvailable()) {
+        return;
+    }
+    if(QAction* openWith = menu->openWithAction()) {
+        QObject::disconnect(openWith, SIGNAL(triggered(bool)), menu, nullptr);
+        const Fm::FileInfoList targets = menu->files();
+        QPointer<QWidget> owner(parent);
+        QObject::connect(openWith, &QAction::triggered, openWith, [owner, targets] {
+            if(auto app = pickApplicationWithoutMenuCache(owner.data())) {
+                Launcher(nullptr).launchWithApp(nullptr, app.get(), targets.paths());
+            }
+        });
+    }
+}
+
+Fm::GAppInfoPtr Launcher::pickApplicationWithoutMenuCache(QWidget* parent) {
+    const QString exe = QFileDialog::getOpenFileName(parent, QObject::tr("Choose an application"),
+                                                     QStringLiteral("/usr/bin"));
+    if(exe.isEmpty()) {
+        return Fm::GAppInfoPtr{};
+    }
+    gchar* quoted = g_shell_quote(exe.toLocal8Bit().constData());
+    const QByteArray cmd = QByteArray(quoted) + " %F";
+    g_free(quoted);
+    Fm::GErrorPtr err;
+    GAppInfo* app = g_app_info_create_from_commandline(cmd.constData(), nullptr, G_APP_INFO_CREATE_NONE, &err);
+    return Fm::GAppInfoPtr{app, false};
+}
+
+Fm::GAppInfoPtr Launcher::chooseApp(const Fm::FileInfoList& fileInfos, const char* mimeType, Fm::GErrorPtr& err) {
+    if(!appChooserAvailable()) {
+        showNoAppMessage();
+        return Fm::GAppInfoPtr{};
+    }
+    return Fm::FileLauncher::chooseApp(fileInfos, mimeType, err);
+}
 
 bool Launcher::openFolder(GAppLaunchContext* ctx, const Fm::FileInfoList& folderInfos, Fm::GErrorPtr& /*err*/) {
     auto fi = folderInfos[0];

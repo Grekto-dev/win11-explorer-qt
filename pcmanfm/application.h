@@ -28,6 +28,7 @@
 #include <QVector>
 #include <QPointer>
 #include <QProxyStyle>
+#include <QTimer>
 #include <QTranslator>
 #include <gio/gio.h>
 
@@ -35,6 +36,8 @@
 #include <libfm-qt6/core/fileinfo.h>
 
 class QScreen;
+class QMessageBox;
+class QWidget;
 
 class QFileSystemWatcher;
 
@@ -80,8 +83,34 @@ public:
       return underWayland_;
     }
 
-    // public interface exported via dbus
+    // public interface exported via dbus. It only queues the work: the D-Bus caller must
+    // never wait for a nested event loop (error dialogs, FileInfoJob) of this instance.
     void launchFiles(const QString& cwd, const QStringList& paths, bool inNewWindow, bool reopenLastTabs);
+
+    // Expands a leading "~", "~/..." or "$VAR"/"${VAR}" (variable must be set) in a path
+    // typed by the user or given on the command line. Anything else is returned unchanged.
+    // (an unset or empty variable is left untouched).
+    static QString expandUserPath(const QString& path);
+    // True for a local path argument; false for a URI ("sftp://...", "trash:///"). A path
+    // starting with '/' is always local, even if it contains ":/".
+    static bool isLocalPathArgument(const QString& path);
+    // Command-line validation (first or second instance): returns the arguments that may be
+    // forwarded (still UNEXPANDED, the launcher expands them exactly once). Missing local
+    // paths are reported on stderr and flagged through anyMissing.
+    static QStringList validateCliPaths(const QStringList& raw, const QString& cwd, bool* anyMissing = nullptr);
+    // One classification for CLI validation and launching: '/' leading = local absolute;
+    // "scheme:/..." = URI; anything else is relative to cwd (so "foo:bar", "dir/a:/b" are local).
+    static Fm::FilePath filePathFromArgument(const QString& expanded, const QString& cwd);
+    // Error box that never interprets the (untrusted) text as rich text. Caller exec()s/shows it.
+    static QMessageBox* makeErrorBox(QWidget* parent, const QString& title, const QString& text);
+    // Address-bar text -> path: expansion + blank input rejected (empty result); surrounding
+    // whitespace is kept when the path as typed exists.
+    static QString normalizeTypedPath(const QString& typed);
+    // Translation directories, relocatable ones (<bin>/../share/...) before PCMANFM_DATA_DIR.
+    static QStringList translationDirs();
+
+    // Persist the settings soon (debounced) so a crash does not lose the window state.
+    void scheduleSettingsSave();
     void setWallpaper(const QString& path, const QString& modeString);
     void preferences(const QString& page);
     void desktopPrefrences(const QString& page);
@@ -103,6 +132,10 @@ public:
     void openFolderInTerminal(Fm::FilePath path);
     void openFolders(Fm::FileInfoList files);
 
+    bool isPrimary() const {
+        return isPrimaryInstance;
+    }
+
     QString profileName() {
         return profileName_;
     }
@@ -112,6 +145,7 @@ public:
 protected Q_SLOTS:
     void onAboutToQuit();
     void onSigtermNotified();
+    void saveSettingsNow();
 
     void onLastWindowClosed();
     void onSaveStateRequest(QSessionManager& manager);
@@ -142,6 +176,10 @@ private Q_SLOTS:
 private:
     void initWatch();
     void installSigtermHandler();
+    void doLaunchFiles(const QString& cwd, const QStringList& paths, bool inNewWindow, bool reopenLastTabs);
+
+    QTimer* saveTimer_ = nullptr;
+    int exitCode_ = 0;
 
     bool isPrimaryInstance;
     Fm::LibFmQt libFm_;
