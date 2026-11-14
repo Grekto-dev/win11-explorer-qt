@@ -613,7 +613,7 @@ class Docs(unittest.TestCase):
                        'verify-xcb.sh', 'update-desktop-database', 'libmenu-cache3'):
             self.assertIn(needle, text)
         for src in (text, (ROOT / 'scripts/make-deb.sh').read_text()):
-            self.assertIsNone(re.search(r'Depends:[^\n]*\bmenu-cached\b', src), 'no stale menu-cached Depends')
+            self.assertIsNone(re.search(r'(?m)^Depends:[^\n]*\bmenu-cached\b', src), 'no stale menu-cached Depends')
 
 
 if __name__ == '__main__':
