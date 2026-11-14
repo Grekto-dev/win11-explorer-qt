@@ -4,7 +4,7 @@
 
 Layout:  bin/ (launcher)  libexec/ (ELF + qt.conf)  lib/ (private libfm-qt, Qt, ICU,
 libs absent from the host)  plugins/  share/.  Only the prefix is written."""
-import argparse, os, re, shutil, subprocess, sys
+import argparse, hashlib, os, re, shutil, subprocess, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -52,27 +52,36 @@ def system_sonames():
     return {line.split()[0] for line in out.splitlines()[1:] if line.strip()}
 
 
+TRUSTED_BIN_PATH = '/usr/bin:/bin'
+
+
+def sha256_file(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
 def patchelf_cmd(repo, which=shutil.which):
-    """(command, description). Prefer a system patchelf; else a hash-pinned wheel installed into
-    <repo>/.state/tools (needs network and uv once; see docs/INSTALL.md for the offline fallback)."""
-    found = which('patchelf')
-    if found:
+    """(command, description incl. sha256). Prefer a system patchelf, looked up ONLY in /usr/bin:/bin (never in
+    the caller's PATH: ~/.local/bin or a writable dir could shadow it) and required to resolve under /usr/;
+    else a hash-pinned wheel installed into <repo>/.state/tools (needs network and uv once; see docs/INSTALL.md
+    for the offline fallback). The binary's sha256 goes into BUNDLED.txt."""
+    found = which('patchelf', path=TRUSTED_BIN_PATH)
+    if found and os.path.realpath(found).startswith('/usr/'):
         ver = run([found, '--version']).stdout.strip() or 'unknown version'
-        return [found], f'system {found} ({ver})'
+        return [found], f'system {found} ({ver}) sha256 {sha256_file(found)}'
     tools = Path(repo) / '.state/tools' / f'patchelf-{PATCHELF_PIN}'
     exe = tools / 'bin/patchelf'
     if not exe.is_file():
         uv = which('uv') or str(Path.home() / '.local/bin/uv')
         req = Path(repo) / 'scripts/requirements-packaging.txt'
         if not Path(uv).is_file():
-            die('patchelf not found. Install it (sudo apt install patchelf) or install uv for the pinned, hash-checked '
+            die('patchelf not found in /usr/bin. Install it (sudo apt install patchelf) or install uv for the pinned, hash-checked '
                 'download (needs network); offline: pre-populate .state/tools, see docs/INSTALL.md')
         r = run([uv, 'pip', 'install', '--require-hashes', '--no-deps', '--python', '/usr/bin/python3',
                  '--target', str(tools), '-r', str(req)])
         if r.returncode or not exe.is_file():
             die(f'could not fetch patchelf=={PATCHELF_PIN} (network needed once; or `sudo apt install patchelf`): {r.stderr.strip()[-300:]}')
     ver = run([str(exe), '--version']).stdout.strip()
-    return [str(exe)], f'pinned patchelf=={PATCHELF_PIN} (sha256-verified wheel) at {exe} ({ver})'
+    return [str(exe)], f'pinned patchelf=={PATCHELF_PIN} (sha256-verified wheel) at {exe} ({ver}) sha256 {sha256_file(exe)}'
 
 
 def check_prefix(prefix_arg, repo, home, protect=()):

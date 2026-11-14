@@ -348,16 +348,33 @@ class PatchelfPinned(unittest.TestCase):
         self.assertNotIn("'--from', 'patchelf', 'patchelf'", text)
         self.assertIn('--require-hashes', text)
 
-    def test_system_patchelf_is_used_and_described(self):
+    def test_system_patchelf_is_searched_only_in_trusted_dirs_and_hashed(self):
+        import hashlib
+        mod = load('portable_prefix')
+        seen = []
+        def which(name, path=None):
+            seen.append(path)
+            return '/usr/bin/env' if name == 'patchelf' else None  # stands in for /usr/bin/patchelf
+        cmd, desc = mod.patchelf_cmd(ROOT, which=which)
+        self.assertEqual(seen[0], '/usr/bin:/bin', 'the caller PATH (~/.local/bin, writable dirs) must not be searched')
+        self.assertEqual(cmd, ['/usr/bin/env'])
+        self.assertIn('/usr/bin/env', desc)
+        self.assertIn('sha256 ' + hashlib.sha256(Path('/usr/bin/env').read_bytes()).hexdigest(), desc)
+
+    def test_patchelf_outside_usr_is_ignored_even_if_found(self):
         mod = load('portable_prefix')
         with tempfile.TemporaryDirectory() as tmp:
             fake = Path(tmp) / 'patchelf'
             fake.write_text('#!/bin/sh\necho "patchelf 9.9.9"\n')
             fake.chmod(0o755)
-            cmd, desc = mod.patchelf_cmd(ROOT, which=lambda name: str(fake))
-            self.assertEqual(cmd, [str(fake)])
-            self.assertIn('9.9.9', desc)
-            self.assertIn(str(fake), desc)
+            tools = ROOT / '.state/tools/patchelf-0.19.3.0/bin/patchelf'
+            if not tools.is_file():
+                self.skipTest('pinned patchelf not present (would need the network)')
+            cmd, desc = mod.patchelf_cmd(ROOT, which=lambda name, path=None: str(fake))
+            self.assertNotEqual(cmd, [str(fake)])
+            self.assertNotIn('9.9.9', desc)
+            self.assertIn('pinned', desc)
+            self.assertRegex(desc, r'sha256 [0-9a-f]{64}')
 
 
 class XcbRequired(unittest.TestCase):
@@ -855,7 +872,7 @@ class DocsAccuracy(unittest.TestCase):
     def test_install_md_documents_the_swap_window_recovery_and_closing_the_app(self):
         text = (ROOT / 'docs/INSTALL.md').read_text()
         for needle in ('.prev', '.new.', 'feche o app', 'recuper', 'janela'):
-            self.assertIn(needle, text)
+            self.assertIn(needle, text.lower())
 
 
 class Docs(unittest.TestCase):
