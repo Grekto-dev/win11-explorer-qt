@@ -139,5 +139,40 @@ class Launcher(unittest.TestCase):
         self.assertNotIn('QT_STYLE_OVERRIDE', text.replace('unset QT_STYLE_OVERRIDE', ''))
 
 
+class PortablePrefixGuards(unittest.TestCase):
+    """Refusals happen before any write, without needing a build."""
+    def make(self, *args, home=None):
+        env = dict(CLEAN_ENV, HOME=str(home or tempfile.gettempdir()))
+        return subprocess.run(['bash', str(ROOT / 'scripts/make-portable-prefix.sh'), *args],
+                              env=env, text=True, capture_output=True)
+
+    def test_refuses_existing_directory_without_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / 'a' / 'precious'
+            target.mkdir(parents=True)
+            (target / 'file').write_text('keep')
+            install, overlay = Path(tmp) / 'install', Path(tmp) / 'overlay'
+            (install / 'bin').mkdir(parents=True)
+            (install / 'bin/win11-explorer-qt').write_text('x')
+            (overlay / 'lib').mkdir(parents=True)
+            (overlay / 'lib/libfm-qt6.so.17').write_text('x')
+            result = self.make('--prefix', str(target), '--install-dir', str(install), '--overlay', str(overlay))
+            self.assertIn('not a prefix created by this script', result.stderr)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((target / 'file').read_text(), 'keep')
+
+    def test_refuses_prefix_inside_dev_tree(self):
+        for inside in ('.state/x/prefix', '.deps/x/prefix'):
+            result = self.make('--prefix', str(ROOT / inside))
+            self.assertNotEqual(result.returncode, 0, inside)
+            self.assertIn('may not live under', result.stderr)
+            self.assertFalse((ROOT / inside).exists(), inside)
+
+    def test_refuses_home_and_relative_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertNotEqual(self.make('--prefix', tmp, home=tmp).returncode, 0)
+            self.assertNotEqual(self.make('--prefix', 'relative/dir', home=tmp).returncode, 0)
+
+
 if __name__ == '__main__':
     unittest.main()
