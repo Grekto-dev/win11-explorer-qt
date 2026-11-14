@@ -5,6 +5,11 @@
 #include "tabpage.h"
 #include "preferencesdialog.h"
 #include "explorericons.h"
+#include "explorertransferdialog.h"
+#include <fileoperation.h>
+#include <QMessageBox>
+#include <QProgressBar>
+#include <QLabel>
 #include <QCheckBox>
 #include <QStandardItemModel>
 #include <QStyledItemDelegate>
@@ -64,11 +69,282 @@ bool selectionModes(Gesture gesture) {
     }
     return true;
 }
+// Static (no running job) dialog fixture for the Windows copy-dialog contract
+// tests. devicePixelRatio is asserted to be 1 where sizes are compared.
+struct TransferDialogFixture {
+    QTemporaryDir root;
+    Fm::FilePathList sources;
+    std::unique_ptr<Fm::FileOperation> operation;
+    std::unique_ptr<ExplorerTransferDialog> dialog;
+    explicit TransferDialogFixture(Fm::FileOperation::Type type = Fm::FileOperation::Copy) {
+        const QString src = root.filePath(QStringLiteral("fixture3g.bin"));
+        QFile f(src);
+        if(f.open(QIODevice::WriteOnly)) { f.write("x"); f.close(); }
+        QDir().mkpath(root.filePath(QStringLiteral("dst1")));
+        sources.push_back(Fm::FilePath::fromLocalPath(src.toLocal8Bit().constData()));
+        operation = std::make_unique<Fm::FileOperation>(type, sources);
+        dialog.reset(qobject_cast<ExplorerTransferDialog*>(createExplorerTransferDialog(operation.get())));
+        if(!dialog) return;
+        dialog->setSourceFiles(sources);
+        dialog->setDestPath(Fm::FilePath::fromLocalPath(root.filePath(QStringLiteral("dst1")).toLocal8Bit().constData()));
+        dialog->setCurFile(src);
+        dialog->setPrepared();
+    }
+    template<typename T> T* child(const char* name) const {
+        return dialog ? dialog->findChild<T*>(QString::fromLatin1(name)) : nullptr;
+    }
+    // Centre of a child widget in dialog coordinates (x, y as doubles: even-sized
+    // widgets have half-pixel centres, like the measured 72.5 px).
+    QPointF centreOf(QWidget* w) const {
+        const QPoint tl = w->mapTo(dialog.get(), QPoint(0, 0));
+        return QPointF(tl.x() + w->width() / 2.0, tl.y() + w->height() / 2.0);
+    }
+};
+QColor barPixel(QWidget* progress, int xFraction256) {
+    const QImage img = progress->grab().toImage();
+    return QColor(img.pixel(img.width() * xFraction256 / 256, img.height() / 2));
 }
+}  // namespace
 
 class ExplorerTest : public QObject {
     Q_OBJECT
 private Q_SLOTS:
+
+    // ---- Windows copy-dialog contract (docs/fidelity/transfer-dialog-measurements.md) ----
+    void transferDialogTitleFollowsStateAfterRealAck() {
+        TransferDialogFixture fx;
+        QVERIFY(fx.dialog);
+        fx.dialog->setPauseAvailable(true);
+        fx.dialog->setPercent(32);
+        QCOMPARE(fx.dialog->windowTitle(), QStringLiteral("32% concluído"));
+        // Requested but not acknowledged: the title must not claim "Pausado".
+        fx.dialog->applyTransferState(ExplorerTransferController::State::Pausing, false);
+        QCOMPARE(fx.dialog->windowTitle(), QStringLiteral("32% concluído"));
+        fx.dialog->applyTransferState(ExplorerTransferController::State::Pausing, true);
+        QCOMPARE(fx.dialog->windowTitle(), QStringLiteral("Pausado - 32% concluído"));
+        QCOMPARE(fx.child<QLabel>("transferPercent")->text(), QStringLiteral("Pausado - 32% concluído"));
+        fx.dialog->setPercent(33);
+        QCOMPARE(fx.dialog->windowTitle(), QStringLiteral("Pausado - 33% concluído"));
+        fx.dialog->applyTransferState(ExplorerTransferController::State::Running, false);
+        QCOMPARE(fx.dialog->windowTitle(), QStringLiteral("33% concluído"));
+        fx.dialog->applyTransferState(ExplorerTransferController::State::Cancelling, false);
+        QCOMPARE(fx.dialog->windowTitle(), QStringLiteral("Cancelando - 33% concluído"));
+        QCOMPARE(fx.child<QLabel>("transferPercent")->text(), QStringLiteral("Cancelando - 33% concluído"));
+    }
+
+    void transferDialogBarIsLightBlueRunningAndYellowPausedOrCancelling() {
+        TransferDialogFixture fx;
+        QVERIFY(fx.dialog);
+        fx.dialog->setPauseAvailable(true);
+        fx.dialog->show();
+        fx.dialog->setPercent(60);
+        auto* bar = fx.child<QProgressBar>("transferProgress");
+        QVERIFY(bar);
+        QCOMPARE(barPixel(bar, 64), QColor(96, 205, 255));          // measured #60CDFF
+        fx.dialog->applyTransferState(ExplorerTransferController::State::Paused, true);
+        QCOMPARE(barPixel(bar, 64), QColor(252, 225, 0));           // measured #FCE100
+        fx.dialog->applyTransferState(ExplorerTransferController::State::Running, false);
+        QCOMPARE(barPixel(bar, 64), QColor(96, 205, 255));
+        fx.dialog->applyTransferState(ExplorerTransferController::State::Cancelling, false);
+        QCOMPARE(barPixel(bar, 64), QColor(252, 225, 0));
+        QCOMPARE(bar->width(), 395);
+        QCOMPARE(bar->height(), 15);
+    }
+
+    void transferDialogPauseGlyphButtonIsInlineAndHonestAboutAck() {
+        TransferDialogFixture fx;
+        QVERIFY(fx.dialog);
+        fx.dialog->setPauseAvailable(true);
+        fx.dialog->show();
+        auto* pause = fx.child<QPushButton>("pauseButton");
+        auto* cancel = fx.child<QPushButton>("transferCancelButton");
+        QVERIFY(pause && cancel);
+        QVERIFY(pause->isVisible());
+        QCOMPARE(pause->property("glyph").toString(), QStringLiteral("pause"));
+        QCOMPARE(pause->accessibleName(), QStringLiteral("Pausar"));
+        QVERIFY(pause->text().isEmpty());
+        QCOMPARE(cancel->property("glyph").toString(), QStringLiteral("cancel"));
+        QVERIFY(cancel->text().isEmpty());
+        // Same row as the cancel glyph, to its left (measured centres (366, 72.5) and (413, 72.5)).
+        QCOMPARE(fx.centreOf(pause), QPointF(366.0, 72.5));
+        QCOMPARE(fx.centreOf(cancel), QPointF(413.0, 72.5));
+        fx.dialog->applyTransferState(ExplorerTransferController::State::Pausing, false);
+        QCOMPARE(pause->property("glyph").toString(), QStringLiteral("pause"));
+        QVERIFY(!pause->isEnabled());                               // no Resume before the ACK
+        QCOMPARE(pause->accessibleName(), QStringLiteral("Pausando…"));
+        fx.dialog->applyTransferState(ExplorerTransferController::State::Paused, true);
+        QCOMPARE(pause->property("glyph").toString(), QStringLiteral("resume"));
+        QCOMPARE(pause->accessibleName(), QStringLiteral("Retomar"));
+        QVERIFY(pause->isEnabled());
+        fx.dialog->applyTransferState(ExplorerTransferController::State::Cancelling, false);
+        QCOMPARE(pause->property("glyph").toString(), QStringLiteral("resume"));
+        QVERIFY(!pause->isEnabled());                               // dimmed ▶ while cancelling
+        // The glyph is drawn, not a font character: the paused ▶ is white on the dark body, dimmed (#797979) while cancelling.
+        const QImage dim = pause->grab().toImage();
+        QColor brightest(0, 0, 0);
+        for(int y = 0; y < dim.height(); ++y)
+            for(int x = 0; x < dim.width(); ++x)
+                if(QColor(dim.pixel(x, y)).value() > brightest.value()) brightest = QColor(dim.pixel(x, y));
+        QVERIFY2(brightest.red() < 200 && brightest.red() > 60, qPrintable(brightest.name()));
+    }
+
+    void transferDialogHasNoPauseButtonWithoutBackendCapability() {
+        TransferDialogFixture fx;
+        QVERIFY(fx.dialog);
+        fx.dialog->show();
+        auto* pause = fx.child<QPushButton>("pauseButton");
+        QVERIFY(pause);
+        QVERIFY(!pause->isVisible());
+        const QPoint where = pause->geometry().center();
+        QWidget* hit = fx.dialog->childAt(where);
+        QVERIFY(!qobject_cast<QPushButton*>(hit) || hit == fx.child<QPushButton>("transferCancelButton"));
+        QVERIFY(hit != pause);
+        // Move/Trash/Delete never advertise pause either.
+        for(auto type : {Fm::FileOperation::Move, Fm::FileOperation::Trash, Fm::FileOperation::Delete}) {
+            TransferDialogFixture other(type);
+            QVERIFY(other.dialog);
+            QVERIFY(!other.child<QPushButton>("pauseButton")->isVisibleTo(other.dialog.get()));
+        }
+    }
+
+    void transferDialogCancelAsksNoConfirmationAndStaysVisibleAsCancelling() {
+        TransferDialogFixture fx;
+        QVERIFY(fx.dialog);
+        fx.dialog->show();
+        fx.dialog->setPercent(53);
+        auto* cancel = fx.child<QPushButton>("transferCancelButton");
+        QVERIFY(cancel);
+        QTest::mouseClick(cancel, Qt::LeftButton);
+        for(QWidget* w : QApplication::topLevelWidgets())
+            QVERIFY2(!(qobject_cast<QMessageBox*>(w) && w->isVisible()), "cancel opened a confirmation box");
+        QVERIFY(!QApplication::activeModalWidget());
+        // Cancelling is not Finished: the dialog stays until the job really ends.
+        QVERIFY(fx.dialog->isVisible());
+        QCOMPARE(fx.dialog->windowTitle(), QStringLiteral("Cancelando - 53% concluído"));
+        QVERIFY(!cancel->isEnabled());
+    }
+
+    void transferDialogHasMeasuredCollapsedAndExpandedSizes() {
+        TransferDialogFixture fx;
+        QVERIFY(fx.dialog);
+        fx.dialog->setPauseAvailable(true);
+        fx.dialog->show();
+        QCOMPARE(fx.dialog->devicePixelRatioF(), 1.0);              // test scale: 96 DPI, DPR 1
+        QCOMPARE(fx.dialog->size(), QSize(449, 165));
+        auto* more = fx.child<QPushButton>("transferDetailsButton");
+        auto* pause = fx.child<QPushButton>("pauseButton");
+        auto* cancel = fx.child<QPushButton>("transferCancelButton");
+        QVERIFY(more && more->isVisible());
+        const QPointF pauseCentre = fx.centreOf(pause), cancelCentre = fx.centreOf(cancel);
+        QVERIFY(!fx.dialog->detailsExpanded());
+        QTest::mouseClick(more, Qt::LeftButton);
+        QTRY_VERIFY(fx.dialog->detailsExpanded());
+        QCOMPARE(fx.dialog->size(), QSize(449, 287));
+        QCOMPARE(fx.centreOf(pause), pauseCentre);                  // controls do not move
+        QCOMPARE(fx.centreOf(cancel), cancelCentre);
+        QCOMPARE(more->text(), QStringLiteral("Menos detalhes"));
+        QTest::mouseClick(more, Qt::LeftButton);
+        QCOMPARE(fx.dialog->size(), QSize(449, 165));
+        QCOMPARE(more->text(), QStringLiteral("Mais detalhes"));
+        QCOMPARE(fx.centreOf(pause), pauseCentre);
+    }
+
+    void transferDialogDetailsShowNameEtaAndRemainingItemsFromRealCounters() {
+        TransferDialogFixture fx;
+        QVERIFY(fx.dialog);
+        fx.dialog->show();
+        auto* name = fx.child<QLabel>("transferDetailName");
+        auto* eta = fx.child<QLabel>("transferDetailRemaining");
+        auto* items = fx.child<QLabel>("transferDetailItems");
+        QVERIFY(name && eta && items);
+        QCOMPARE(name->text(), QStringLiteral("Nome: fixture3g.bin"));
+        QCOMPARE(eta->text(), QStringLiteral("Tempo restante: Calculando…"));
+        fx.dialog->setRemainingTime(0);                             // libfm has no estimate yet
+        QCOMPARE(eta->text(), QStringLiteral("Tempo restante: Calculando…"));
+        constexpr std::uint64_t total = 3ULL << 30, done = 1ULL << 30;
+        fx.dialog->setDataTransferred(done, total);
+        QCOMPARE(items->text(), QStringLiteral("Itens restantes: 1 (%1)")
+                     .arg(QLocale().formattedDataSize(qint64(total - done), 2, QLocale::DataSizeSIFormat)));
+        fx.dialog->setRemainingTime(75);
+        QCOMPARE(eta->text(), QStringLiteral("Tempo restante: 1 min 15 s"));
+    }
+
+    void transferDialogSpeedGraphOnlyContainsRatesFromRealBytes() {
+        TransferDialogFixture fx;
+        QVERIFY(fx.dialog);
+        QVERIFY(fx.dialog->speedSamples().isEmpty());
+        // Not byte observations: no sample may appear from percent/ETA/file name.
+        fx.dialog->setPercent(50);
+        fx.dialog->setRemainingTime(10);
+        fx.dialog->setCurFile(QStringLiteral("/x/y.bin"));
+        QVERIFY(fx.dialog->speedSamples().isEmpty());
+        constexpr std::uint64_t total = 10'000'000;
+        QVERIFY(fx.dialog->recordSpeedSample(0, total, 0) == false);          // first point has no interval
+        QVERIFY(fx.dialog->recordSpeedSample(1'000'000, total, 1000));
+        QVERIFY(fx.dialog->recordSpeedSample(3'000'000, total, 2000));
+        QVERIFY(!fx.dialog->recordSpeedSample(3'000'000, total, 3000));       // no bytes moved: paused, no invented zero
+        QVERIFY(!fx.dialog->recordSpeedSample(4'000'000, total, 2000));       // time did not advance
+        QVERIFY(!fx.dialog->recordSpeedSample(2'000'000, total, 4000));       // bytes went backwards
+        const auto samples = fx.dialog->speedSamples();
+        QCOMPARE(samples.size(), 2);
+        QCOMPARE(samples[0].fraction, 0.1);
+        QCOMPARE(samples[0].bytesPerSecond, 1'000'000.0);
+        QCOMPARE(samples[1].fraction, 0.3);
+        QCOMPARE(samples[1].bytesPerSecond, 2'000'000.0);
+        // setDataTransferred (the libfm feed) records through the same real-byte path.
+        TransferDialogFixture live;
+        live.dialog->setDataTransferred(1'000, 10'000);
+        QTest::qWait(30);
+        live.dialog->setDataTransferred(5'000, 10'000);
+        QCOMPARE(live.dialog->speedSamples().size(), 1);
+        QVERIFY(live.dialog->speedSamples().first().bytesPerSecond > 0.0);
+    }
+
+    void transferDialogSpeedGraphRendersEmptyBaselineThenYellowAreaWhenPaused() {
+        TransferDialogFixture fx;
+        QVERIFY(fx.dialog);
+        fx.dialog->setPauseAvailable(true);
+        fx.dialog->show();
+        auto* more = fx.child<QPushButton>("transferDetailsButton");
+        QTest::mouseClick(more, Qt::LeftButton);
+        auto* graph = fx.child<QWidget>("transferSpeedGraph");
+        QVERIFY(graph && graph->isVisible());
+        QCOMPARE(graph->size(), QSize(395, 80));
+        const auto countColour = [&](const QColor& c) {
+            const QImage img = graph->grab().toImage();
+            int n = 0;
+            for(int y = 0; y < img.height(); ++y)
+                for(int x = 0; x < img.width(); ++x)
+                    if(QColor(img.pixel(x, y)) == c) ++n;
+            return n;
+        };
+        QCOMPARE(countColour(QColor(252, 225, 0)), 0);              // no data -> no curve at all
+        QCOMPARE(countColour(QColor(96, 205, 255)), 0);
+        constexpr std::uint64_t total = 10'000'000;
+        fx.dialog->setPercent(30);
+        fx.dialog->recordSpeedSample(0, total, 0);
+        fx.dialog->recordSpeedSample(1'000'000, total, 1000);
+        fx.dialog->recordSpeedSample(2'000'000, total, 2000);
+        fx.dialog->recordSpeedSample(3'000'000, total, 3000);
+        fx.dialog->applyTransferState(ExplorerTransferController::State::Paused, true);
+        QVERIFY(countColour(QColor(252, 225, 0)) > 500);            // yellow curve while paused
+        QCOMPARE(countColour(QColor(96, 205, 255)), 0);
+        const QImage img = graph->grab().toImage();
+        QCOMPARE(QColor(img.pixel(img.width() - 3, img.height() / 2)), QColor(44, 44, 44));   // beyond progress: plain background
+    }
+
+    void transferDialogKeepsVerbsAndNoPauseForNonCopyOperations() {
+        const struct { Fm::FileOperation::Type type; const char* verb; } cases[] = {
+            {Fm::FileOperation::Move, "Movendo"}, {Fm::FileOperation::Trash, "Movendo para a lixeira"},
+            {Fm::FileOperation::Delete, "Excluindo"}, {Fm::FileOperation::Copy, "Copiando"}};
+        for(const auto& c : cases) {
+            TransferDialogFixture fx(c.type);
+            QVERIFY(fx.dialog);
+            QVERIFY2(fx.child<QLabel>("transferSummary")->text().startsWith(QString::fromUtf8(c.verb)),
+                     qPrintable(fx.child<QLabel>("transferSummary")->text()));
+            QVERIFY(!fx.child<QPushButton>("pauseButton")->isVisibleTo(fx.dialog.get()));
+        }
+    }
     void defaultSettingsMatchExplorerDensity() {
         PCManFM::Settings settings;
         settings.load(QStringLiteral("defaults-test"));

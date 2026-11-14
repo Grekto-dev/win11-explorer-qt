@@ -5,6 +5,8 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QWidget>
+#include <QVector>
+#include "explorertransfercontroller.h"
 
 class ExplorerTransferController;
 
@@ -22,6 +24,21 @@ public:
     void setDataTransferred(std::uint64_t finished, std::uint64_t total) override;
     void setFilesProcessed(std::uint64_t finished, std::uint64_t total) override;
     void setRemainingTime(unsigned int seconds) override;
+
+    // One point of the speed graph: x = fraction of the total bytes already
+    // transferred, y = average rate over the interval since the previous
+    // sample. Only ever derived from real byte counters.
+    struct SpeedSample { double fraction; double bytesPerSecond; };
+    // Records a sample from a real (bytes, total, elapsed ms) observation.
+    // Returns false (and records nothing) for non-advancing time or bytes.
+    bool recordSpeedSample(std::uint64_t bytes, std::uint64_t total, qint64 atMs);
+    QVector<SpeedSample> speedSamples() const;
+    // Maps the controller state to title/bar/glyphs; refreshPauseState() feeds it
+    // from the live controller, tests drive the pure mapping directly.
+    void applyTransferState(ExplorerTransferController::State state, bool pauseAcknowledged);
+    // The pause button exists for the user only when the live job advertised it.
+    void setPauseAvailable(bool available);
+    bool detailsExpanded() const;
 
 private Q_SLOTS:
     void toggleDetails();

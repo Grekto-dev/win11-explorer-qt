@@ -184,6 +184,12 @@ void ExplorerTransferDialog::refreshPauseState() {
     }
 }
 
+bool ExplorerTransferDialog::recordSpeedSample(std::uint64_t, std::uint64_t, qint64) { return false; }
+QVector<ExplorerTransferDialog::SpeedSample> ExplorerTransferDialog::speedSamples() const { return {}; }
+void ExplorerTransferDialog::applyTransferState(ExplorerTransferController::State, bool) {}
+void ExplorerTransferDialog::setPauseAvailable(bool) {}
+bool ExplorerTransferDialog::detailsExpanded() const { return detail_->isVisible(); }
+
 Fm::FileOperationDialog* createExplorerTransferDialog(Fm::FileOperation* operation) {
     return new ExplorerTransferDialog(operation);
 }
