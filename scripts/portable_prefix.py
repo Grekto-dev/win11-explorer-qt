@@ -167,6 +167,17 @@ def main():
     if lic.is_file():
         shutil.copy2(lic, prefix / 'share/doc/win11-explorer-qt/LICENSE.libfm-qt.LGPL-2.1')
 
+    # Debug info (RelWithDebInfo): keep it in separate files, ship stripped ELFs.
+    (prefix / 'lib/debug').mkdir()
+    for target in [prefix / 'libexec/win11-explorer-qt'] + [p for p in lib.glob('libfm-qt6.so.*') if is_elf(p)]:
+        dbg = prefix / 'lib/debug' / (target.name + '.debug')
+        for cmd in (['objcopy', '--only-keep-debug', str(target), str(dbg)],
+                    ['strip', '--strip-unneeded', str(target)],
+                    ['objcopy', f'--add-gnu-debuglink={dbg}', str(target)]):
+            r = run(cmd)
+            if r.returncode:
+                die(f'{cmd[0]} failed on {target}: {r.stderr}')
+
     # RUNPATHs: relative only. ($ORIGIN-based; transitive deps need each lib's own RUNPATH.)
     pe = patchelf_cmd()
     def setrpath(path, value):
