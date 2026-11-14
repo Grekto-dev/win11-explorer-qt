@@ -416,7 +416,9 @@ void ExplorerTransferControllerTest::optInDialogFactoryKeepsErrorRoutingOnRealFi
 }
 
 void ExplorerTransferControllerTest::transferDialogFactoryBuildsCollapsedRealProgressUi() {
-    QTemporaryDir root;
+    // Short, fixed-width directory name: the summary elides names that do not fit the measured 393 px label
+    // (review E), and QTemporaryDir's default "<app>-XXXXXX" name (~200 px here) is elided by design.
+    QTemporaryDir root(QDir::tempPath() + QStringLiteral("/dlg-XXXXXX"));
     QVERIFY(root.isValid());
     const QString source = root.filePath(QStringLiteral("visible-source.bin"));
     QFile file(source);
