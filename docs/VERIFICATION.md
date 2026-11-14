@@ -171,8 +171,15 @@ Integração das frentes `backend-safety`, `crash-nav`, `ui-quick` e `packaging`
   (zero acessos ao prefixo original) e `scripts/verify-xcb.sh` PASS num Xephyr
   próprio (`:31`, dono verificado por `/proc/PID/exe`; janela xcb mapeada).
 - **Isolamento**: `check-isolation.py verify` contra o snapshot anterior à
-  publicação passou. A divergência contra a baseline original descrita na Fase 2
-  continua sem causa atribuída.
+  publicação passou às ~13:20 de 2026-11-14. Repetido às ~14:07 (antes do push),
+  falhou só em `.config/nemo/desktop-metadata`, com mtime 13:54: o conteúdo
+  mudou em `nemo-icon-position-timestamp` do ícone da lixeira (chave que só o
+  Nemo escreve), com `nemo-desktop` da sessão do usuário em execução e um novo
+  processo `nemo`. É compatível com o próprio Nemo regravando o arquivo, mas a
+  autoria **não foi provada**; o snapshot não foi substituído. Diretório padrão,
+  dono do FileManager1, applets do Cinnamon e `mimeapps.list` seguiam iguais. A
+  divergência contra a baseline original descrita na Fase 2 continua sem causa
+  atribuída.
 - **Revisões independentes (estáticas)**: cada frente passou por 2 a 6 ciclos;
   as aprovações finais são `review4-p4-backend-safety`, `review4-p4-packaging`,
   `review2-p4-ui-quick` e `review6-p4-crash-nav`. Revisão estática não substitui
