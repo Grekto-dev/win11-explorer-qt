@@ -51,6 +51,9 @@ cp -- "$repo/packaging/debian-copyright" "$stage/usr/share/doc/win11-explorer-qt
 cp -- "$prefix/share/icons/hicolor/scalable/apps/win11-explorer-qt.svg" "$stage/usr/share/icons/hicolor/scalable/apps/"
 size_kb="$(du -sk "$stage/opt" | cut -f1)"
 # Explicit Depends: the private libs are not known to dpkg, so SHLIBDEPS cannot be used.
+# tests/test_user_packaging.py (test_depends_cover_every_system_library...) derives the required set from the
+# shipped ELFs (NEEDED -> ldconfig -> dpkg -S -> apt-cache depends --recurse); libOpenGL.so.0 (libfm-qt6) and
+# libgssapi_krb5.so.2 (Qt6Network) are NOT pulled in by libgl1/libegl1 etc., hence libopengl0 and libgssapi-krb5-2.
 cat > "$stage/DEBIAN/control" <<CONTROL
 Package: win11-explorer-qt
 Version: $version
@@ -59,8 +62,8 @@ Maintainer: Grekto-dev <noreply@invalid>
 Section: utils
 Priority: optional
 Installed-Size: $size_kb
-Depends: $libc_dep, $cxx_dep, libglib2.0-0t64 (>= 2.80), libmenu-cache3, libxcb-cursor0, libxkbcommon-x11-0, libxkbcommon0, libx11-xcb1, libxcb-icccm4, libxcb-image0, libxcb-keysyms1, libxcb-render-util0, libxcb-shape0, libxcb-sync1, libxcb-xfixes0, libxcb-xinerama0, libxcb-randr0, libxcb-xkb1, libgl1, libegl1, libfontconfig1, libfreetype6, libharfbuzz0b, libpng16-16t64, zlib1g, libdbus-1-3
-Recommends: libgtk-3-0t64, gvfs
+Depends: $libc_dep, $cxx_dep, libglib2.0-0t64 (>= 2.80), libmenu-cache3, libxcb-cursor0, libxkbcommon-x11-0, libxkbcommon0, libx11-xcb1, libxcb-icccm4, libxcb-image0, libxcb-keysyms1, libxcb-render-util0, libxcb-shape0, libxcb-sync1, libxcb-xfixes0, libxcb-xinerama0, libxcb-randr0, libxcb-xkb1, libgl1, libegl1, libopengl0, libgssapi-krb5-2, libfontconfig1, libfreetype6, libharfbuzz0b, libpng16-16t64, zlib1g, libdbus-1-3
+Recommends: libgtk-3-0t64, libjpeg-turbo8, gvfs
 Description: Windows 11-inspired file manager (fork of PCManFM-Qt)
  Bundles Qt 6.8 and a patched libfm-qt under /opt/win11-explorer-qt.
  Does not register itself as default file manager, MIME handler or autostart.

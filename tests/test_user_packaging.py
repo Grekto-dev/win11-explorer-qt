@@ -8,10 +8,13 @@ import re
 import shutil
 import subprocess
 import tempfile
+import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'tests'))
+import deb_completeness  # noqa: E402
 INSTALL = ROOT / 'scripts/install-user.sh'
 CLEAN_ENV = {'PATH': '/usr/bin:/bin'}
 
@@ -495,12 +498,41 @@ def apt_known(name):
     return bool(re.search(r'(?m)^\s+Candidato: (?!\(nenhum\))\S|^\s+Candidate: (?!\(none\))\S', out))
 
 
+_REAL_DEB = {}
+
+
+def real_prefix_deb(case):
+    """A .deb built from a real prefix (WIN11_TEST_PREFIX, or assembled from .state/install + the overlay)."""
+    if 'deb' in _REAL_DEB:
+        return _REAL_DEB['deb']
+    tmp = tempfile.mkdtemp(prefix='p4-realdeb-')
+    case.addClassCleanup(shutil.rmtree, tmp, True)
+    prefix = os.environ.get('WIN11_TEST_PREFIX')
+    if not prefix:
+        if not ((ROOT / '.state/install/bin/win11-explorer-qt').is_file() and list((ROOT / '.state/libfm-overlay-prefix/lib').glob('libfm-qt6.so*'))
+                and (ROOT / '.deps').is_dir() and shutil.which('readelf') and shutil.which('dpkg')):
+            case.skipTest('no built tree (.state/install, overlay, .deps) and no WIN11_TEST_PREFIX')
+        home = Path(tmp) / 'home'
+        home.mkdir()
+        prefix = str(Path(tmp) / 'p' / 'win11-explorer-qt')
+        res = subprocess.run(['bash', str(ROOT / 'scripts/make-portable-prefix.sh'), '--prefix', prefix],
+                             env=dict(CLEAN_ENV, HOME=str(home)), text=True, capture_output=True)
+        case.assertEqual(res.returncode, 0, res.stderr)
+    out = Path(tmp) / 'deb'
+    res = subprocess.run(['bash', str(ROOT / 'scripts/make-deb.sh'), '--prefix', prefix, '--out', str(out), '--without-debug'],
+                         env=dict(CLEAN_ENV, HOME=tmp), text=True, capture_output=True)
+    case.assertEqual(res.returncode, 0, res.stderr)
+    _REAL_DEB['deb'] = next(out.glob('*.deb'))
+    return _REAL_DEB['deb']
+
+
 class DebPackage(unittest.TestCase):
     ALLOWED = {'libc6', 'libstdc++6', 'libglib2.0-0t64', 'libmenu-cache3', 'libxcb-cursor0', 'libxkbcommon-x11-0',
                'libxkbcommon0', 'libgl1', 'libegl1', 'libfontconfig1', 'libfreetype6', 'libdbus-1-3', 'libx11-xcb1',
                'libxcb-icccm4', 'libxcb-image0', 'libxcb-keysyms1', 'libxcb-render-util0', 'libxcb-shape0',
                'libxcb-sync1', 'libxcb-xfixes0', 'libxcb-xinerama0', 'libxcb-randr0', 'libxcb-xkb1', 'libharfbuzz0b',
-               'libpng16-16t64', 'zlib1g', 'libgtk-3-0t64', 'gvfs'}
+               'libpng16-16t64', 'zlib1g', 'libgtk-3-0t64', 'gvfs', 'libopengl0', 'libgssapi-krb5-2',
+               'libjpeg-turbo8'}
 
     def build(self, tmp, with_docs=True, extra=None):
         prefix = fake_prefix(Path(tmp))
@@ -539,6 +571,23 @@ class DebPackage(unittest.TestCase):
                 self.assertIn(n, self.ALLOWED, f'{n} is not in the verified allow-list')
                 if shutil.which('apt-cache'):
                     self.assertTrue(apt_known(n), f'apt-cache does not know package {n}')
+
+    def test_depends_cover_every_system_library_the_shipped_elfs_need(self):
+        """Completeness, derived from the real prefix: NEEDED sonames the .deb does not carry ->
+        ldconfig -> dpkg -S -> package, which must be in Depends or reachable from it
+        (apt-cache depends --recurse). Not a list compared with itself."""
+        deb = real_prefix_deb(self)
+        res = deb_completeness.check_deb(deb)
+        self.assertEqual(res['unresolved'], [], 'NEEDED sonames nothing on this host provides')
+        self.assertEqual(res['hard'], {}, 'Depends lacks packages for sonames NEEDED by the binary/libs/required plugins')
+        self.assertEqual(res['optional'], {}, 'Depends+Recommends lack packages for optional plugins')
+
+    def test_completeness_check_reports_a_package_that_nothing_in_depends_reaches(self):
+        needed_by = {'libopengl0': ['libOpenGL.so.0'], 'libgl1': ['libGL.so.1']}
+        closure = lambda names: set(names) | {'libgl1'}
+        self.assertEqual(deb_completeness.missing_packages(needed_by, ['libgl1'], closure),
+                         {'libopengl0': ['libOpenGL.so.0']})
+        self.assertEqual(deb_completeness.missing_packages(needed_by, ['libgl1', 'libopengl0'], lambda n: set(n)), {})
 
     def test_depends_glibc_floor_is_derived_from_the_elf_symbols(self):
         with tempfile.TemporaryDirectory() as tmp:
