@@ -50,6 +50,8 @@
 #include <stdexcept>
 #include <functional>
 #include <QDragMoveEvent>
+#include <QTextDocument>
+#include <QFontMetrics>
 #include <QProcess>
 #include <sys/stat.h>
 #include "selection_x11_ownership.h"
@@ -688,6 +690,96 @@ private Q_SLOTS:
         QCOMPARE(label->geometry().width(), 393);
         fx.dialog->setCurFile(QStringLiteral("curto.txt"));
         QCOMPARE(label->text(), QStringLiteral("Nome: curto.txt"));
+    }
+
+    // Review E (final): the HTML summary elides the NAMES (escaped afterwards) and keeps the full text in the tooltip.
+    void transferDialogSummaryElidesLongNamesKeepingHtmlEscapeAndFullTooltip() {
+        const QString longDir = QStringLiteral("<b>&") + QString(200, QLatin1Char('y'));
+        TransferDialogFixture fx(Fm::FileOperation::Copy, QStringLiteral("f.bin"), longDir, true);
+        QVERIFY(fx.dialog);
+        const QString longDest = QStringLiteral("<i>") + QString(220, QLatin1Char('d'));
+        fx.dialog->setDestPath(Fm::FilePath::fromLocalPath(QByteArray(QByteArray("/tmp/") + longDest.toUtf8()).constData()));
+        fx.dialog->setPrepared();
+        auto* summary = fx.child<QLabel>("transferSummary");
+        QVERIFY(summary);
+        QTextDocument doc;
+        doc.setHtml(summary->text());
+        QVERIFY2(!summary->text().contains(QStringLiteral("<b>&")), "name must be HTML-escaped");
+        QVERIFY(summary->text().contains(QStringLiteral("&lt;b&gt;&amp;")));
+        QVERIFY(doc.toPlainText().contains(QChar(0x2026)));
+        QFont f = summary->font();
+        f.setPixelSize(12);
+        QVERIFY2(QFontMetrics(f).horizontalAdvance(doc.toPlainText()) <= 393, qPrintable(doc.toPlainText()));
+        QVERIFY(summary->toolTip().contains(longDir));
+        QVERIFY(summary->toolTip().contains(longDest));
+        QCOMPARE(summary->geometry().width(), 393);
+    }
+
+    // Review F: drawn buttons stay out of the default-button logic; the focus ring is drawn only for keyboard focus.
+    void transferDialogKeyboardFocusOrderAndRingOnlyForKeyboard() {
+        TransferDialogFixture fx(Fm::FileOperation::Copy, QStringLiteral("fixture3g.bin"), QString(), true);
+        QVERIFY(fx.dialog);
+        fx.dialog->show();
+        QVERIFY(QTest::qWaitForWindowExposed(fx.dialog.get()));
+        fx.dialog->activateWindow();
+        auto* pause = fx.child<QPushButton>("pauseButton");
+        auto* cancel = fx.child<QPushButton>("transferCancelButton");
+        auto* more = fx.child<QPushButton>("transferDetailsButton");
+        QVERIFY(pause->isVisible());
+        for(auto* b : {pause, cancel, more}) {
+            QVERIFY(!b->autoDefault());
+            QVERIFY(!b->isDefault());
+            QCOMPARE(b->focusPolicy(), Qt::TabFocus);
+        }
+        const QImage restPause = pause->grab().toImage(), restCancel = cancel->grab().toImage(),
+                     restMore = more->grab().toImage();
+        QVERIFY(QApplication::focusWidget() != pause);
+        QList<QWidget*> order;
+        pause->setFocus(Qt::TabFocusReason);
+        order << QApplication::focusWidget();
+        for(int i = 0; i < 2; ++i) {
+            QTest::keyClick(QApplication::focusWidget(), Qt::Key_Tab);   // real Tab navigation
+            order << QApplication::focusWidget();
+        }
+        QCOMPARE(order, (QList<QWidget*>{pause, cancel, more}));     // pausa -> ✕ -> detalhes
+        // Focus ring present with keyboard focus (differs from rest), absent again after focus is lost.
+        QVERIFY(more->hasFocus());
+        QVERIFY(more->grab().toImage() != restMore);
+        cancel->setFocus(Qt::TabFocusReason);
+        QVERIFY(cancel->grab().toImage() != restCancel);
+        QVERIFY(more->grab().toImage() == restMore);
+        pause->setFocus(Qt::TabFocusReason);
+        QVERIFY(pause->grab().toImage() != restPause);
+        pause->clearFocus();
+        cancel->clearFocus();
+        QCOMPARE(pause->grab().toImage(), restPause);
+        QCOMPARE(cancel->grab().toImage(), restCancel);
+        // Mouse/other focus reasons never draw the ring.
+        cancel->setFocus(Qt::MouseFocusReason);
+        QCOMPARE(cancel->grab().toImage(), restCancel);
+        cancel->clearFocus();
+    }
+
+    // Esc (and Enter on a focused drawn button) behave: Esc cancels exactly once without confirmation, Enter is inert.
+    void transferDialogEscCancelsOnceAndEnterDoesNotActivateDrawnButtons() {
+        TransferDialogFixture fx(Fm::FileOperation::Copy, QStringLiteral("fixture3g.bin"), QString(), true);
+        QVERIFY(fx.dialog);
+        fx.dialog->show();
+        QVERIFY(QTest::qWaitForWindowExposed(fx.dialog.get()));
+        auto* controller = fx.dialog->findChild<ExplorerTransferController*>();
+        QVERIFY(controller);
+        QSignalSpy requested(controller, &ExplorerTransferController::cancellationRequested);
+        auto* cancel = fx.child<QPushButton>("transferCancelButton");
+        cancel->setFocus(Qt::TabFocusReason);
+        QTest::keyClick(cancel, Qt::Key_Return);
+        QTest::keyClick(cancel, Qt::Key_Enter);
+        QCOMPARE(requested.count(), 0);
+        QTest::keyClick(fx.dialog.get(), Qt::Key_Escape);
+        QTest::keyClick(fx.dialog.get(), Qt::Key_Escape);
+        QCOMPARE(requested.count(), 1);
+        for(QWidget* w : QApplication::topLevelWidgets())
+            QVERIFY2(!(qobject_cast<QMessageBox*>(w) && w->isVisible()), "Esc opened a confirmation box");
+        QVERIFY(fx.dialog->windowTitle().startsWith(QStringLiteral("Cancelando")));
     }
 
     // Review H: measured grid colours (paused): vertical line outside the tint 60,58,40; horizontal line over

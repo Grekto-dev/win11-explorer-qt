@@ -4,6 +4,8 @@
 #include <fileoperation.h>
 
 #include <QFileInfo>
+#include <QFocusEvent>
+#include <QFontMetrics>
 #include <QLocale>
 #include <QPainter>
 #include <QPainterPath>
@@ -37,13 +39,41 @@ QColor blend(const QColor& base, const QColor& over, double amount) {
     return QColor(mix(base.red(), over.red()), mix(base.green(), over.green()), mix(base.blue(), over.blue()));
 }
 
-// Glyphs are drawn, not font characters: no Microsoft font/asset is bundled.
-class GlyphButton final : public QPushButton {
+// Buttons are drawn by hand: keep them out of the QDialog default-button logic (Enter must not trigger them)
+// and draw a focus indicator only for keyboard focus (Tab/Backtab/Shortcut), never at rest or after a click.
+class FocusRingButton : public QPushButton {
 public:
-    explicit GlyphButton(const QString& glyph, QWidget* parent) : QPushButton(parent) {
-        setProperty("glyph", glyph);
+    explicit FocusRingButton(QWidget* parent) : QPushButton(parent) {
+        setAutoDefault(false);
+        setDefault(false);
         setFlat(true);
         setFocusPolicy(Qt::TabFocus);
+    }
+protected:
+    bool keyboardFocus() const {
+        return hasFocus() && (focusReason_ == Qt::TabFocusReason || focusReason_ == Qt::BacktabFocusReason ||
+                              focusReason_ == Qt::ShortcutFocusReason);
+    }
+    void drawFocusRing(QPainter& p, const QRectF& r) const {
+        if(!keyboardFocus()) return;
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing, false);
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(QColor(255, 255, 255), 1));
+        p.drawRect(r.adjusted(1, 1, -2, -2));
+        p.restore();
+    }
+    void focusInEvent(QFocusEvent* e) override { focusReason_ = e->reason(); QPushButton::focusInEvent(e); update(); }
+    void focusOutEvent(QFocusEvent* e) override { QPushButton::focusOutEvent(e); focusReason_ = Qt::OtherFocusReason; update(); }
+private:
+    Qt::FocusReason focusReason_ = Qt::OtherFocusReason;
+};
+
+// Glyphs are drawn, not font characters: no Microsoft font/asset is bundled.
+class GlyphButton final : public FocusRingButton {
+public:
+    explicit GlyphButton(const QString& glyph, QWidget* parent) : FocusRingButton(parent) {
+        setProperty("glyph", glyph);
     }
     void setGlyph(const QString& glyph) { setProperty("glyph", glyph); update(); }
 protected:
@@ -76,13 +106,14 @@ protected:
             p.drawLine(QPointF(c.x() - 4, c.y() - 4), QPointF(c.x() + 4, c.y() + 4));
             p.drawLine(QPointF(c.x() - 4, c.y() + 4), QPointF(c.x() + 4, c.y() - 4));
         }
+        drawFocusRing(p, QRectF(rect()));
     }
 };
 
 // Footer row "⌄ Mais detalhes": chevron at x 32..40 and text at x 52 (dialog coordinates).
-class FooterButton final : public QPushButton {
+class FooterButton final : public FocusRingButton {
 public:
-    explicit FooterButton(QWidget* parent) : QPushButton(parent) { setFlat(true); setCursor(Qt::PointingHandCursor); }
+    explicit FooterButton(QWidget* parent) : FocusRingButton(parent) { setCursor(Qt::PointingHandCursor); }
     bool expanded = false;
 protected:
     void paintEvent(QPaintEvent*) override {
@@ -100,6 +131,7 @@ protected:
         f.setPixelSize(12);
         p.setFont(f);
         p.drawText(QRectF(51, 0, width() - 51, height()), Qt::AlignVCenter | Qt::AlignLeft, text());
+        drawFocusRing(p, QRectF(rect()));
     }
 };
 
@@ -308,11 +340,26 @@ void ExplorerTransferDialog::setDestPath(const Fm::FilePath& destination) {
 void ExplorerTransferDialog::setPrepared() {
     const QString count = QString::number(filesTotal_ ? filesTotal_ : sourceCount_);
     const QString link = QStringLiteral("<a href=\"#\" style=\"color:#60CDFF;text-decoration:none\">%1</a>");
-    if(showsDestination_ && !sourceName_.isEmpty() && !destinationName_.isEmpty())
+    // Review E: elide the NAMES (not the HTML) to the 393 px label width, then escape; tooltip keeps the full text.
+    QFont f = summary_->font();
+    f.setPixelSize(12);
+    const QFontMetrics fm(f);
+    constexpr int kSummaryWidth = 393;
+    const bool both = showsDestination_ && !sourceName_.isEmpty() && !destinationName_.isEmpty();
+    if(both) {
+        const QString frame = tr("%1 %2 item de %3 para %4").arg(verb_, count, QString(), QString());
+        const int room = std::max(40, (kSummaryWidth - fm.horizontalAdvance(frame)) / 2);
+        const QString src = fm.elidedText(sourceName_, Qt::ElideMiddle, room);
+        const QString dst = fm.elidedText(destinationName_, Qt::ElideMiddle, room);
         summary_->setText(tr("%1 %2 item de %3 para %4")
-                          .arg(verb_, count, link.arg(sourceName_.toHtmlEscaped()), link.arg(destinationName_.toHtmlEscaped())));
-    else if(!sourceName_.isEmpty())
-        summary_->setText(tr("%1 %2 item: %3").arg(verb_, count, sourceName_.toHtmlEscaped()));
+                          .arg(verb_, count, link.arg(src.toHtmlEscaped()), link.arg(dst.toHtmlEscaped())));
+        summary_->setToolTip(tr("%1 %2 item de %3 para %4").arg(verb_, count, sourceName_, destinationName_));
+    } else if(!sourceName_.isEmpty()) {
+        const QString frame = tr("%1 %2 item: %3").arg(verb_, count, QString());
+        const QString src = fm.elidedText(sourceName_, Qt::ElideMiddle, std::max(40, kSummaryWidth - fm.horizontalAdvance(frame)));
+        summary_->setText(tr("%1 %2 item: %3").arg(verb_, count, src.toHtmlEscaped()));
+        summary_->setToolTip(tr("%1 %2 item: %3").arg(verb_, count, sourceName_));
+    }
 }
 void ExplorerTransferDialog::setCurFile(QString file) {
     currentFileName_ = QFileInfo(file).fileName();
