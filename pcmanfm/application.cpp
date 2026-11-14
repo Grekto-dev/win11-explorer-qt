@@ -339,7 +339,16 @@ bool Application::parseCommandLineArgs() {
             iface.call(QStringLiteral("desktopPrefrences"), parser.value(desktopPrefOption));
         }
         else if(parser.isSet(findFilesOption)) { // file searching utility
-            checkReply(iface.call(QStringLiteral("findFiles"), parser.positionalArguments()));
+            bool menuRefused = false;
+            const QStringList searchRoots = filterFindFilesPaths(parser.positionalArguments(), &menuRefused);
+            if(menuRefused) {
+                qCritical().noquote() << QStringLiteral("win11-explorer-qt: cannot search 'menu:' locations: the Applications view is not available "
+                                                        "(the libmenu-cache helper \"menu-cached\" was not found)");
+                exitCode_ = EXIT_FAILURE;
+            }
+            if(!menuRefused || !searchRoots.isEmpty()) {
+                checkReply(iface.call(QStringLiteral("findFiles"), searchRoots));
+            }
         }
         else if(parser.isSet(showPrefOption)) { // preferences dialog
             checkReply(iface.call(QStringLiteral("preferences"), parser.value(showPrefOption)));
@@ -517,6 +526,12 @@ void Application::onConnectToServerAccepted() {
 }
 
 void Application::findFiles(QStringList paths) {
+    // Review 4: the search job enumerates every root; a menu: root aborts without menu-cached.
+    bool menuRefused = false;
+    paths = filterFindFilesPaths(paths, &menuRefused);
+    if(menuRefused) {
+        Launcher::showMenuUnavailableMessage(MainWindow::lastActive());
+    }
     // launch file searching utility.
     Fm::FileSearchDialog* dlg = new Fm::FileSearchDialog(paths);
     connect(dlg, &QDialog::accepted, this, &Application::onFindFileAccepted);
@@ -609,6 +624,26 @@ QStringList Application::validateCliPaths(const QStringList& raw, const QString&
         valid.push_back(expanded);
     }
     return valid;
+}
+
+QStringList Application::filterFindFilesPaths(const QStringList& raw, bool* refused) {
+    if(refused) {
+        *refused = false;
+    }
+    QStringList kept;
+    bool drop = false;
+    for(const QString& r : raw) {
+        // the text as typed and its \"~\"/\"$VAR\" expansion (a variable may expand to menu:)
+        if((Launcher::isMenuCacheText(r) || Launcher::isMenuCacheText(expandUserPath(r))) && Launcher::menuCacheUnusable()) {
+            drop = true;
+            continue;
+        }
+        kept.push_back(r);
+    }
+    if(refused) {
+        *refused = drop;
+    }
+    return kept;
 }
 
 Fm::FilePath Application::filePathFromArgument(const QString& expanded, const QString& cwd) {
@@ -844,11 +879,25 @@ void Application::ShowItems(const QStringList& uriList, const QString& startupId
 void Application::ShowItemProperties(const QStringList& uriList, const QString& startupId __attribute__((unused))) {
     // FIXME: Should we add "Fm::FilePropsDialog::showForPath()" to libfm-qt, instead of doing this?
     Fm::FilePathList paths;
+    bool menuRefused = false;
     for(const auto& u : uriList) {
+        // Review 4: FileInfoJob would query_info a menu:// item (menu_cache_lookup_sync aborts
+        // without menu-cached); any session-bus client can call this method.
+        if(Launcher::isMenuCacheText(u) && Launcher::menuCacheUnusable()) {
+            menuRefused = true;
+            continue;
+        }
         Fm::FilePath path = Fm::FilePath::fromPathStr(u.toStdString().c_str());
         if(path) {
+            if(Launcher::isMenuCachePath(path) && Launcher::menuCacheUnusable()) {
+                menuRefused = true;
+                continue;
+            }
             paths.push_back(std::move(path));
         }
+    }
+    if(menuRefused) {
+        Launcher::showMenuUnavailableMessage(MainWindow::lastActive()); // non-blocking, PlainText
     }
     if(paths.empty()) {
         return;

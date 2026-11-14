@@ -97,6 +97,9 @@ public:
     // Command-line validation (first or second instance): returns the arguments that may be
     // forwarded (still UNEXPANDED, the launcher expands them exactly once). Missing local
     // paths are reported on stderr and flagged through anyMissing.
+    // Review 4: --find-files / D-Bus findFiles search roots; drops 'menu:' ones (any depth) when the
+    // Applications view is unusable and reports it through *refused.
+    static QStringList filterFindFilesPaths(const QStringList& raw, bool* refused = nullptr);
     static QStringList validateCliPaths(const QStringList& raw, const QString& cwd, bool* anyMissing = nullptr);
     // One classification for CLI validation and launching: '/' leading = local absolute;
     // "scheme:/..." = URI; anything else is relative to cwd (so "foo:bar", "dir/a:/b" are local).
