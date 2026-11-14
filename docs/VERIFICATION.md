@@ -155,3 +155,35 @@ declaração de paridade com o Explorer do Windows.**
   próprios. As baselines não foram substituídas.
 - Wayland, pacote `.deb` e reprodutibilidade pública completa não foram
   validados.
+
+## Fase 4 (segurança de operações, navegação, UI e empacotamento)
+
+Integração das frentes `backend-safety`, `crash-nav`, `ui-quick` e `packaging`
+(candidato `phase4/integration4`, 2026-11-14).
+
+- **Medido na integração final** (build `scripts/build.sh Debug`): build 0,
+  teste pesado 25/25 e `ctest --parallel 1` 21/21. Uma rodada anterior falhou
+  em `transfer-controller-heavy` (ACK de pausa em 7,25 s contra o limite de
+  5 s) com a máquina sob carga; repetido isoladamente passou 3/3. A causa é o
+  ponto de pausa só ocorrer entre chamadas `copy_file_range` (até 2 GiB), então
+  o teste continua sensível à carga até existir um laço de cópia em blocos.
+- **Prefixo portátil** montado em diretório de scratch: prova de relocação PASS
+  (zero acessos ao prefixo original) e `scripts/verify-xcb.sh` PASS num Xephyr
+  próprio (`:31`, dono verificado por `/proc/PID/exe`; janela xcb mapeada).
+- **Isolamento**: `check-isolation.py verify` contra o snapshot anterior à
+  publicação passou. A divergência contra a baseline original descrita na Fase 2
+  continua sem causa atribuída.
+- **Revisões independentes (estáticas)**: cada frente passou por 2 a 6 ciclos;
+  as aprovações finais são `review4-p4-backend-safety`, `review4-p4-packaging`,
+  `review2-p4-ui-quick` e `review6-p4-crash-nav`. Revisão estática não substitui
+  teste manual.
+- **Limitações conhecidas**: `.desktop` do tipo Link com URL `menu://` aberto
+  via `BasicFileLauncher::shortcutTargetPaths` não é filtrado (exigiria patch na
+  libfm); `PlainText` não foi aplicado aos diálogos da própria libfm; o
+  `op->wait()` com NOT_MOUNTED não tem teste (exige GVFS real); ENOSPC real,
+  destinos remotos, hardlinks e xattr não foram testados; ícone desabilitado
+  igual ao normal no tema escuro para SVGs sem versão própria; HiDPI não
+  bit-idêntico no tema claro; o teste de esquema escuro com paleta clara é
+  pulado no offscreen; texto da licença ICU conferido apenas por sha256 contra
+  o upstream 73.2; `.deb` não instalado num contêiner limpo (não pega
+  bibliotecas carregadas por `dlopen`); Wayland não testado.
