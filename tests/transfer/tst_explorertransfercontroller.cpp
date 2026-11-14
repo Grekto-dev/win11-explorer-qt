@@ -717,6 +717,8 @@ void ExplorerTransferControllerTest::liveDialogCancelWhilePausedShowsCancellingW
     // The paused worker wakes and the job really ends; the dialog is only gone after that.
     QVERIFY2(QTest::qWaitFor([&] { return finished.count() == 1; }, 60000), "cancelled paused copy never finished");
     QCOMPARE(cancelledSpy.count(), 1);
+    // Review G3: the dialog is really destroyed after the job's finished (deleteLater needs the event loop).
+    QTRY_VERIFY_WITH_TIMEOUT(dialog.isNull(), 10000);
     const qint64 destBytes = QFileInfo(QDir(destination).filePath(QFileInfo(source).fileName())).size();
     qInfo().noquote() << "LIVE_CANCEL_UI dest_bytes_after_cancel=" << destBytes
                       << "fixture_bytes=" << qint64(chunkBytes) * chunks;
