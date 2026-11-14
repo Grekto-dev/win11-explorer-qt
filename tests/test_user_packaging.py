@@ -432,6 +432,86 @@ class XcbRequired(unittest.TestCase):
             self.assertIn('display', res.stderr.lower(), repr(d))
 
 
+class VerifyXcbOwner(unittest.TestCase):
+    """The X server ownership check, against fake servers that listen on the path socket AND the abstract
+    socket (the one libxcb really connects to first). Only the owner check runs (VERIFY_XCB_OWNER_CHECK_ONLY)."""
+    NUM = 2000 + os.getpid() % 5000
+    SERVER = (
+        'import os, socket, sys, time\n'
+        'd, n, abstract = sys.argv[1], sys.argv[2], sys.argv[3] == "1"\n'
+        'socks = []\n'
+        'p = socket.socket(socket.AF_UNIX); p.bind(f"{d}/X{n}"); p.listen(1); socks.append(p)\n'
+        'if abstract:\n'
+        '    a = socket.socket(socket.AF_UNIX); a.bind(f"\\0{d}/X{n}"); a.listen(1); socks.append(a)\n'
+        'print("ready", flush=True); time.sleep(60)\n')
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        self.procs = []
+        self.addCleanup(self.stop)
+
+    def stop(self):
+        for p in self.procs:
+            p.kill()
+            p.wait()
+
+    def spawn(self, exe_name, cmdline_decoy='', abstract=True):
+        exe = self.dir / exe_name
+        shutil.copy2(os.path.realpath('/usr/bin/python3'), exe)
+        argv = [str(exe), '-c', self.SERVER, str(self.dir), str(self.NUM), '1' if abstract else '0']
+        if cmdline_decoy:
+            argv.append(cmdline_decoy)  # an arbitrary extra argument that merely MENTIONS Xephyr
+        p = subprocess.Popen(argv, stdout=subprocess.PIPE, text=True, env=dict(CLEAN_ENV, PYTHONHOME='', LC_ALL='C'))
+        self.procs.append(p)
+        self.assertEqual(p.stdout.readline().strip(), 'ready')
+        return p
+
+    def check(self):
+        env = dict(CLEAN_ENV, VERIFY_XCB_SOCKET_DIR=str(self.dir), VERIFY_XCB_OWNER_CHECK_ONLY='1')
+        prefix = self.dir / 'prefix'
+        (prefix / 'bin').mkdir(parents=True, exist_ok=True)
+        (prefix / 'bin/win11-explorer-qt').write_text('#!/bin/sh\n')
+        (prefix / 'bin/win11-explorer-qt').chmod(0o755)
+        return subprocess.run(['bash', str(ROOT / 'scripts/verify-xcb.sh'), str(prefix), f':{self.NUM}'],
+                              env=env, text=True, capture_output=True)
+
+    def test_a_real_nested_server_executable_is_accepted(self):
+        # the exe is called Xvfb but the cmdline says nothing about it: only /proc/PID/exe is trusted
+        pid = self.spawn('Xvfb').pid
+        res = self.check()
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn(f'pid {pid}', res.stdout)
+
+    def test_cmdline_that_merely_mentions_xephyr_is_not_enough(self):
+        self.spawn('someprog', cmdline_decoy='Xephyr')
+        res = self.check()
+        self.assertNotEqual(res.returncode, 0, res.stdout)
+        self.assertIn('not a nested', res.stderr)
+
+    def test_abstract_socket_held_by_another_process_is_refused(self):
+        pid_path = self.spawn('Xvfb', abstract=False).pid
+        # a different process listens on the abstract name
+        other = subprocess.Popen([sys.executable, '-c',
+                                  'import socket,time,sys\n'
+                                  f'a=socket.socket(socket.AF_UNIX); a.bind("\\0{self.dir}/X{self.NUM}"); a.listen(1)\n'
+                                  'print("ready", flush=True); time.sleep(60)'], stdout=subprocess.PIPE, text=True)
+        self.procs.append(other)
+        self.assertEqual(other.stdout.readline().strip(), 'ready')
+        res = self.check()
+        self.assertNotEqual(res.returncode, 0, (pid_path, res.stdout))
+        self.assertIn('abstract', res.stderr)
+
+
+class VerifyXcbCleanup(unittest.TestCase):
+    def test_app_is_started_in_its_own_session_and_the_whole_group_is_killed(self):
+        text = (ROOT / 'scripts/verify-xcb.sh').read_text()
+        self.assertIn('setsid', text)
+        self.assertRegex(text, r'kill [^\n]*-- "?-\$?\{?app')
+        self.assertNotIn('kill "$app"', text)
+
+
 class PrefixGuardsPhysical(unittest.TestCase):
     def test_empty_home_without_prefix_is_refused_by_the_script(self):
         res = subprocess.run(['bash', str(ROOT / 'scripts/make-portable-prefix.sh')],
