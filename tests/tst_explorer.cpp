@@ -1196,6 +1196,37 @@ private Q_SLOTS:
         QTRY_VERIFY_WITH_TIMEOUT(window->currentPage()->path() == root, 3000);
         QVERIFY(!window->currentPage()->canBackward());
     }
+    // B1: the folder error used to be reported with a modal QMessageBox::critical() inside the
+    // Folder's own error signal; any navigation processed by that nested loop freed the Folder
+    // while its handler was still on the stack ("double free or corruption" afterwards).
+    void navigatingAwayWhileFolderErrorIsShownDoesNotCorruptTheHeap() {
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        QVERIFY(QDir(folder.path()).mkdir(QStringLiteral("child")));
+        auto root = Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData());
+        auto child = Fm::FilePath::fromLocalPath(folder.filePath(QStringLiteral("child")).toUtf8().constData());
+        QScopedPointer<PCManFM::MainWindow> window(new PCManFM::MainWindow(root));
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window.data()));
+        QTRY_VERIFY(window->currentPage()->path() == root);
+        bool sawErrorDialog = false;
+        QTimer closer;
+        connect(&closer, &QTimer::timeout, &closer, [&sawErrorDialog] {
+            for(QWidget* w : QApplication::topLevelWidgets()) {
+                if(w->isVisible() && qobject_cast<QMessageBox*>(w)) {
+                    sawErrorDialog = true;
+                    w->close();
+                }
+            }
+        });
+        closer.start(1200); // the error stays up while we navigate away
+        window->chdir(Fm::FilePath::fromPathStr("/nonexistent/zz-p4-b1"));
+        QTimer::singleShot(500, window.data(), [&] { window->chdir(child); });
+        QTRY_VERIFY_WITH_TIMEOUT(window->currentPage()->path() == child, 6000);
+        QTRY_VERIFY_WITH_TIMEOUT(sawErrorDialog, 6000);
+        QTest::qWait(500);
+        QVERIFY(window->currentPage()->path() == child);
+    }
     void toolbarCopyPasteAndRenameOperateOnRealFiles() {
         QTemporaryDir folder;
         QVERIFY(folder.isValid());
