@@ -40,6 +40,8 @@ check_hash core/job.h 6e60550d8cf3770484702b17c76a01b87b862a18ba9b03e461d8419b11
 check_hash core/job.cpp e4783407320e82211b420118664e4df8bf76cbc016944df5176ac4616f6ae877
 check_hash core/filetransferjob.h 600ab7c6eb2fd5cb3e42fb92f46d37875b650f1f14848b90db4ebc23e0a9bda1
 check_hash core/filetransferjob.cpp 49992c168502c59958a961432de5ee1fd5b126b6d0a566dc9a9793e820b1edaa
+check_hash utilities.cpp acea3dcdbcc6170d4af1647ff00bde37eb69818a7c1be23b716ff50ac2ac2531
+check_hash core/untrashjob.cpp 57aae0bd1d79955e08703ef2c15dbb7c4515dd99a7b48cd9af684c42433ee08f
 check_hash libfmqtglobals.h 4997bfe58f1ffcccdeae40ad3c96481c4ccf97a7dfd0835e9f1c30186fad9424
 license_hash="$(git -C "$SDK_SOURCE" show "$EXPECTED_REV:LICENSE" | sha256sum | cut -d' ' -f1)"
 if [[ "$license_hash" != "b3aa400aca6d2ba1f0bd03bd98d03d1fe7489a3bbb26969d72016360af8a5c9d" ]]; then
@@ -54,6 +56,7 @@ mkdir -p "$OVERLAY_SOURCE"
 git -C "$SDK_SOURCE" archive --format=tar "$EXPECTED_REV" | tar -xf - -C "$OVERLAY_SOURCE"
 patch --directory="$OVERLAY_SOURCE" -p1 --forward < "$ROOT/patches/libfm-qt/0001-opt-in-progress-dialog.patch"
 patch --directory="$OVERLAY_SOURCE" -p1 --forward < "$ROOT/patches/libfm-qt/0002-cooperative-local-copy-pause.patch"
+patch --directory="$OVERLAY_SOURCE" -p1 --forward < "$ROOT/patches/libfm-qt/0003-file-operation-data-safety.patch"
 
 cmake -S "$OVERLAY_SOURCE" -B "$BUILD_DIR" -GNinja \
     -DCMAKE_MAKE_PROGRAM="$NINJA_BIN" \
