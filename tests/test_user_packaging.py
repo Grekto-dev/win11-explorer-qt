@@ -456,6 +456,7 @@ class VerifyXcbOwner(unittest.TestCase):
         for p in self.procs:
             p.kill()
             p.wait()
+            p.stdout.close()
 
     def spawn(self, exe_name, cmdline_decoy='', abstract=True):
         exe = self.dir / exe_name
