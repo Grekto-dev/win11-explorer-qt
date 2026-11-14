@@ -815,12 +815,12 @@ are left clicked, even when it is not the default file manager.</source>
     <message>
         <location filename="../main-win.ui" line="297"/>
         <source>Alt+Up</source>
-        <translation>Alt+Frecha arriba</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="309"/>
         <source>Alt+Home</source>
-        <translation>Alt+Inicio</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="425"/>
@@ -955,7 +955,7 @@ are left clicked, even when it is not the default file manager.</source>
     <message>
         <location filename="../main-win.ui" line="481"/>
         <source>Ctrl+X</source>
-        <translation>Ctrl-X</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="490"/>
@@ -1085,7 +1085,7 @@ are left clicked, even when it is not the default file manager.</source>
     <message>
         <location filename="../main-win.ui" line="679"/>
         <source>Ctrl+Shift+A</source>
-        <translation>Ctrl+Maiús+A</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="688"/>
@@ -1160,7 +1160,7 @@ are left clicked, even when it is not the default file manager.</source>
     <message>
         <location filename="../main-win.ui" line="976"/>
         <source>Ctrl+Shift+C</source>
-        <translation>Ctrl+Maiús+C</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="987"/>
@@ -1211,7 +1211,7 @@ are left clicked, even when it is not the default file manager.</source>
     <message>
         <location filename="../main-win.ui" line="842"/>
         <source>Ctrl+Shift+K</source>
-        <translation>Ctrl+Maiús+K</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="851"/>
@@ -1352,7 +1352,7 @@ are left clicked, even when it is not the default file manager.</source>
     <message>
         <location filename="../main-win.ui" line="656"/>
         <source>Alt+Left</source>
-        <translation>Alt+Esquerda</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="665"/>
@@ -1367,12 +1367,12 @@ are left clicked, even when it is not the default file manager.</source>
     <message>
         <location filename="../main-win.ui" line="671"/>
         <source>Alt+Right</source>
-        <translation>Alt+Dereita</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="691"/>
         <source>Del</source>
-        <translation>Supr</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="703"/>
@@ -1402,7 +1402,7 @@ are left clicked, even when it is not the default file manager.</source>
     <message>
         <location filename="../main-win.ui" line="799"/>
         <source>Ctrl+Shift+N</source>
-        <translation>Ctrl+Maiús+N</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="811"/>
@@ -1432,7 +1432,7 @@ are left clicked, even when it is not the default file manager.</source>
     <message>
         <location filename="../main-win.ui" line="727"/>
         <source>Alt+Return</source>
-        <translation>Alt+Intro</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="765"/>

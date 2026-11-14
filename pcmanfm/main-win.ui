@@ -196,7 +196,6 @@
     <addaction name="actionDeselectAll"/>
     <addaction name="actionInvertSelection"/>
     <addaction name="separator"/>
-    <addaction name="separator"/>
     <addaction name="actionBulkRename"/>
     <addaction name="separator"/>
     <addaction name="actionPreferences"/>
@@ -511,6 +510,9 @@
   <action name="actionPreferences">
    <property name="text">
     <string>Pr&amp;eferences</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+,</string>
    </property>
   </action>
   <action name="actionAscending">
@@ -923,9 +925,6 @@
    </property>
    <property name="toolTip">
     <string>Split View</string>
-   </property>
-   <property name="shortcut">
-    <string>F6</string>
    </property>
   </action>
   <action name="actionCopyFullPath">

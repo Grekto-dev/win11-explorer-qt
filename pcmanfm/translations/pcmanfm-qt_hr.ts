@@ -909,7 +909,7 @@ upravljač datoteka.</translation>
     <message>
         <location filename="../main-win.ui" line="374"/>
         <source>Ctrl+H</source>
-        <translation>Ctrl+S</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="383"/>
@@ -1124,7 +1124,7 @@ upravljač datoteka.</translation>
     <message>
         <location filename="../main-win.ui" line="679"/>
         <source>Ctrl+Shift+A</source>
-        <translation>Ctrl+Shift+V</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="740"/>
@@ -1204,7 +1204,7 @@ upravljač datoteka.</translation>
     <message>
         <location filename="../main-win.ui" line="976"/>
         <source>Ctrl+Shift+C</source>
-        <translation>Ctrl+Shift+L</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="987"/>
@@ -1315,7 +1315,7 @@ upravljač datoteka.</translation>
     <message>
         <location filename="../main-win.ui" line="879"/>
         <source>Ctrl+M</source>
-        <translation>Ctrl+G</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="888"/>

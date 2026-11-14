@@ -819,7 +819,7 @@ are left clicked, even when it is not the default file manager.</source>
     <message>
         <location filename="../main-win.ui" line="297"/>
         <source>Alt+Up</source>
-        <translation>Alt+↑</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="309"/>
@@ -1401,7 +1401,7 @@ are left clicked, even when it is not the default file manager.</source>
     <message>
         <location filename="../main-win.ui" line="656"/>
         <source>Alt+Left</source>
-        <translation>Alt+←</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="665"/>
@@ -1416,7 +1416,7 @@ are left clicked, even when it is not the default file manager.</source>
     <message>
         <location filename="../main-win.ui" line="671"/>
         <source>Alt+Right</source>
-        <translation>Alt+→</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="691"/>
@@ -1436,7 +1436,7 @@ are left clicked, even when it is not the default file manager.</source>
     <message>
         <location filename="../main-win.ui" line="727"/>
         <source>Alt+Return</source>
-        <translation>Alt+↩</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="765"/>

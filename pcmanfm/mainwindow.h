@@ -240,7 +240,7 @@ protected Q_SLOTS:
 protected:
     bool event(QEvent* event) override;
     void changeEvent(QEvent* event) override;
-    void closeTab(int index, ViewFrame* viewFrame);
+    void closeTab(int index, ViewFrame* viewFrame, bool remember = true);
     void closeTab(int index) {
         closeTab(index, activeViewFrame_);
     }
@@ -253,6 +253,9 @@ protected:
 private:
     void setupExplorerChrome();
     void updateExplorerSearch();
+    void updateExplorerDeleteLabel();
+    void applyExplorerTheme(); // re-style chrome/menus/buttons when the effective palette flips light<->dark
+    void reopenClosedTab();
     ViewFrame* viewFrameForTabBar(TabBar* tabBar);
     void loadBookmarksMenu();
     void updateUIForCurrentPage(bool setFocus = true);
@@ -270,6 +273,7 @@ private:
 private:
     QToolBar* explorerCommands_ = nullptr;
     QLineEdit* explorerSearch_ = nullptr;
+    bool explorerDark_ = false; // scheme the chrome stylesheet was last generated for
     QWidget* explorerTitle_ = nullptr;
     Ui::MainWindow ui;
     Fm::PathEdit* pathEntry_;
@@ -287,6 +291,7 @@ private:
     // not from another window. So, we get the mode at the start and keep it.
     bool splitView_;
 
+    QList<Fm::FilePath> closedTabs_; // most recently closed tabs (newest last), for Ctrl+Shift+T
     int splitTabsNum_; // number of tabs to be restored from the first view frame of the last window
 
     static QPointer<MainWindow> lastActive_;

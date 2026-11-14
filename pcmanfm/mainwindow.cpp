@@ -362,8 +362,16 @@ MainWindow::MainWindow(Fm::FilePath path):
         connect(shortcut, &QShortcut::activated, this, &MainWindow::onShortcutJumpToTab);
     }
 
+    // Shift+Del must honour the same enabled state as the Delete action (deletable selection).
     shortcut = new QShortcut(QKeySequence(Qt::SHIFT | Qt::Key_Delete), this);
-    connect(shortcut, &QShortcut::activated, this, &MainWindow::on_actionDelete_triggered);
+    connect(shortcut, &QShortcut::activated, this, [this] {
+        if(ui.actionDelete->isEnabled()) {
+            on_actionDelete_triggered();
+        }
+    });
+
+    shortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_T), this);
+    connect(shortcut, &QShortcut::activated, this, &MainWindow::reopenClosedTab);
 
     // in addition to F3, for convenience
     shortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_F), this);
@@ -834,7 +842,7 @@ void MainWindow::addTab(Fm::FilePath path) {
                 addTab(path, secondFrame);
                 // On reaching the single tab of the second frame, remove it after adding a tab.
                 if(splitTabsNum_ == 0 && secondFrame->getStackedWidget()->count() == 2) {
-                    closeTab(0, secondFrame);
+                    closeTab(0, secondFrame, false); // discarding the placeholder is not a user close
                 }
                 splitTabsNum_ = -2; // will not change again for the current window
             }
@@ -1425,9 +1433,31 @@ void MainWindow::onFolderUnmounted() {
     }
 }
 
-void MainWindow::closeTab(int index, ViewFrame* viewFrame) {
+void MainWindow::reopenClosedTab() {
+    if(!closedTabs_.isEmpty()) {
+        // Always bring the reopened tab to the front, whatever SwitchToNewTab says.
+        auto* frame = activeViewFrame_;
+        addTab(closedTabs_.takeLast(), frame);
+        if(frame) {
+            const int last = frame->getTabBar()->count() - 1;
+            if(last >= 0 && frame->getTabBar()->currentIndex() != last) {
+                frame->getTabBar()->setCurrentIndex(last);
+            }
+        }
+    }
+}
+
+void MainWindow::closeTab(int index, ViewFrame* viewFrame, bool remember) {
     QWidget* page = viewFrame->getStackedWidget()->widget(index);
     if(page) {
+        // remember the path (at most 10 entries) so Ctrl+Shift+T can reopen it
+        const Fm::FilePath closedPath = static_cast<TabPage*>(page)->path();
+        if(remember && closedPath) {
+            closedTabs_.append(closedPath);
+            while(closedTabs_.size() > 10) {
+                closedTabs_.removeFirst();
+            }
+        }
         viewFrame->getStackedWidget()->removeWidget(page); // this does not delete the page widget
         delete page;
         // NOTE: we do not remove the tab here.
@@ -1601,6 +1631,7 @@ void MainWindow::updateViewMenuForCurrentPage() {
         if(auto path = tabPage->path()) {
             ui.actionByDTime->setVisible(strcmp(path.toString().get(), "trash:///") == 0);
         }
+        updateExplorerDeleteLabel(); // "Excluir" inside trash:///, where deleting is permanent
 
         if(tabPage->sortOrder() == Qt::AscendingOrder) {
             ui.actionAscending->setChecked(true);
@@ -1890,7 +1921,9 @@ void MainWindow::loadBookmarksMenu() {
         ui.menu_Bookmarks->insertAction(before, action);
     }
 
-    ui.menu_Bookmarks->insertSeparator(before);
+    // the separator only makes sense when there is at least one bookmark above it
+    QAction* separator = ui.menu_Bookmarks->insertSeparator(before);
+    separator->setVisible(!bookmarks_->items().empty());
 }
 
 void MainWindow::onBookmarksChanged() {
@@ -2032,8 +2065,13 @@ void MainWindow::setRTLIcons(bool isRTL) {
 
 bool MainWindow::event(QEvent* event) {
     switch(event->type()) {
+    case QEvent::ApplicationPaletteChange:
+    case QEvent::ThemeChange:
+        applyExplorerTheme();
+        break;
     case QEvent::WindowActivate:
         lastActive_ = this;
+        break;
     default:
         break;
     }
@@ -2296,6 +2334,7 @@ void MainWindow::updateFromSettings(Settings& settings) {
     // menu
     ui.actionDelete->setText(settings.useTrash() ? tr("&Move to Trash") : tr("&Delete"));
     ui.actionDelete->setIcon(settings.useTrash() ? QIcon::fromTheme(QStringLiteral("user-trash")) : QIcon::fromTheme(QStringLiteral("edit-delete")));
+    updateExplorerDeleteLabel();
 
     // side pane
     ui.sidePane->setIconSize(QSize(settings.sidePaneIconSize(), settings.sidePaneIconSize()));

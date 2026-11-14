@@ -848,7 +848,7 @@ vänsterklickas, även när den inte är standard filhanterare.</translation>
     <message>
         <location filename="../main-win.ui" line="297"/>
         <source>Alt+Up</source>
-        <translation>Alt+Upp</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="306"/>
@@ -1355,7 +1355,7 @@ vänsterklickas, även när den inte är standard filhanterare.</translation>
     <message>
         <location filename="../main-win.ui" line="656"/>
         <source>Alt+Left</source>
-        <translation>Alt+Vänsterpil</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="665"/>
@@ -1370,7 +1370,7 @@ vänsterklickas, även när den inte är standard filhanterare.</translation>
     <message>
         <location filename="../main-win.ui" line="671"/>
         <source>Alt+Right</source>
-        <translation>Alt+Högerpil</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="676"/>

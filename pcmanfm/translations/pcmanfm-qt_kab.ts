@@ -783,7 +783,7 @@ usiti d azelmaḍ, xas ma mačči d asefrak n ifuyla amezwer.</translation>
     <message>
         <location filename="../main-win.ui" line="297"/>
         <source>Alt+Up</source>
-        <translation>Alt+Asawen</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="306"/>
@@ -793,7 +793,7 @@ usiti d azelmaḍ, xas ma mačči d asefrak n ifuyla amezwer.</translation>
     <message>
         <location filename="../main-win.ui" line="309"/>
         <source>Alt+Home</source>
-        <translation>Alt+Agejdan</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="318"/>
@@ -938,7 +938,7 @@ usiti d azelmaḍ, xas ma mačči d asefrak n ifuyla amezwer.</translation>
     <message>
         <location filename="../main-win.ui" line="505"/>
         <source>Ctrl+A</source>
-        <translation>Fren akk</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="510"/>
@@ -1270,7 +1270,7 @@ usiti d azelmaḍ, xas ma mačči d asefrak n ifuyla amezwer.</translation>
     <message>
         <location filename="../main-win.ui" line="644"/>
         <source>Alt+Left</source>
-        <translation>Alt+Azelmaḍ</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="653"/>
@@ -1285,7 +1285,7 @@ usiti d azelmaḍ, xas ma mačči d asefrak n ifuyla amezwer.</translation>
     <message>
         <location filename="../main-win.ui" line="659"/>
         <source>Alt+Right</source>
-        <translation>Alt+Ayeffus</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="664"/>
@@ -1300,7 +1300,7 @@ usiti d azelmaḍ, xas ma mačči d asefrak n ifuyla amezwer.</translation>
     <message>
         <location filename="../main-win.ui" line="679"/>
         <source>Del</source>
-        <translation>Kkes</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="684"/>
@@ -1330,7 +1330,7 @@ usiti d azelmaḍ, xas ma mačči d asefrak n ifuyla amezwer.</translation>
     <message>
         <location filename="../main-win.ui" line="715"/>
         <source>Alt+Return</source>
-        <translation>Alt+Tuɣalin</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="720"/>

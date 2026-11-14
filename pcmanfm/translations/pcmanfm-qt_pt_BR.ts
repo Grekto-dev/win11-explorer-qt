@@ -818,7 +818,7 @@ clicadas com o botão esquerdo, mesmo quando não for o gerenciador de arquivos 
     <message>
         <location filename="../main-win.ui" line="297"/>
         <source>Alt+Up</source>
-        <translation>Alt+Cima</translation>
+        <translation>Alt+Up</translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="309"/>
@@ -1014,7 +1014,7 @@ clicadas com o botão esquerdo, mesmo quando não for o gerenciador de arquivos 
     <message>
         <location filename="../main-win.ui" line="562"/>
         <source>&amp;By File Name</source>
-        <translation>&amp;Pelo nome do arquivo</translation>
+        <translation>Por &amp;nome</translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="570"/>
@@ -1034,7 +1034,7 @@ clicadas com o botão esquerdo, mesmo quando não for o gerenciador de arquivos 
     <message>
         <location filename="../main-win.ui" line="594"/>
         <source>By File &amp;Type</source>
-        <translation>Por Arquivo &amp;Tipo</translation>
+        <translation>Por &amp;Tipo</translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="602"/>
@@ -1054,7 +1054,7 @@ clicadas com o botão esquerdo, mesmo quando não for o gerenciador de arquivos 
     <message>
         <location filename="../main-win.ui" line="626"/>
         <source>&amp;Hidden Last</source>
-        <translation>&amp;Ocultar último</translation>
+        <translation>&amp;Ocultos por último</translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="939"/>
@@ -1109,7 +1109,7 @@ clicadas com o botão esquerdo, mesmo quando não for o gerenciador de arquivos 
     <message>
         <location filename="../main-win.ui" line="748"/>
         <source>By File &amp;Size</source>
-        <translation>Por Arquivo &amp;Tamanho</translation>
+        <translation>Por &amp;Tamanho</translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="757"/>
@@ -1356,7 +1356,7 @@ clicadas com o botão esquerdo, mesmo quando não for o gerenciador de arquivos 
     <message>
         <location filename="../main-win.ui" line="656"/>
         <source>Alt+Left</source>
-        <translation>Alt+Esquerda</translation>
+        <translation>Alt+Left</translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="665"/>
@@ -1371,7 +1371,7 @@ clicadas com o botão esquerdo, mesmo quando não for o gerenciador de arquivos 
     <message>
         <location filename="../main-win.ui" line="671"/>
         <source>Alt+Right</source>
-        <translation>Alt+Direita</translation>
+        <translation>Alt+Right</translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="691"/>
@@ -1793,7 +1793,7 @@ clicadas com o botão esquerdo, mesmo quando não for o gerenciador de arquivos 
     <message>
         <location filename="../desktopwindow.cpp" line="1060"/>
         <source>Empty Trash</source>
-        <translation>Esvaziar lixeira</translation>
+        <translation>Esvaziar Lixeira</translation>
     </message>
     <message>
         <location filename="../desktopwindow.cpp" line="1126"/>
@@ -1853,7 +1853,7 @@ clicadas com o botão esquerdo, mesmo quando não for o gerenciador de arquivos 
         <location filename="../mainwindow.cpp" line="175"/>
         <location filename="../mainwindow.cpp" line="2193"/>
         <source>&amp;Move to Trash</source>
-        <translation>&amp;Mover para a lixeira</translation>
+        <translation>&amp;Mover para a Lixeira</translation>
     </message>
     <message>
         <location filename="../mainwindow.cpp" line="175"/>

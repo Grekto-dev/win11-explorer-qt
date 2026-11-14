@@ -820,7 +820,7 @@ geöffnet, selbst wenn es nicht der Standard-Dateimanager ist.</translation>
     <message>
         <location filename="../main-win.ui" line="297"/>
         <source>Alt+Up</source>
-        <translation>Alt+Hoch</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="309"/>
@@ -895,7 +895,7 @@ geöffnet, selbst wenn es nicht der Standard-Dateimanager ist.</translation>
     <message>
         <location filename="../main-win.ui" line="363"/>
         <source>Ctrl+N</source>
-        <translation>Strg+N</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="371"/>
@@ -905,7 +905,7 @@ geöffnet, selbst wenn es nicht der Standard-Dateimanager ist.</translation>
     <message>
         <location filename="../main-win.ui" line="374"/>
         <source>Ctrl+H</source>
-        <translation>Strg+H</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="383"/>
@@ -940,27 +940,27 @@ geöffnet, selbst wenn es nicht der Standard-Dateimanager ist.</translation>
     <message>
         <location filename="../main-win.ui" line="436"/>
         <source>Ctrl+Shift+1</source>
-        <translation>Strg+Umschalt+1</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="447"/>
         <source>Ctrl+Shift+3</source>
-        <translation>Strg+Umschalt+3</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="458"/>
         <source>Ctrl+Shift+4</source>
-        <translation>Strg+Umschalt+4</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="469"/>
         <source>Ctrl+Shift+2</source>
-        <translation>Strg+Umschalt+2</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="481"/>
         <source>Ctrl+X</source>
-        <translation>Strg+X</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="490"/>
@@ -970,7 +970,7 @@ geöffnet, selbst wenn es nicht der Standard-Dateimanager ist.</translation>
     <message>
         <location filename="../main-win.ui" line="493"/>
         <source>Ctrl+C</source>
-        <translation>Strg+C</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="502"/>
@@ -980,7 +980,7 @@ geöffnet, selbst wenn es nicht der Standard-Dateimanager ist.</translation>
     <message>
         <location filename="../main-win.ui" line="505"/>
         <source>Ctrl+V</source>
-        <translation>Strg+V</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="514"/>
@@ -995,7 +995,7 @@ geöffnet, selbst wenn es nicht der Standard-Dateimanager ist.</translation>
     <message>
         <location filename="../main-win.ui" line="525"/>
         <source>Ctrl+D</source>
-        <translation>Strg+D</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="530"/>
@@ -1060,7 +1060,7 @@ geöffnet, selbst wenn es nicht der Standard-Dateimanager ist.</translation>
     <message>
         <location filename="../main-win.ui" line="939"/>
         <source>Shift+F2</source>
-        <translation>Umschalt+F2</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="1027"/>
@@ -1090,7 +1090,7 @@ geöffnet, selbst wenn es nicht der Standard-Dateimanager ist.</translation>
     <message>
         <location filename="../main-win.ui" line="679"/>
         <source>Ctrl+Shift+A</source>
-        <translation>Strg+Shift+A</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="688"/>
@@ -1120,7 +1120,7 @@ geöffnet, selbst wenn es nicht der Standard-Dateimanager ist.</translation>
     <message>
         <location filename="../main-win.ui" line="760"/>
         <source>Ctrl+Q</source>
-        <translation>Strg+Q</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="782"/>
@@ -1145,7 +1145,7 @@ geöffnet, selbst wenn es nicht der Standard-Dateimanager ist.</translation>
     <message>
         <location filename="../main-win.ui" line="950"/>
         <source>Ctrl+I</source>
-        <translation>Strg+I</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="958"/>
@@ -1170,7 +1170,7 @@ geöffnet, selbst wenn es nicht der Standard-Dateimanager ist.</translation>
     <message>
         <location filename="../main-win.ui" line="976"/>
         <source>Ctrl+Shift+C</source>
-        <translation>Strg+Umschalt+C</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="987"/>
@@ -1211,7 +1211,7 @@ geöffnet, selbst wenn es nicht der Standard-Dateimanager ist.</translation>
     <message>
         <location filename="../main-win.ui" line="834"/>
         <source>Ctrl+B</source>
-        <translation>Strg+B</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="839"/>
@@ -1221,7 +1221,7 @@ geöffnet, selbst wenn es nicht der Standard-Dateimanager ist.</translation>
     <message>
         <location filename="../main-win.ui" line="842"/>
         <source>Ctrl+Shift+K</source>
-        <translation>Strg+Umschalt+K</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="851"/>
@@ -1281,7 +1281,7 @@ geöffnet, selbst wenn es nicht der Standard-Dateimanager ist.</translation>
     <message>
         <location filename="../main-win.ui" line="879"/>
         <source>Ctrl+M</source>
-        <translation>Strg+M</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="888"/>
@@ -1292,7 +1292,7 @@ geöffnet, selbst wenn es nicht der Standard-Dateimanager ist.</translation>
     <message>
         <location filename="../main-win.ui" line="517"/>
         <source>Ctrl+A</source>
-        <translation>Strg+A</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="164"/>
@@ -1347,7 +1347,7 @@ geöffnet, selbst wenn es nicht der Standard-Dateimanager ist.</translation>
     <message>
         <location filename="../main-win.ui" line="641"/>
         <source>Ctrl+T</source>
-        <translation>Strg+T</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="650"/>
@@ -1362,7 +1362,7 @@ geöffnet, selbst wenn es nicht der Standard-Dateimanager ist.</translation>
     <message>
         <location filename="../main-win.ui" line="656"/>
         <source>Alt+Left</source>
-        <translation>Alt+Links</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="665"/>
@@ -1377,12 +1377,12 @@ geöffnet, selbst wenn es nicht der Standard-Dateimanager ist.</translation>
     <message>
         <location filename="../main-win.ui" line="671"/>
         <source>Alt+Right</source>
-        <translation>Alt+Rechts</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="691"/>
         <source>Del</source>
-        <translation>Entf</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="703"/>
@@ -1407,12 +1407,12 @@ geöffnet, selbst wenn es nicht der Standard-Dateimanager ist.</translation>
     <message>
         <location filename="../main-win.ui" line="799"/>
         <source>Ctrl+Shift+N</source>
-        <translation>Strg+Umschalt+N</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="811"/>
         <source>Ctrl+Alt+N</source>
-        <translation>Strg+Alt+N</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="74"/>
@@ -1432,7 +1432,7 @@ geöffnet, selbst wenn es nicht der Standard-Dateimanager ist.</translation>
     <message>
         <location filename="../main-win.ui" line="715"/>
         <source>Ctrl+W</source>
-        <translation>Strg+W</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="727"/>

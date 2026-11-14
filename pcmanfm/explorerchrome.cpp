@@ -20,6 +20,9 @@
 #include <QComboBox>
 #include <QMenuBar>
 #include <QSignalBlocker>
+#include <QShortcut>
+#include <QStyleHints>
+#include <QGuiApplication>
 #include <libfm-qt6/pathbar.h>
 
 namespace PCManFM {
@@ -36,7 +39,7 @@ public:
     void paint(QPainter* p, const QRect& rect, QIcon::Mode mode, QIcon::State) override {
         p->save(); p->setRenderHint(QPainter::Antialiasing);
         p->translate(rect.x(), rect.y()); p->scale(rect.width()/24.0,rect.height()/24.0);
-        const QColor ink = mode == QIcon::Disabled ? QColor(160,160,160) : QColor(45,45,45);
+        const QColor ink = mode == QIcon::Disabled ? QColor(160,160,160) : (ExplorerAnimation::darkMode() ? QColor(235,235,235) : QColor(45,45,45));
         p->setPen(QPen(ink,1.35,Qt::SolidLine,Qt::RoundCap,Qt::RoundJoin)); p->setBrush(Qt::NoBrush);
         auto line = [p](qreal a,qreal b,qreal c,qreal d) { p->drawLine(QPointF(a,b),QPointF(c,d)); };
         if(name_ == QLatin1String("back") || name_ == QLatin1String("forward")) {
@@ -206,27 +209,10 @@ private:
     QWidget* window_;
     QPointer<QWidget> cursorWidget_;
 };
-}
 
-ViewFrame* MainWindow::viewFrameForTabBar(TabBar* tabBar) {
-    for(int i=0;i<ui.viewSplitter->count();++i) {
-        auto* frame = qobject_cast<ViewFrame*>(ui.viewSplitter->widget(i));
-        if(frame && frame->getTabBar() == tabBar) return frame;
-    }
-    return nullptr;
-}
-
-void MainWindow::updateExplorerSearch() {
-    if(explorerSearch_ && currentPage()) {
-        const QSignalBlocker blocker(explorerSearch_);
-        explorerSearch_->setText(currentPage()->getFilterStr());
-    }
-}
-
-void MainWindow::setupExplorerChrome() {
-    setWindowFlag(Qt::FramelessWindowHint); setContentsMargins(1,1,1,1); setMinimumSize(760,420);
-    setFont(QFont(QStringLiteral("Noto Sans"),9)); setWindowIcon(icon("folder"));
-    setStyleSheet(QStringLiteral(R"CSS(
+// Measured light chrome stylesheet; ExplorerAnimation::themed() maps it to the dark counterpart.
+QString explorerStyleSheet() {
+    return ExplorerAnimation::themed(QStringLiteral(R"CSS(
 QMainWindow#MainWindow { background:#f8f8f8; border:1px solid #cfcfcf; }
 QWidget { color:#202020; }
 QToolBar { border:0; spacing:4px; background:#f8f8f8; }
@@ -266,7 +252,61 @@ QMenu::item:disabled { color:#a0a0a0; }
 QMenu::separator { height:1px; background:#dedede; margin:4px; }
 QToolTip { background:#fafafa; color:#202020; border:1px solid #d8d8d8; padding:6px; }
 )CSS"));
+}
+}
+
+ViewFrame* MainWindow::viewFrameForTabBar(TabBar* tabBar) {
+    for(int i=0;i<ui.viewSplitter->count();++i) {
+        auto* frame = qobject_cast<ViewFrame*>(ui.viewSplitter->widget(i));
+        if(frame && frame->getTabBar() == tabBar) return frame;
+    }
+    return nullptr;
+}
+
+void MainWindow::updateExplorerSearch() {
+    if(explorerSearch_ && currentPage()) {
+        const QSignalBlocker blocker(explorerSearch_);
+        explorerSearch_->setText(currentPage()->getFilterStr());
+    }
+}
+
+void MainWindow::updateExplorerDeleteLabel() {
+    // Inside the trash the Delete action removes items permanently (it never trashes again).
+    TabPage* page = currentPage();
+    const bool inTrash = page && page->path() && page->path().hasUriScheme("trash");
+    const bool trash = static_cast<Application*>(qApp)->settings().useTrash() && !inTrash;
+    const QString label = trash ? tr("Mover para a Lixeira") : tr("Excluir");
+    ui.actionDelete->setToolTip(label);
+    if(auto* button = findChild<QToolButton*>(QStringLiteral("explorerDelete"))) {
+        button->setToolTip(label); button->setAccessibleName(label);
+    }
+}
+
+void MainWindow::applyExplorerTheme() {
+    const bool dark = ExplorerAnimation::darkMode();
+    if(dark == explorerDark_) return;
+    explorerDark_ = dark;
+    setStyleSheet(explorerStyleSheet());
+    for(auto* button : findChildren<QToolButton*>()) {
+        if(!button->styleSheet().isEmpty()) ExplorerAnimation::styleButton(button);
+        button->update();   // icons repaint with the new ink (they read the scheme when painted)
+    }
+    for(auto* menu : findChildren<QMenu*>()) {
+        if(!menu->styleSheet().isEmpty()) ExplorerAnimation::styleMenu(menu);
+    }
+    if(explorerSearch_) explorerSearch_->update();
+}
+
+void MainWindow::setupExplorerChrome() {
+    setWindowFlag(Qt::FramelessWindowHint); setContentsMargins(1,1,1,1); setMinimumSize(760,420);
+    setFont(QFont(QStringLiteral("Noto Sans"),9)); setWindowIcon(icon("folder"));
+    explorerDark_ = ExplorerAnimation::darkMode();
+    setStyleSheet(explorerStyleSheet());
     new FrameController(this);
+    connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, this, [this] { applyExplorerTheme(); });
+    // Windows-style: Ctrl+E reaches the folder filter, F6 the address bar (Ctrl+L/Alt+D/F4/Ctrl+F stay upstream).
+    connect(new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_E),this), &QShortcut::activated, this, [this] { explorerSearch_->setFocus(); explorerSearch_->selectAll(); });
+    connect(new QShortcut(QKeySequence(Qt::Key_F6),this), &QShortcut::activated, this, &MainWindow::focusPathEntry);
     ui.menubar->hide(); ui.actionMenu_bar->setVisible(false);
     ui.toolBar->clear(); ui.toolBar->setObjectName(QStringLiteral("explorerNavigation"));
     ui.toolBar->setFixedHeight(49); ui.toolBar->setIconSize(QSize(18,18)); ui.toolBar->setToolButtonStyle(Qt::ToolButtonIconOnly);
@@ -312,8 +352,10 @@ QToolTip { background:#fafafa; color:#202020; border:1px solid #d8d8d8; padding:
     };
     menuButton(ui.menuCreateNew,"explorerNew","new",tr("Novo")); explorerCommands_->addSeparator();
     command(ui.actionCut,"explorerCut","cut",tr("Recortar")); command(ui.actionCopy,"explorerCopy","copy",tr("Copiar")); command(ui.actionPaste,"explorerPaste","paste",tr("Colar"));
-    command(ui.actionRename,"explorerRename","rename",tr("Renomear")); command(ui.actionDelete,"explorerDelete","delete",tr("Mover para a lixeira")); explorerCommands_->addSeparator();
-    menuButton(ui.menuSorting,"explorerSort","sort",tr("Classificar")); ui.menu_View_2->addSeparator(); ui.menu_View_2->addAction(ui.actionShowHidden); ui.menu_View_2->addAction(ui.actionShowThumbnails);
+    command(ui.actionRename,"explorerRename","rename",tr("Renomear")); command(ui.actionDelete,"explorerDelete","delete",tr("Mover para a Lixeira")); updateExplorerDeleteLabel(); explorerCommands_->addSeparator();
+    menuButton(ui.menuSorting,"explorerSort","sort",tr("Classificar")); // Hidden/thumbnails live in the Exibir submenu (shared with the toolbar button); drop the duplicates from the parent View menu.
+    ui.menu_View_2->addAction(ui.actionShowHidden); ui.menu_View_2->addAction(ui.actionShowThumbnails);
+    ui.menu_View->removeAction(ui.actionShowHidden); ui.menu_View->removeAction(ui.actionShowThumbnails);
     menuButton(ui.menu_View_2,"explorerView","view",tr("Visualizar"));
     auto* more = menuButton(ui.actionMenu->menu(),"explorerMore","more",tr("Mais")); more->setToolButtonStyle(Qt::ToolButtonIconOnly); more->setFixedWidth(40);
     auto* spacer = new QWidget(explorerCommands_); spacer->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Preferred); explorerCommands_->addWidget(spacer);

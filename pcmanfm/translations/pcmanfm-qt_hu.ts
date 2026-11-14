@@ -841,7 +841,7 @@ ha bal gombbal kattintanak rájuk, még akkor is, ha az nem az alapértelmezett 
     <message>
         <location filename="../main-win.ui" line="297"/>
         <source>Alt+Up</source>
-        <translation>Alt+Fel</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="306"/>
@@ -1348,7 +1348,7 @@ ha bal gombbal kattintanak rájuk, még akkor is, ha az nem az alapértelmezett 
     <message>
         <location filename="../main-win.ui" line="656"/>
         <source>Alt+Left</source>
-        <translation>Alt+Bal</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="665"/>
@@ -1363,7 +1363,7 @@ ha bal gombbal kattintanak rájuk, még akkor is, ha az nem az alapértelmezett 
     <message>
         <location filename="../main-win.ui" line="671"/>
         <source>Alt+Right</source>
-        <translation>Alt+Jobb</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="676"/>
