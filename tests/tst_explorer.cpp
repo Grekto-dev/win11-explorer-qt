@@ -350,6 +350,21 @@ private Q_SLOTS:
             QVERIFY(!fx.child<QPushButton>("pauseButton")->isVisibleTo(fx.dialog.get()));
         }
     }
+    // Found by the capture test: the content widget was laid out with height()==0 in the
+    // collapsed state (dialog blank until "Mais detalhes" was toggled once).
+    void transferDialogContentFillsDialogWhenFirstShownCollapsed() {
+        TransferDialogFixture fx;
+        QVERIFY(fx.dialog);
+        fx.dialog->setPauseAvailable(true);
+        fx.dialog->show();
+        QVERIFY(QTest::qWaitForWindowExposed(fx.dialog.get()));
+        QCoreApplication::processEvents();
+        QCOMPARE(fx.child<QWidget>("transferContent")->geometry(), QRect(0, 0, 449, 165));
+        const QImage img = fx.dialog->grab().toImage();
+        QCOMPARE(QColor(img.pixel(10, 10)), QColor(44, 44, 44));    // measured body #2C2C2C, not the default window grey
+        QCOMPARE(QColor(img.pixel(224, 120)), QColor(77, 77, 77));  // footer separator row (y 120)
+    }
+
     // Capture only: with EXPLORER_TEST_ARTIFACTS set, renders the dialog (grab, DPR 1)
     // in the states of the measured Windows frames into <dir>/transfer-dialog/*.png;
     // without it nothing is written. Consumed by tools/fidelity/compare_transfer_dialog.py.

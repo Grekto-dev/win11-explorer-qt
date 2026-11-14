@@ -187,12 +187,13 @@ ExplorerTransferDialog::ExplorerTransferDialog(Fm::FileOperation* operation)
     // its presentation. Base error/conflict methods remain fully functional.
     for(QWidget* child : findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly))
         if(child != content_) child->hide();
-    if(!layout()) setLayout(new QVBoxLayout);
-    layout()->setContentsMargins(0, 0, 0, 0);
-    layout()->setSpacing(0);
-    layout()->setSizeConstraint(QLayout::SetNoConstraint);
-    layout()->addWidget(content_);
-
+    if(layout()) {
+        // The base dialog's own (now hidden) layout must not manage or squash content_:
+        // its spacers/nested layouts gave content_ height 0 in the collapsed state.
+        layout()->setContentsMargins(0, 0, 0, 0);
+        layout()->setSpacing(0);
+        layout()->setEnabled(false);
+    }
     content_->setObjectName(QStringLiteral("transferContent"));
     content_->setAttribute(Qt::WA_StyledBackground, true);
     content_->setStyleSheet(QStringLiteral("#transferContent{background:#2C2C2C;border:1px solid #3D3D3D;}"
@@ -252,8 +253,9 @@ ExplorerTransferDialog::ExplorerTransferDialog(Fm::FileOperation* operation)
 }
 
 void ExplorerTransferDialog::relayout() {
-    setFixedSize(kWidth, expanded_ ? kExpandedHeight : kCollapsedHeight);
-    content_->setGeometry(0, 0, kWidth, height());
+    const int totalHeight = expanded_ ? kExpandedHeight : kCollapsedHeight;
+    setFixedSize(kWidth, totalHeight);
+    content_->setGeometry(0, 0, kWidth, totalHeight);   // height() is not yet updated for a never-shown dialog
     const int sepY = expanded_ ? kExpandedSeparatorY : kCollapsedSeparatorY;
     summary_->setGeometry(28, 43, 393, 18);
     progressText_->setGeometry(28, 62, 320, 20);
@@ -265,7 +267,7 @@ void ExplorerTransferDialog::relayout() {
     detailRemaining_->setGeometry(28, 197, 393, 16);
     detailItems_->setGeometry(28, 213, 393, 16);
     separator_->setGeometry(3, sepY, kWidth - 6, 1);
-    detailsButton_->setGeometry(1, sepY + 1, kWidth - 2, height() - sepY - 3);
+    detailsButton_->setGeometry(1, sepY + 1, kWidth - 2, totalHeight - sepY - 3);
 }
 
 void ExplorerTransferDialog::setPauseAvailable(bool available) {
