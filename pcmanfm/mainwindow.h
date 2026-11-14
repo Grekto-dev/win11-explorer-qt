@@ -253,6 +253,8 @@ protected:
 private:
     void setupExplorerChrome();
     void updateExplorerSearch();
+    void updateExplorerDeleteLabel();
+    void reopenClosedTab();
     ViewFrame* viewFrameForTabBar(TabBar* tabBar);
     void loadBookmarksMenu();
     void updateUIForCurrentPage(bool setFocus = true);
@@ -287,6 +289,7 @@ private:
     // not from another window. So, we get the mode at the start and keep it.
     bool splitView_;
 
+    QList<Fm::FilePath> closedTabs_; // most recently closed tabs (newest last), for Ctrl+Shift+T
     int splitTabsNum_; // number of tabs to be restored from the first view frame of the last window
 
     static QPointer<MainWindow> lastActive_;

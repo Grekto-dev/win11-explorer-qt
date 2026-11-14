@@ -51,12 +51,55 @@
 #include <functional>
 #include <QDragMoveEvent>
 #include <QTextDocument>
+#include <QXmlStreamReader>
+#include <QShortcut>
+#include <QKeySequence>
+#include <QRegularExpression>
+#include <QMenu>
 #include <QFontMetrics>
 #include <QProcess>
 #include <sys/stat.h>
 #include "selection_x11_ownership.h"
 
 namespace {
+// ---- ui-quick helpers (shortcuts / translations / menus) ----
+struct TsMessage { QString source; QString translation; };
+QList<TsMessage> readPtBrTs() {
+    QList<TsMessage> out;
+    QFile file(QDir(QFileInfo(QString::fromUtf8(__FILE__)).absolutePath()).filePath(QStringLiteral("../pcmanfm/translations/pcmanfm-qt_pt_BR.ts")));
+    if(!file.open(QIODevice::ReadOnly)) return out;
+    QXmlStreamReader xml(&file);
+    TsMessage cur; bool inMessage = false;
+    while(!xml.atEnd()) {
+        xml.readNext();
+        if(xml.isStartElement()) {
+            if(xml.name() == QLatin1String("message")) { cur = TsMessage(); inMessage = true; }
+            else if(inMessage && xml.name() == QLatin1String("source")) cur.source = xml.readElementText();
+            else if(inMessage && xml.name() == QLatin1String("translation")) cur.translation = xml.readElementText(QXmlStreamReader::SkipChildElements);
+        } else if(xml.isEndElement() && xml.name() == QLatin1String("message")) { out << cur; inMessage = false; }
+    }
+    if(xml.hasError()) out.clear();   // a truncated read must not look like success
+    return out;
+}
+bool looksLikeShortcutSource(const QString& s) {
+    static const QRegularExpression re(QStringLiteral("^(?:(?:Ctrl|Alt|Shift|Meta)\\+)*(?:[A-Z0-9]|F\\d{1,2}|Up|Down|Left|Right|Home|End|PageUp|PageDown|Tab|Esc|Del|Insert|Backspace|Return|Enter|Space|Delete|Escape)$"));
+    return re.match(s).hasMatch() && (s.contains(QLatin1Char('+')) || s.startsWith(QLatin1Char('F')));
+}
+void walkMenu(QMenu* menu, const QString& where, QList<QAction*>& leaves, QStringList& problems) {
+    bool prevSeparator = true; bool any = false;
+    for(QAction* a : menu->actions()) {
+        if(!a->isVisible()) continue;
+        if(a->isSeparator()) {
+            if(prevSeparator) problems << where + QStringLiteral(": separador inicial/duplo");
+            prevSeparator = true;
+            continue;
+        }
+        prevSeparator = false; any = true;
+        if(a->menu()) walkMenu(a->menu(), where + QLatin1Char('/') + a->text(), leaves, problems);
+        else leaves << a;
+    }
+    if(any && prevSeparator) problems << where + QStringLiteral(": separador final");
+}
 template<typename Body, typename Release>
 bool checkedInputGesture(Body body, Release release) {
     const auto cleanup = qScopeGuard(release);
@@ -978,6 +1021,180 @@ private Q_SLOTS:
         QCOMPARE(model->index(0,0).data().toString(), QStringLiteral("alpha.txt"));
         search->clear();
         QTRY_COMPARE(model->rowCount(), 2);
+    }
+
+    // ---- ui-quick: atalhos, traduções e menus ----
+    void ptBrShortcutTranslationsStayPortableAndValid() {
+        const auto messages = readPtBrTs();
+        QVERIFY2(messages.size() > 470, "pt_BR .ts not read");
+        int checked = 0; QStringList bad;
+        for(const auto& m : messages) {
+            if(!looksLikeShortcutSource(m.source) || m.translation.isEmpty()) continue;
+            const QKeySequence expected(m.source, QKeySequence::PortableText);
+            if(expected.isEmpty()) continue;
+            ++checked;
+            if(QKeySequence(m.translation, QKeySequence::PortableText) != expected) bad << m.source + QStringLiteral(" -> ") + m.translation;
+        }
+        QVERIFY2(checked >= 20, "too few shortcut messages recognised");
+        QVERIFY2(bad.isEmpty(), qPrintable(bad.join(QStringLiteral(", "))));
+    }
+    void windowShortcutsAreValidAndUnique() {
+        QTemporaryDir folder; QVERIFY(folder.isValid());
+        PCManFM::MainWindow window(Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData()));
+        QHash<QString,QSet<QObject*>> byKey;
+        for(auto* a : window.findChildren<QAction*>()) for(const auto& k : a->shortcuts()) if(!k.isEmpty()) byKey[k.toString(QKeySequence::PortableText)].insert(a);
+        for(auto* sc : window.findChildren<QShortcut*>()) if(!sc->key().isEmpty()) byKey[sc->key().toString(QKeySequence::PortableText)].insert(sc);
+        QStringList dup;
+        for(auto it = byKey.cbegin(); it != byKey.cend(); ++it) if(it.value().size() > 1) {
+            QStringList who; for(auto* o : it.value()) who << (o->objectName().isEmpty() ? QString::fromLatin1(o->metaObject()->className()) : o->objectName());
+            who.sort(); dup << it.key() + QStringLiteral("=[") + who.join(QLatin1Char('|')) + QLatin1Char(']');
+        }
+        dup.sort();
+        QVERIFY2(dup.isEmpty(), qPrintable(dup.join(QStringLiteral("; "))));
+        auto* up = window.findChild<QAction*>(QStringLiteral("actionGoUp"));
+        QVERIFY(up);
+        QCOMPARE(up->shortcut(), QKeySequence(Qt::ALT | Qt::Key_Up));
+        for(const auto& key : {QStringLiteral("Alt+Left"), QStringLiteral("Alt+Right"), QStringLiteral("Ctrl+E"), QStringLiteral("F6"), QStringLiteral("Ctrl+,"), QStringLiteral("Ctrl+Shift+T"), QStringLiteral("Ctrl+L"), QStringLiteral("Alt+D"), QStringLiteral("F4"), QStringLiteral("Ctrl+F")})
+            QVERIFY2(byKey.contains(key), qPrintable(key));
+    }
+    void ctrlEFocusesLocalFilterAndF6FocusesAddress() {
+        QTemporaryDir folder; QVERIFY(folder.isValid());
+        PCManFM::MainWindow window(Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData()));
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window)); window.activateWindow();
+        QTRY_VERIFY(window.isActiveWindow());
+        auto* search = window.findChild<QLineEdit*>(QStringLiteral("explorerSearch"));
+        auto* bar = window.findChild<Fm::PathBar*>();
+        QVERIFY(search && bar);
+        window.currentPage()->folderView()->childView()->setFocus();
+        QTest::keyClick(&window, Qt::Key_E, Qt::ControlModifier);
+        QTRY_VERIFY(search->hasFocus());
+        window.currentPage()->folderView()->childView()->setFocus();
+        QVERIFY(!search->hasFocus());
+        QTest::keyClick(&window, Qt::Key_F6);
+        QTRY_VERIFY(qobject_cast<QLineEdit*>(QApplication::focusWidget()) && QApplication::focusWidget() != search && bar->isAncestorOf(QApplication::focusWidget()));
+        // Known teardown hazard: destroying the window while the path editor still has focus crashes in PathBar::closeEditor (reported, not fixed here).
+        window.currentPage()->folderView()->childView()->setFocus();
+        QTest::qWait(50);
+    }
+    void moreMenuHasNoDuplicatesNoDoubleSeparatorsAndLabelledPreferences() {
+        QTemporaryDir folder; QVERIFY(folder.isValid());
+        PCManFM::MainWindow window(Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData()));
+        auto* more = window.findChild<QToolButton*>(QStringLiteral("explorerMore"));
+        QVERIFY(more && more->menu());
+        QList<QAction*> leaves; QStringList problems;
+        walkMenu(more->menu(), QStringLiteral("Mais"), leaves, problems);
+        QSet<QAction*> seen;
+        for(auto* a : leaves) { if(seen.contains(a)) problems << QStringLiteral("duplicada: ") + a->objectName(); seen.insert(a); }
+        problems.removeDuplicates();
+        QVERIFY2(problems.isEmpty(), qPrintable(problems.join(QStringLiteral("; "))));
+        auto* prefs = window.findChild<QAction*>(QStringLiteral("actionPreferences"));
+        QVERIFY(prefs && leaves.contains(prefs));
+        QVERIFY(!prefs->text().isEmpty());
+        QCOMPARE(prefs->shortcut(), QKeySequence(Qt::CTRL | Qt::Key_Comma));
+    }
+    void ptBrTermsAreConsistent() {
+        const auto messages = readPtBrTs();
+        const QHash<QString,QString> expected{
+            {QStringLiteral("&Hidden Last"), QStringLiteral("&Ocultos por último")},
+            {QStringLiteral("By File &Size"), QStringLiteral("Por &Tamanho")},
+            {QStringLiteral("By File &Type"), QStringLiteral("Por &Tipo")},
+            {QStringLiteral("&By File Name"), QStringLiteral("Por &nome")},
+            {QStringLiteral("&Move to Trash"), QStringLiteral("&Mover para a Lixeira")},
+            {QStringLiteral("Empty Trash"), QStringLiteral("Esvaziar Lixeira")}};
+        QStringList bad; QSet<QString> found;
+        for(const auto& m : messages) {
+            if(expected.contains(m.source)) { found.insert(m.source); if(m.translation != expected.value(m.source)) bad << m.source + QStringLiteral(" -> ") + m.translation; }
+            if(m.translation.contains(QStringLiteral("Por Arquivo")) || (m.translation.contains(QStringLiteral("Mostrar")) && m.translation.contains(QStringLiteral("ocultos"), Qt::CaseInsensitive)))
+                bad << m.source + QStringLiteral(" -> ") + m.translation;
+            if(m.source.contains(QStringLiteral("Trash")) && m.translation.contains(QStringLiteral("lixeira"))) bad << m.source + QStringLiteral(" -> ") + m.translation;
+        }
+        QCOMPARE(found.size(), expected.size());
+        QVERIFY2(bad.isEmpty(), qPrintable(bad.join(QStringLiteral("; "))));
+    }
+    void deleteButtonLabelFollowsUseTrashSetting() {
+        QTemporaryDir folder; QVERIFY(folder.isValid());
+        auto& settings = static_cast<PCManFM::Application*>(qApp)->settings();
+        const bool old = settings.useTrash();
+        const auto restore = qScopeGuard([&] { settings.setUseTrash(old); });
+        settings.setUseTrash(true);
+        PCManFM::MainWindow window(Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData()));
+        auto* button = window.findChild<QToolButton*>(QStringLiteral("explorerDelete"));
+        QVERIFY(button);
+        QCOMPARE(button->toolTip(), QStringLiteral("Mover para a Lixeira"));
+        QCOMPARE(button->accessibleName(), QStringLiteral("Mover para a Lixeira"));
+        settings.setUseTrash(false);
+        window.updateFromSettings(settings);
+        QCOMPARE(button->toolTip(), QStringLiteral("Excluir"));
+        QCOMPARE(button->accessibleName(), QStringLiteral("Excluir"));
+        settings.setUseTrash(true);
+        window.updateFromSettings(settings);
+        QCOMPARE(button->toolTip(), QStringLiteral("Mover para a Lixeira"));
+    }
+    void shiftDeleteOnlyActsWhenDeleteActionIsEnabled() {
+        auto& settings = static_cast<PCManFM::Application*>(qApp)->settings();
+        const bool oldConfirm = settings.confirmDelete();
+        const auto restoreSettings = qScopeGuard([&] { settings.setConfirmDelete(oldConfirm); });
+        settings.setConfirmDelete(true);
+        QTemporaryDir root; QVERIFY(root.isValid());
+        const QString locked = root.filePath(QStringLiteral("locked")), open = root.filePath(QStringLiteral("open"));
+        QVERIFY(QDir().mkpath(locked) && QDir().mkpath(open));
+        for(const auto& dir : {locked, open}) { QFile f(dir + QStringLiteral("/a.txt")); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("x"); }
+        const auto unlock = qScopeGuard([&] { QFile::setPermissions(locked, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner); });
+        QVERIFY(QFile::setPermissions(locked, QFile::ReadOwner | QFile::ExeOwner));
+        // Returns whether a modal confirmation appeared after Shift+Del with the single file selected.
+        const auto shiftDelete = [&](const QString& dir, bool& deleteEnabled) {
+            PCManFM::MainWindow window(Fm::FilePath::fromLocalPath(dir.toUtf8().constData()));
+            window.show(); window.activateWindow();
+            if(!QTest::qWaitForWindowExposed(&window)) return false;
+            auto* model = window.currentPage()->folderView()->model();
+            for(int i = 0; i < 100 && model->rowCount() < 1; ++i) QTest::qWait(20);
+            window.currentPage()->selectAll();
+            QTest::qWait(450);   // libfm-qt coalesces selection events for 200 ms
+            deleteEnabled = window.findChild<QAction*>(QStringLiteral("actionDelete"))->isEnabled();
+            bool modalSeen = false;
+            QTimer::singleShot(500, [&] { if(auto* w = QApplication::activeModalWidget()) { modalSeen = true; w->close(); } });
+            QTest::keyClick(&window, Qt::Key_Delete, Qt::ShiftModifier);
+            QTest::qWait(700);
+            if(auto* w = QApplication::activeModalWidget()) w->close();
+            return modalSeen;
+        };
+        bool enabled = true;
+        QVERIFY(shiftDelete(open, enabled));            // control: deletable selection -> confirmation shows
+        QVERIFY(enabled);
+        QVERIFY(QFileInfo::exists(open + QStringLiteral("/a.txt")));
+        enabled = true;
+        QVERIFY(!shiftDelete(locked, enabled));
+        QVERIFY(!enabled);                               // selection is not deletable
+        QVERIFY(QFileInfo::exists(locked + QStringLiteral("/a.txt")));
+    }
+    void closedTabsCanBeReopenedWithCtrlShiftTLimitedToTen() {
+        QTemporaryDir root; QVERIFY(root.isValid());
+        QStringList dirs;
+        for(int i = 0; i < 12; ++i) { dirs << root.filePath(QStringLiteral("d%1").arg(i)); QVERIFY(QDir().mkpath(dirs.last())); }
+        PCManFM::MainWindow window(Fm::FilePath::fromLocalPath(root.path().toUtf8().constData()));
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window)); window.activateWindow();
+        QTRY_VERIFY(window.isActiveWindow());
+        auto* tabs = window.findChild<QTabBar*>(QStringLiteral("explorerTabs"));
+        auto* close = window.findChild<QAction*>(QStringLiteral("actionCloseTab"));
+        QVERIFY(tabs && close);
+        const auto currentPath = [&] { return QString::fromUtf8(window.currentPage()->path().toString().get()); };
+        for(const auto& d : dirs) window.addTab(Fm::FilePath::fromLocalPath(d.toUtf8().constData()));
+        QCOMPARE(tabs->count(), 13);
+        QStringList closed;
+        for(int i = 0; i < 12; ++i) { closed << currentPath(); close->trigger(); QTRY_COMPARE(tabs->count(), 12 - i); }
+        QCOMPARE(tabs->count(), 1);
+        QStringList reopened;
+        for(int i = 0; i < 15; ++i) {
+            const int before = tabs->count();
+            QTest::keyClick(&window, Qt::Key_T, Qt::ControlModifier | Qt::ShiftModifier);
+            QTest::qWait(30);
+            if(tabs->count() == before) break;
+            reopened << currentPath();
+        }
+        QStringList expected; for(int i = closed.size() - 1; i >= 2; --i) expected << closed.at(i);
+        QCOMPARE(reopened.size(), 10);
+        QCOMPARE(reopened, expected);
+        QCOMPARE(tabs->count(), 11);
     }
     void unsupportedVolumeAutomationIsNotOffered() {
         PCManFM::PreferencesDialog preferences;

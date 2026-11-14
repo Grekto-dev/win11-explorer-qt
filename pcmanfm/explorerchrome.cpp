@@ -20,6 +20,7 @@
 #include <QComboBox>
 #include <QMenuBar>
 #include <QSignalBlocker>
+#include <QShortcut>
 #include <libfm-qt6/pathbar.h>
 
 namespace PCManFM {
@@ -223,6 +224,15 @@ void MainWindow::updateExplorerSearch() {
     }
 }
 
+void MainWindow::updateExplorerDeleteLabel() {
+    const bool trash = static_cast<Application*>(qApp)->settings().useTrash();
+    const QString label = trash ? tr("Mover para a Lixeira") : tr("Excluir");
+    ui.actionDelete->setToolTip(label);
+    if(auto* button = findChild<QToolButton*>(QStringLiteral("explorerDelete"))) {
+        button->setToolTip(label); button->setAccessibleName(label);
+    }
+}
+
 void MainWindow::setupExplorerChrome() {
     setWindowFlag(Qt::FramelessWindowHint); setContentsMargins(1,1,1,1); setMinimumSize(760,420);
     setFont(QFont(QStringLiteral("Noto Sans"),9)); setWindowIcon(icon("folder"));
@@ -267,6 +277,9 @@ QMenu::separator { height:1px; background:#dedede; margin:4px; }
 QToolTip { background:#fafafa; color:#202020; border:1px solid #d8d8d8; padding:6px; }
 )CSS"));
     new FrameController(this);
+    // Windows-style: Ctrl+E reaches the folder filter, F6 the address bar (Ctrl+L/Alt+D/F4/Ctrl+F stay upstream).
+    connect(new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_E),this), &QShortcut::activated, this, [this] { explorerSearch_->setFocus(); explorerSearch_->selectAll(); });
+    connect(new QShortcut(QKeySequence(Qt::Key_F6),this), &QShortcut::activated, this, &MainWindow::focusPathEntry);
     ui.menubar->hide(); ui.actionMenu_bar->setVisible(false);
     ui.toolBar->clear(); ui.toolBar->setObjectName(QStringLiteral("explorerNavigation"));
     ui.toolBar->setFixedHeight(49); ui.toolBar->setIconSize(QSize(18,18)); ui.toolBar->setToolButtonStyle(Qt::ToolButtonIconOnly);
@@ -312,8 +325,10 @@ QToolTip { background:#fafafa; color:#202020; border:1px solid #d8d8d8; padding:
     };
     menuButton(ui.menuCreateNew,"explorerNew","new",tr("Novo")); explorerCommands_->addSeparator();
     command(ui.actionCut,"explorerCut","cut",tr("Recortar")); command(ui.actionCopy,"explorerCopy","copy",tr("Copiar")); command(ui.actionPaste,"explorerPaste","paste",tr("Colar"));
-    command(ui.actionRename,"explorerRename","rename",tr("Renomear")); command(ui.actionDelete,"explorerDelete","delete",tr("Mover para a lixeira")); explorerCommands_->addSeparator();
-    menuButton(ui.menuSorting,"explorerSort","sort",tr("Classificar")); ui.menu_View_2->addSeparator(); ui.menu_View_2->addAction(ui.actionShowHidden); ui.menu_View_2->addAction(ui.actionShowThumbnails);
+    command(ui.actionRename,"explorerRename","rename",tr("Renomear")); command(ui.actionDelete,"explorerDelete","delete",tr("Mover para a Lixeira")); updateExplorerDeleteLabel(); explorerCommands_->addSeparator();
+    menuButton(ui.menuSorting,"explorerSort","sort",tr("Classificar")); // Hidden/thumbnails live in the Exibir submenu (shared with the toolbar button); drop the duplicates from the parent View menu.
+    ui.menu_View_2->addAction(ui.actionShowHidden); ui.menu_View_2->addAction(ui.actionShowThumbnails);
+    ui.menu_View->removeAction(ui.actionShowHidden); ui.menu_View->removeAction(ui.actionShowThumbnails);
     menuButton(ui.menu_View_2,"explorerView","view",tr("Visualizar"));
     auto* more = menuButton(ui.actionMenu->menu(),"explorerMore","more",tr("Mais")); more->setToolButtonStyle(Qt::ToolButtonIconOnly); more->setFixedWidth(40);
     auto* spacer = new QWidget(explorerCommands_); spacer->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Preferred); explorerCommands_->addWidget(spacer);

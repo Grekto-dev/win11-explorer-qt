@@ -347,8 +347,16 @@ MainWindow::MainWindow(Fm::FilePath path):
         connect(shortcut, &QShortcut::activated, this, &MainWindow::onShortcutJumpToTab);
     }
 
+    // Shift+Del must honour the same enabled state as the Delete action (deletable selection).
     shortcut = new QShortcut(QKeySequence(Qt::SHIFT | Qt::Key_Delete), this);
-    connect(shortcut, &QShortcut::activated, this, &MainWindow::on_actionDelete_triggered);
+    connect(shortcut, &QShortcut::activated, this, [this] {
+        if(ui.actionDelete->isEnabled()) {
+            on_actionDelete_triggered();
+        }
+    });
+
+    shortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_T), this);
+    connect(shortcut, &QShortcut::activated, this, &MainWindow::reopenClosedTab);
 
     // in addition to F3, for convenience
     shortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_F), this);
@@ -1358,9 +1366,23 @@ void MainWindow::onFolderUnmounted() {
     }
 }
 
+void MainWindow::reopenClosedTab() {
+    if(!closedTabs_.isEmpty()) {
+        addTab(closedTabs_.takeLast());
+    }
+}
+
 void MainWindow::closeTab(int index, ViewFrame* viewFrame) {
     QWidget* page = viewFrame->getStackedWidget()->widget(index);
     if(page) {
+        // remember the path (at most 10 entries) so Ctrl+Shift+T can reopen it
+        const Fm::FilePath closedPath = static_cast<TabPage*>(page)->path();
+        if(closedPath) {
+            closedTabs_.append(closedPath);
+            while(closedTabs_.size() > 10) {
+                closedTabs_.removeFirst();
+            }
+        }
         viewFrame->getStackedWidget()->removeWidget(page); // this does not delete the page widget
         delete page;
         // NOTE: we do not remove the tab here.
@@ -1810,7 +1832,9 @@ void MainWindow::loadBookmarksMenu() {
         ui.menu_Bookmarks->insertAction(before, action);
     }
 
-    ui.menu_Bookmarks->insertSeparator(before);
+    // the separator only makes sense when there is at least one bookmark above it
+    QAction* separator = ui.menu_Bookmarks->insertSeparator(before);
+    separator->setVisible(!bookmarks_->items().empty());
 }
 
 void MainWindow::onBookmarksChanged() {
@@ -2216,6 +2240,7 @@ void MainWindow::updateFromSettings(Settings& settings) {
     // menu
     ui.actionDelete->setText(settings.useTrash() ? tr("&Move to Trash") : tr("&Delete"));
     ui.actionDelete->setIcon(settings.useTrash() ? QIcon::fromTheme(QStringLiteral("user-trash")) : QIcon::fromTheme(QStringLiteral("edit-delete")));
+    updateExplorerDeleteLabel();
 
     // side pane
     ui.sidePane->setIconSize(QSize(settings.sidePaneIconSize(), settings.sidePaneIconSize()));
