@@ -97,6 +97,28 @@ class RunningInstance(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertLess(elapsed, 5)
 
+    @staticmethod
+    def menu_cached_present():
+        return any(os.access(c, os.X_OK) for c in (
+            '/usr/lib/menu-cache/menu-cached', '/usr/lib/x86_64-linux-gnu/menu-cache/menu-cached',
+            '/usr/lib/aarch64-linux-gnu/menu-cache/menu-cached', '/usr/lib64/menu-cache/menu-cached',
+            '/usr/libexec/menu-cache/menu-cached'))
+
+    def test_second_instance_refuses_menu_paths_without_menu_cached(self):
+        if self.menu_cached_present():
+            self.skipTest('menu-cached is installed: menu:// is usable here')
+        with tempfile.TemporaryDirectory(prefix='explorer-p4-') as home:
+            env = self.start_primary(home)
+            for arg in ('menu://applications/', 'menu://applications/Utility', 'menu://applications/Utility/x.desktop'):
+                with self.subTest(arg=arg):
+                    result, elapsed = self.second(env, [arg])
+                    self.assertLess(elapsed, 5, result.stderr)
+                    self.assertNotEqual(result.returncode, 0, result.stderr)
+                    self.assertIn('menu:', result.stderr)
+            # the primary survived (a libmenu-cache abort would have taken it down)
+            result, _ = self.second(env, [home])
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_without_session_bus_it_never_exits_silently(self):
         with tempfile.TemporaryDirectory(prefix='explorer-p4-') as home:
             env = self.make_env(home, DBUS_SESSION_BUS_ADDRESS='unix:path=' + home + '/no-bus')

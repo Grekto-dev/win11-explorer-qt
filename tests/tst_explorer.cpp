@@ -121,6 +121,21 @@ QColor barPixel(QWidget* progress, int xFraction256) {
     const QImage img = progress->grab().toImage();
     return QColor(img.pixel(img.width() * xFraction256 / 256, img.height() / 2));
 }
+
+// Review 3: the address editors (toolbar PathEdit and the breadcrumb's inline editor) run
+// a completer job that enumerates the typed prefix in a thread; for "menu:" that reaches
+// menu_cache_lookup_sync, which aborts the process when menu-cached is missing.
+void focusAddressEditor(QWidget* window, Fm::PathEdit* edit) {
+    window->activateWindow();
+    QTest::qWaitForWindowActive(window);
+    edit->setFocus(Qt::OtherFocusReason);
+    QTRY_VERIFY2_WITH_TIMEOUT(edit->hasFocus(), "the address editor must own the keyboard focus", 3000);
+}
+QMessageBox* findChooserUnavailableBox() {
+    for(QWidget* w : QApplication::topLevelWidgets())
+        if(w->isVisible() && w->objectName() == QLatin1String("explorerChooserUnavailableMessage")) return qobject_cast<QMessageBox*>(w);
+    return nullptr;
+}
 }  // namespace
 
 class ExplorerTest : public QObject {
@@ -1524,7 +1539,8 @@ private Q_SLOTS:
         const QStringList out = PCManFM::Application::validateCliPaths(
             {QStringLiteral("$P4_ONCE_VAR"), QStringLiteral("/nonexistent/p4-zz")}, QDir::currentPath(), &missing);
         QVERIFY(missing);
-        QCOMPARE(out, QStringList{QStringLiteral("$P4_ONCE_VAR")});
+        // review 3: the caller expands once and forwards the ABSOLUTE path (no re-expansion later)
+        QCOMPARE(out, QStringList{folder.path()});
     }
     // Review 2 (low): blank input in the breadcrumb editor is consumed, not navigated to.
     void blankInputInTheBreadcrumbEditorIsConsumed() {
@@ -1547,6 +1563,156 @@ private Q_SLOTS:
         QVERIFY(window->currentPage()->path() == root);
         for(QWidget* w : QApplication::topLevelWidgets())
             QVERIFY2(!(w->isVisible() && qobject_cast<QMessageBox*>(w)), "no error dialog for blank input");
+    }
+    // Review 3 (high): typing/pasting/Tab-completing "menu://applications/" in an address editor
+    // used to enumerate it in the completer thread (-> menu_cache_lookup_sync -> abort).
+    void addressEditorsNeverEnumerateMenuWhenChooserUnavailable_data() {
+        QTest::addColumn<bool>("breadcrumb");
+        QTest::newRow("breadcrumb inline editor") << true;
+        QTest::newRow("toolbar path entry") << false;
+    }
+    void addressEditorsNeverEnumerateMenuWhenChooserUnavailable() {
+        QFETCH(bool, breadcrumb);
+        const auto restore = qScopeGuard([] { PCManFM::Launcher::setAppChooserAvailableForTest(-1); });
+        PCManFM::Launcher::setAppChooserAvailableForTest(0);
+        auto& settings = static_cast<PCManFM::Application*>(qApp)->settings();
+        const bool oldButtons = settings.pathBarButtons();
+        const auto restoreButtons = qScopeGuard([&] { settings.setPathBarButtons(oldButtons); });
+        settings.setPathBarButtons(breadcrumb);
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        QVERIFY(QDir(folder.path()).mkdir(QStringLiteral("sub-p4r3")));
+        auto root = Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData());
+        QScopedPointer<PCManFM::MainWindow> window(new PCManFM::MainWindow(root));
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window.data()));
+        QTRY_VERIFY(window->currentPage()->path() == root);
+        Fm::PathEdit* edit = nullptr;
+        if(breadcrumb) {
+            auto* bar = window->findChild<Fm::PathBar*>();
+            QVERIFY(bar);
+            QMetaObject::invokeMethod(bar, "openEditor");
+            QTRY_VERIFY((edit = bar->findChild<Fm::PathEdit*>()) != nullptr);
+        }
+        else {
+            edit = window->findChild<Fm::PathEdit*>();
+            QVERIFY(edit);
+        }
+        QTest::qWait(100);
+        focusAddressEditor(window.data(), edit);
+        if(QTest::currentTestFailed()) return;
+        // sanity: the completer of an ordinary address still works (the guard is not a stub)
+        edit->clear();
+        QTest::keyClicks(edit, folder.path() + QLatin1Char('/'));
+        QTRY_VERIFY_WITH_TIMEOUT(edit->completer() && edit->completer()->model()->rowCount() > 0, 3000);
+        // typed one key at a time, as pasted text, and with Tab
+        edit->clear();
+        QTest::keyClicks(edit, QStringLiteral("menu://applications/"));
+        QTest::keyClick(edit, Qt::Key_Tab);
+        edit->clear();
+        edit->setText(QStringLiteral("menu://applications/"));
+        QTest::keyClick(edit, Qt::Key_Tab);
+        edit->setText(QStringLiteral("MENU://applications/Utility/"));
+        QTest::keyClick(edit, Qt::Key_Tab);
+        QTest::qWait(800); // the enumeration runs in a worker thread: let it (not) happen
+        QVERIFY(window->currentPage()->path() == root);
+    }
+    // Review 3 (medium-high): a CLI/D-Bus argument below menu://applications/ reached
+    // FileInfoJob -> query_info -> menu_cache_lookup_sync before any chdir.
+    void commandLineRefusesMenuPathsOfAnyDepthWhenChooserUnavailable() {
+        const auto restore = qScopeGuard([] { PCManFM::Launcher::setAppChooserAvailableForTest(-1); });
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        const QStringList menuArgs = {QStringLiteral("menu://applications/"), QStringLiteral("menu://applications/Utility"),
+                                      QStringLiteral("menu:///applications/Utility/x.desktop"), QStringLiteral("MENU://applications/X")};
+        PCManFM::Launcher::setAppChooserAvailableForTest(0);
+        for(const QString& arg : menuArgs) {
+            bool rejected = false;
+            const QStringList out = PCManFM::Application::validateCliPaths({arg, folder.path()}, QDir::currentPath(), &rejected);
+            QVERIFY2(rejected, qPrintable(arg));
+            QCOMPARE(out, QStringList{folder.path()});
+        }
+        // with a working chooser/menu-cache nothing is refused
+        PCManFM::Launcher::setAppChooserAvailableForTest(1);
+        bool rejected = false;
+        const QStringList out = PCManFM::Application::validateCliPaths({QStringLiteral("menu://applications/Utility")}, QDir::currentPath(), &rejected);
+        QVERIFY(!rejected);
+        QCOMPARE(out.size(), 1);
+    }
+    void launcherAndLaunchFilesRefuseMenuChildrenWhenChooserUnavailable() {
+        const auto restore = qScopeGuard([] { PCManFM::Launcher::setAppChooserAvailableForTest(-1); });
+        PCManFM::Launcher::setAppChooserAvailableForTest(0);
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        auto root = Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData());
+        QScopedPointer<PCManFM::MainWindow> window(new PCManFM::MainWindow(root));
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window.data()));
+        QTRY_VERIFY(window->currentPage()->path() == root);
+        // direct Launcher::launchPaths (Connect to server, MainWindow, search, ...)
+        Fm::FilePathList paths;
+        paths.push_back(Fm::FilePath::fromUri("menu://applications/Utility"));
+        paths.push_back(Fm::FilePath::fromUri("menu://applications/Utility/x.desktop"));
+        PCManFM::Launcher(window.data()).launchPaths(nullptr, paths);
+        // the CLI / D-Bus entry (Application::launchFiles -> doLaunchFiles)
+        static_cast<PCManFM::Application*>(qApp)->launchFiles(QDir::currentPath(),
+            {QStringLiteral("menu://applications/Utility"), QStringLiteral("menu://applications/Utility/x.desktop")}, false, false);
+        QMessageBox* box = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((box = findChooserUnavailableBox()) != nullptr, 3000);
+        QCOMPARE(box->textFormat(), Qt::PlainText);
+        QVERIFY(box->windowModality() == Qt::NonModal);
+        QTest::qWait(800); // FileInfoJob runs in a thread: it must not have been started at all
+        QVERIFY(window->currentPage()->path() == root);
+        box->close();
+    }
+    // Review 3 (low): "$VAR" is expanded once, by the caller; the primary instance does not
+    // expand again with its own environment (a CLI argument is forwarded as an absolute path).
+    void commandLineForwardsAbsolutePathsSoThePrimaryDoesNotReexpand() {
+        QTemporaryDir callerDir, serverDir;
+        QVERIFY(callerDir.isValid() && serverDir.isValid());
+        const auto unset = qScopeGuard([] { qunsetenv("P4R3_VAR"); });
+        qputenv("P4R3_VAR", callerDir.path().toUtf8());
+        // the caller (second instance) validates and forwards...
+        const QStringList forwarded = PCManFM::Application::validateCliPaths(
+            {QStringLiteral("$P4R3_VAR"), QStringLiteral("~")}, QDir::currentPath());
+        QCOMPARE(forwarded, (QStringList{callerDir.path(), QDir::homePath()}));
+        for(const QString& f : forwarded) QVERIFY(QDir::isAbsolutePath(f));
+        // ...and the primary (whose environment has another value) must open what was forwarded
+        qputenv("P4R3_VAR", serverDir.path().toUtf8());
+        static_cast<PCManFM::Application*>(qApp)->launchFiles(QDir::currentPath(), forwarded.mid(0, 1), true, false);
+        PCManFM::MainWindow* opened = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((opened = [&]() -> PCManFM::MainWindow* {
+            for(QWidget* w : QApplication::topLevelWidgets())
+                if(auto* mw = qobject_cast<PCManFM::MainWindow*>(w))
+                    if(mw->currentPage() && mw->currentPage()->pathName() == callerDir.path()) return mw;
+            return nullptr;
+        }()) != nullptr, 4000);
+        for(QWidget* w : QApplication::topLevelWidgets())
+            if(auto* mw = qobject_cast<PCManFM::MainWindow*>(w))
+                QVERIFY2(!mw->currentPage() || mw->currentPage()->pathName() != serverDir.path(), "the primary must not re-expand $VAR");
+        opened->close();
+    }
+    // Review 3 (B1b): unmounting the folder the tab shows invalidates deferred navigation state
+    // (the nested op->wait() of onFolderError compares this generation). The wait itself needs a
+    // real GVFS mount that answers NOT_MOUNTED and cannot be driven in a unit test.
+    void unmountOfTheCurrentFolderBumpsTheNavigationGeneration() {
+        auto& settings = static_cast<PCManFM::Application*>(qApp)->settings();
+        const bool oldClose = settings.closeOnUnmount();
+        const auto restore = qScopeGuard([&] { settings.setCloseOnUnmount(oldClose); });
+        settings.setCloseOnUnmount(false);
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        auto root = Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData());
+        QScopedPointer<PCManFM::MainWindow> window(new PCManFM::MainWindow(root));
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window.data()));
+        QTRY_VERIFY(window->currentPage()->path() == root);
+        auto* page = window->currentPage();
+        auto folderPtr = page->folder();
+        QVERIFY(folderPtr);
+        const quint64 before = page->navGeneration();
+        Q_EMIT folderPtr->unmount();
+        QVERIFY2(page->navGeneration() > before, "unmounting the shown folder must invalidate the navigation generation");
     }
     void errorBoxesNeverInterpretRichText() {
         QMessageBox* box = PCManFM::Application::makeErrorBox(nullptr, QStringLiteral("Error"), QStringLiteral("<a href=\"x\">name</a>"));

@@ -126,6 +126,12 @@ public:
 
     void chdir(Fm::FilePath newPath, bool addHistory = true);
 
+    // Navigation generation: bumped by every real chdir() and when the current folder is
+    // unmounted; deferred work (C05 restore, B1b mount wait) compares it to detect staleness.
+    quint64 navGeneration() const {
+        return navGeneration_;
+    }
+
     Fm::FolderView::ViewMode viewMode() {
         return folderSettings_.viewMode();
     }
