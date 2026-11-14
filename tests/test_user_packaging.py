@@ -493,6 +493,55 @@ class LicenseDocs(unittest.TestCase):
             self.assertEqual(sorted(pkg.missing_docs(Path(tmp))), sorted(pkg.REQUIRED_DOCS))
 
 
+# icu4c/LICENSE of tag release-73-2 (https://github.com/unicode-org/icu), fetched and pinned.
+ICU_73_2_LICENSE_SHA256 = 'f3005e195ff74d8812cc1f182a1c446fab678d70a10e3dada497585befee5416'
+
+
+class IcuLicenseAndCopyright(unittest.TestCase):
+    def test_icu_license_is_the_pinned_upstream_73_2_text(self):
+        import hashlib
+        data = (ROOT / 'packaging/licenses/LICENSE.ICU').read_bytes()
+        self.assertEqual(hashlib.sha256(data).hexdigest(), ICU_73_2_LICENSE_SHA256)
+        self.assertEqual(load('pkg_licenses').ICU_LICENSE_SHA256, ICU_73_2_LICENSE_SHA256)
+        text = data.decode('utf-8')
+        for needle in ('Copyright \u00a9 1991-2023 Unicode, Inc.', 'Lao Word Break Dictionary Data',
+                       'Burmese Word Break Dictionary Data', 'Google double-conversion', 'International Business Machines'):
+            self.assertIn(needle, text)
+        self.assertNotIn('debian/*', text, 'the Debian packager stanza is not part of the ICU license')
+
+    def test_installer_refuses_a_license_text_that_is_not_the_pinned_one(self):
+        pkg = load('pkg_licenses')
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / 'repo'
+            for rel in ('LICENSE', 'patches/libfm-qt/LICENSE.LGPL-2.1', 'packaging/THIRD_PARTY_NOTICES.md'):
+                (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / rel, repo / rel)
+            (repo / 'packaging/licenses').mkdir(parents=True)
+            (repo / 'packaging/licenses/LICENSE.ICU').write_text('Copyright 1991-2022 the Debian libicu74 copyright file ' * 20)
+            with self.assertRaises(SystemExit):
+                pkg.install_license_docs(Path(tmp) / 'doc', repo, Path(tmp) / 'qt', menu_cache_copyright=None)
+
+    def stanzas(self):
+        text = (ROOT / 'packaging/debian-copyright').read_text()
+        return [dict(re.findall(r'(?m)^([A-Za-z-]+): ?(.*)$', st)) for st in re.split(r'\n\s*\n', text.strip())]
+
+    def test_debian_copyright_has_catch_all_and_standalone_license_stanzas(self):
+        st = self.stanzas()
+        self.assertIn('*', [x.get('Files', '').split()[0] for x in st if 'Files' in x], "needs a 'Files: *' stanza")
+        defined = {x['License'].splitlines()[0].strip() for x in st if 'Files' not in x and 'License' in x}
+        used = set()
+        for x in st:
+            if 'Files' in x:
+                used |= {n.strip() for n in re.split(r'\band\b', x['License'].splitlines()[0])}
+        self.assertEqual(sorted(used - defined), [], 'licenses used in Files stanzas without a standalone License stanza')
+
+    def test_notices_do_not_claim_unmodified_binaries(self):
+        for f in ('packaging/THIRD_PARTY_NOTICES.md', 'packaging/debian-copyright'):
+            text = (ROOT / f).read_text()
+            self.assertNotIn('unmodified', text, f)
+            self.assertIn('RPATH', text, f)
+
+
 def apt_known(name):
     out = subprocess.run(['apt-cache', 'policy', name], text=True, capture_output=True).stdout
     return bool(re.search(r'(?m)^\s+Candidato: (?!\(nenhum\))\S|^\s+Candidate: (?!\(none\))\S', out))

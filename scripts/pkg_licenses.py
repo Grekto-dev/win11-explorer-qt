@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 """License documents that must accompany every redistributed prefix / .deb."""
+import hashlib
 import shutil
 import sys
 from pathlib import Path
 
 REQUIRED_DOCS = ['LICENSE', 'LICENSE.libfm-qt.LGPL-2.1', 'LICENSE.Qt-LGPL-3.0', 'LICENSE.Qt-GPL-3.0',
                  'LICENSE.ICU', 'THIRD_PARTY_NOTICES.md']
+# icu4c/LICENSE of tag release-73-2 (unicode-org/icu): full ICU licensing incl. Lao/Burmese and double-conversion notices.
+ICU_LICENSE_SHA256 = 'f3005e195ff74d8812cc1f182a1c446fab678d70a10e3dada497585befee5416'
 COMMON = Path('/usr/share/common-licenses')
 
 
@@ -42,6 +45,9 @@ def install_license_docs(dest, repo, qt_root, menu_cache_copyright=None, common_
     for name, src in sources.items():
         if src is None:
             die(f'cannot find the source of required license document {name} (looked in the repo, Qt SDK, {common})')
+        if name == 'LICENSE.ICU' and hashlib.sha256(src.read_bytes()).hexdigest() != ICU_LICENSE_SHA256:
+            die(f'{src} is not the pinned ICU 73.2 license text (sha256 {ICU_LICENSE_SHA256}); '
+                'fetch icu4c/LICENSE from tag release-73-2')
         shutil.copy2(src, dest / name)
     if menu_cache_copyright and Path(menu_cache_copyright).is_file():
         shutil.copy2(menu_cache_copyright, dest / 'copyright.libmenu-cache3')
