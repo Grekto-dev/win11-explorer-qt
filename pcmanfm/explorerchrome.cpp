@@ -37,7 +37,7 @@ public:
     void paint(QPainter* p, const QRect& rect, QIcon::Mode mode, QIcon::State) override {
         p->save(); p->setRenderHint(QPainter::Antialiasing);
         p->translate(rect.x(), rect.y()); p->scale(rect.width()/24.0,rect.height()/24.0);
-        const QColor ink = mode == QIcon::Disabled ? QColor(160,160,160) : QColor(45,45,45);
+        const QColor ink = mode == QIcon::Disabled ? QColor(160,160,160) : (ExplorerAnimation::darkMode() ? QColor(235,235,235) : QColor(45,45,45));
         p->setPen(QPen(ink,1.35,Qt::SolidLine,Qt::RoundCap,Qt::RoundJoin)); p->setBrush(Qt::NoBrush);
         auto line = [p](qreal a,qreal b,qreal c,qreal d) { p->drawLine(QPointF(a,b),QPointF(c,d)); };
         if(name_ == QLatin1String("back") || name_ == QLatin1String("forward")) {
@@ -236,7 +236,7 @@ void MainWindow::updateExplorerDeleteLabel() {
 void MainWindow::setupExplorerChrome() {
     setWindowFlag(Qt::FramelessWindowHint); setContentsMargins(1,1,1,1); setMinimumSize(760,420);
     setFont(QFont(QStringLiteral("Noto Sans"),9)); setWindowIcon(icon("folder"));
-    setStyleSheet(QStringLiteral(R"CSS(
+    setStyleSheet(ExplorerAnimation::themed(QStringLiteral(R"CSS(
 QMainWindow#MainWindow { background:#f8f8f8; border:1px solid #cfcfcf; }
 QWidget { color:#202020; }
 QToolBar { border:0; spacing:4px; background:#f8f8f8; }
@@ -275,7 +275,7 @@ QMenu::item:selected { background:#e9e9e9; }
 QMenu::item:disabled { color:#a0a0a0; }
 QMenu::separator { height:1px; background:#dedede; margin:4px; }
 QToolTip { background:#fafafa; color:#202020; border:1px solid #d8d8d8; padding:6px; }
-)CSS"));
+)CSS")));
     new FrameController(this);
     // Windows-style: Ctrl+E reaches the folder filter, F6 the address bar (Ctrl+L/Alt+D/F4/Ctrl+F stay upstream).
     connect(new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_E),this), &QShortcut::activated, this, [this] { explorerSearch_->setFocus(); explorerSearch_->selectAll(); });

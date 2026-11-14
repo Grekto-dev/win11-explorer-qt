@@ -5,6 +5,7 @@
 #include "tabpage.h"
 #include "preferencesdialog.h"
 #include "explorericons.h"
+#include "exploreranimation.h"
 #include "explorertransferdialog.h"
 #include <fileoperation.h>
 #include <QMessageBox>
@@ -1195,6 +1196,41 @@ private Q_SLOTS:
         QCOMPARE(reopened.size(), 10);
         QCOMPARE(reopened, expected);
         QCOMPARE(tabs->count(), 11);
+    }
+    void darkSystemPaletteGivesLegibleDarkChromeWhileLightStaysMeasured() {
+        QTemporaryDir folder; QVERIFY(folder.isValid());
+        const QPalette original = QApplication::palette();
+        const auto restore = qScopeGuard([&] { QApplication::setPalette(original); });
+        const auto lightness = [](const QString& css, const QString& selector, const QString& property) {
+            const QRegularExpression re(QRegularExpression::escape(selector) + QStringLiteral("\\s*\\{[^}]*?\\b") + property + QStringLiteral(":\\s*(#[0-9a-fA-F]{6}|white)"));
+            const auto m = re.match(css);
+            return m.hasMatch() ? QColor(m.captured(1)).lightness() : -1;
+        };
+        const auto inspect = [&](int& viewBackground, int& textL, int& viewBgL) {
+            PCManFM::MainWindow window(Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData()));
+            window.show(); if(!QTest::qWaitForWindowExposed(&window)) return false;
+            const QImage img = window.currentPage()->folderView()->childView()->viewport()->grab().toImage();
+            viewBackground = QColor(img.pixel(2, 2)).lightness();
+            textL = lightness(window.styleSheet(), QStringLiteral("QWidget"), QStringLiteral("color"));
+            viewBgL = lightness(window.styleSheet(), QStringLiteral("QAbstractItemView"), QStringLiteral("background"));
+            return true;
+        };
+        int bg = 0, text = 0, viewBg = 0;
+        QVERIFY(inspect(bg, text, viewBg));
+        QCOMPARE(bg, 255);                       // measured light chrome unchanged: white list area
+        QCOMPARE(text, QColor(0x20,0x20,0x20).lightness());
+        QPalette dark;
+        dark.setColor(QPalette::Window, QColor(0x20,0x20,0x20)); dark.setColor(QPalette::WindowText, QColor(0xf0,0xf0,0xf0));
+        dark.setColor(QPalette::Base, QColor(0x2b,0x2b,0x2b)); dark.setColor(QPalette::Text, QColor(0xf0,0xf0,0xf0));
+        QApplication::setPalette(dark);
+        QVERIFY(PCManFM::ExplorerAnimation::darkMode());
+        QVERIFY(inspect(bg, text, viewBg));
+        QVERIFY2(bg < 90, qPrintable(QString::number(bg)));
+        QVERIFY2(text >= 0 && viewBg >= 0 && text - viewBg > 100, qPrintable(QStringLiteral("text %1 / view %2").arg(text).arg(viewBg)));
+        // Menus and buttons styled through ExplorerAnimation follow the same scheme.
+        const QString menu = PCManFM::ExplorerAnimation::menuStyleSheet();
+        QVERIFY2(!menu.contains(QStringLiteral("background:#f9f9f9")), qPrintable(menu));
+        QVERIFY(lightness(menu, QStringLiteral("QMenu"), QStringLiteral("color")) - lightness(menu, QStringLiteral("QMenu"), QStringLiteral("background")) > 100);
     }
     void unsupportedVolumeAutomationIsNotOffered() {
         PCManFM::PreferencesDialog preferences;
