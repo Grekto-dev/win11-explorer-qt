@@ -43,7 +43,9 @@ public:
     bool attachLate();
     // The owner must call immediately before runAsync(); Fm::Job exposes no started signal.
     bool markStarted();
-    void cancel();
+    // True when a cancellation is in effect after the call (accepted now, or already requested);
+    // false when there was nothing to cancel (Idle/Finished/Detached) or the backend's completion won.
+    bool cancel();
     // Supported only for one local regular-file COPY with GIO progress callbacks.
     bool supportsPause() const;
     bool pause();

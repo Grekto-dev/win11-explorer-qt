@@ -78,7 +78,7 @@ struct TransferDialogFixture {
     std::unique_ptr<ExplorerTransferDialog> dialog;
     explicit TransferDialogFixture(Fm::FileOperation::Type type = Fm::FileOperation::Copy,
                                    const QString& fileName = QStringLiteral("fixture3g.bin"),
-                                   const QString& parentDir = QString()) {
+                                   const QString& parentDir = QString(), bool setOperationDestination = false) {
         if(!parentDir.isEmpty()) QDir().mkpath(root.filePath(parentDir));
         const QString src = parentDir.isEmpty() ? root.filePath(fileName) : root.filePath(parentDir + QLatin1Char('/') + fileName);
         QFile f(src);
@@ -86,6 +86,9 @@ struct TransferDialogFixture {
         QDir().mkpath(root.filePath(QStringLiteral("dst1")));
         sources.push_back(Fm::FilePath::fromLocalPath(src.toLocal8Bit().constData()));
         operation = std::make_unique<Fm::FileOperation>(type, sources);
+        // A destination makes a single-regular-file COPY job advertise cooperative pause (real capability gate).
+        if(setOperationDestination)
+            operation->setDestination(Fm::FilePath::fromLocalPath(root.filePath(QStringLiteral("dst1")).toLocal8Bit().constData()));
         dialog.reset(qobject_cast<ExplorerTransferDialog*>(createExplorerTransferDialog(operation.get())));
         if(!dialog) return;
         dialog->setSourceFiles(sources);
@@ -230,6 +233,107 @@ private Q_SLOTS:
         QVERIFY(fx.dialog->isVisible());
         QCOMPARE(fx.dialog->windowTitle(), QStringLiteral("Cancelando - 53% concluído"));
         QVERIFY(!cancel->isEnabled());
+    }
+
+    // ---- Review A: cancel must reflect what the backend really accepted (never a permanent "Cancelando") ----
+    // Controller whose job is already gone (Detached): nothing to cancel, the dialog must stay closable.
+    void transferDialogCancelWithDetachedControllerDoesNotLatchCancelling() {
+        TransferDialogFixture fx(Fm::FileOperation::Copy, QStringLiteral("fixture3g.bin"), QString(), true);
+        QVERIFY(fx.dialog);
+        fx.dialog->show();
+        fx.dialog->setPercent(40);
+        auto* pause = fx.child<QPushButton>("pauseButton");
+        auto* cancel = fx.child<QPushButton>("transferCancelButton");
+        QVERIFY2(pause->isVisible(), "controller with pause capability expected for a single-file COPY with destination");
+        auto* controller = fx.dialog->findChild<ExplorerTransferController*>();
+        QVERIFY(controller);
+        delete fx.operation->job();
+        QTRY_COMPARE(controller->snapshot().state, ExplorerTransferController::State::Detached);
+        QTest::mouseClick(cancel, Qt::LeftButton);
+        QVERIFY2(!fx.dialog->windowTitle().startsWith(QStringLiteral("Cancelando")), qPrintable(fx.dialog->windowTitle()));
+        QVERIFY(!fx.dialog->isVisible());                           // closable: left to FileOperation::onJobFinish
+        QVERIFY(cancel->isEnabled());
+    }
+
+    // The job really completed (its Finished notification may still be queued): the controller already reports
+    // Finished, cancel is not accepted, so the dialog does not enter "Cancelando" and can be closed.
+    void transferDialogCancelAfterJobCompletedDoesNotLatchCancelling() {
+        TransferDialogFixture fx(Fm::FileOperation::Copy, QStringLiteral("fixture3g.bin"), QString(), true);
+        QVERIFY(fx.dialog);
+        fx.operation->setAutoDestroy(false);
+        fx.dialog->show();
+        fx.dialog->setPercent(40);
+        auto* cancel = fx.child<QPushButton>("transferCancelButton");
+        auto* controller = fx.dialog->findChild<ExplorerTransferController*>();
+        QVERIFY(controller && fx.child<QPushButton>("pauseButton")->isVisible());
+        // The BlockingQueued FileOperation slots would deadlock a same-thread run(); the dialog under test only
+        // observes the job through its controller, so detach the operation and run the real job synchronously.
+        QObject::disconnect(fx.operation->job(), nullptr, fx.operation.get(), nullptr);
+        fx.operation->job()->run();
+        QCOMPARE(controller->snapshot().state, ExplorerTransferController::State::Finished);
+        QTest::mouseClick(cancel, Qt::LeftButton);
+        QVERIFY2(!fx.dialog->windowTitle().startsWith(QStringLiteral("Cancelando")), qPrintable(fx.dialog->windowTitle()));
+        QVERIFY(cancel->isEnabled());
+        QVERIFY(!fx.dialog->isVisible());
+    }
+
+    // Without a controller (Move never advertises pause) the live job is cancelled exactly once and the repeated
+    // gestures (✕ twice, Esc, reject()) are idempotent.
+    void transferDialogCancelWithoutControllerIsOneIdempotentBackendRequest() {
+        TransferDialogFixture fx(Fm::FileOperation::Move);
+        QVERIFY(fx.dialog);
+        QVERIFY(!fx.dialog->findChild<ExplorerTransferController*>());
+        fx.dialog->show();
+        fx.dialog->setPercent(10);
+        QPointer<Fm::FileOperationJob> job = fx.operation->job();
+        QVERIFY(job);
+        QSignalSpy cancelled(job.data(), &Fm::Job::cancelled);
+        auto* cancel = fx.child<QPushButton>("transferCancelButton");
+        QTest::mouseClick(cancel, Qt::LeftButton);
+        QCOMPARE(fx.dialog->windowTitle(), QStringLiteral("Cancelando - 10% concluído"));
+        QVERIFY(!cancel->isEnabled());
+        fx.dialog->reject();
+        QTest::keyClick(fx.dialog.get(), Qt::Key_Escape);
+        QCOMPARE(cancelled.count(), 1);
+        QVERIFY(job->isCancelled());
+        QVERIFY(fx.dialog->isVisible());                            // accepted -> stays as Cancelando until the job ends
+    }
+
+    // Repeated clicks with a live controller reach the controller/backend only once.
+    void transferDialogRepeatedCancelReachesControllerOnce() {
+        TransferDialogFixture fx(Fm::FileOperation::Copy, QStringLiteral("fixture3g.bin"), QString(), true);
+        QVERIFY(fx.dialog);
+        fx.dialog->show();
+        auto* controller = fx.dialog->findChild<ExplorerTransferController*>();
+        QVERIFY(controller);
+        QSignalSpy requested(controller, &ExplorerTransferController::cancellationRequested);
+        for(int i = 0; i < 3; ++i) fx.dialog->reject();
+        QCOMPARE(requested.count(), 1);
+        QVERIFY(fx.dialog->windowTitle().startsWith(QStringLiteral("Cancelando")));
+        QVERIFY(fx.dialog->isVisible());
+    }
+
+    // No controller and no live job/operation: base behaviour (close), not a permanent "Cancelando".
+    void transferDialogCancelWithoutControllerOrOperationClosesInsteadOfLatching() {
+        TransferDialogFixture fx(Fm::FileOperation::Move);
+        QVERIFY(fx.dialog);
+        fx.dialog->show();
+        delete fx.operation->job();
+        fx.operation.reset();
+        QTest::mouseClick(fx.child<QPushButton>("transferCancelButton"), Qt::LeftButton);
+        QVERIFY2(!fx.dialog->windowTitle().startsWith(QStringLiteral("Cancelando")), qPrintable(fx.dialog->windowTitle()));
+        QVERIFY(!fx.dialog->isVisible());
+    }
+
+    // Live operation whose job already went away (no controller): cancel must not touch the dead job.
+    void transferDialogCancelWithoutControllerAfterJobDestroyedCloses() {
+        TransferDialogFixture fx(Fm::FileOperation::Move);
+        QVERIFY(fx.dialog);
+        fx.dialog->show();
+        delete fx.operation->job();
+        QTest::mouseClick(fx.child<QPushButton>("transferCancelButton"), Qt::LeftButton);
+        QVERIFY2(!fx.dialog->windowTitle().startsWith(QStringLiteral("Cancelando")), qPrintable(fx.dialog->windowTitle()));
+        QVERIFY(!fx.dialog->isVisible());
     }
 
     void transferDialogHasMeasuredCollapsedAndExpandedSizes() {

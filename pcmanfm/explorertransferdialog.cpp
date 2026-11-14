@@ -178,7 +178,7 @@ ExplorerTransferDialog::ExplorerTransferDialog(Fm::FileOperation* operation)
       detailsButton_(new FooterButton(content_)),
       pauseButton_(new GlyphButton(QStringLiteral("pause"), content_)),
       cancelButton_(new GlyphButton(QStringLiteral("cancel"), content_)),
-      operation_(operation) {
+      operation_(operation), backendJob_(operation->job()) {
     clock_.start();
     // Match the verb to the actual operation; don't label moves/deletes as copies.
     switch(operation->type()) {
@@ -428,13 +428,33 @@ void ExplorerTransferDialog::applyTransferState(ExplorerTransferController::Stat
 }
 
 void ExplorerTransferDialog::reject() {
-    // No confirmation and no hiding: libfm's base reject() would hide the dialog
-    // at once, but Windows keeps it as "Cancelando" until the job really ends
-    // (FileOperation destroys it on completion).
-    if(cancelRequested_) return;
-    if(controller_) controller_->cancel();
-    else if(operation_) operation_->cancel();
-    applyTransferState(ExplorerTransferController::State::Cancelling, false);
+    // Windows shows "Cancelando" until the job really ends and libfm's base reject() would hide at once, so
+    // "Cancelando" is entered only once the backend ACCEPTED the cancellation. FileOperation::onJobFinish()
+    // destroys the dialog when the job truly ends. Esc and the window ✕ end up here too, without confirmation
+    // (QDialog behaviour inherited here; not observed on Windows).
+    using State = ExplorerTransferController::State;
+    if(cancelRequested_) return;                    // one backend request only
+    QPointer<ExplorerTransferDialog> self(this);
+    bool accepted = false;
+    bool closable = false;                          // nothing left to cancel: let the user leave
+    if(controller_) {
+        accepted = controller_->cancel();
+        if(!self) return;
+        const State state = controller_->snapshot().state;
+        const bool active = state == State::Preparing || state == State::Running || state == State::Pausing ||
+                            state == State::Paused || state == State::Cancelling;
+        closable = !accepted && !active;            // not accepted but still active: transient race, stays usable
+    } else if(backendJob_) {
+        accepted = backendJob_->requestCancellation();
+        if(!self) return;
+        closable = !accepted;
+    } else {
+        closable = true;                            // no controller and no live job: base (closing) behaviour
+    }
+    if(accepted)
+        applyTransferState(State::Cancelling, false);
+    else if(closable)
+        QDialog::reject();                          // hides only; the FileOperation still destroys the dialog
 }
 
 void ExplorerTransferDialog::toggleDetails() {

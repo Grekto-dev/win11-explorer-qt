@@ -69,6 +69,7 @@ private:
     QPushButton* cancelButton_;
     ExplorerTransferController* controller_ = nullptr;
     QPointer<Fm::FileOperation> operation_;
+    QPointer<Fm::FileOperationJob> backendJob_;   // tracked, never a possibly dangling FileOperation::job_
     QString sourceName_;
     QString destinationName_;
     QString currentFileName_;

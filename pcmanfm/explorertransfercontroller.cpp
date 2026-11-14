@@ -127,25 +127,26 @@ bool ExplorerTransferController::markStarted() {
     return true;
 }
 
-void ExplorerTransferController::cancel() {
+bool ExplorerTransferController::cancel() {
     const auto current = snapshot().state;
     if(!job_ || (current != State::Preparing && current != State::Running &&
                  current != State::Pausing && current != State::Paused && current != State::Cancelling))
-        return;
-    if(cancellationRequested_) return;
+        return false;
+    if(cancellationRequested_) return true;
     // Reserve the intent before entering GLib: cancelled handlers may call
     // cancel() again synchronously (or dispatch the queued notification).
     cancellationRequested_ = true;
     QPointer<ExplorerTransferController> alive(this);
     const bool accepted = job_->requestCancellation();
-    if(!alive) return;
+    if(!alive) return true;
     if(!accepted) {
         // Completion won the backend cut; no cancellation was performed.
         cancellationRequested_ = false;
-        return;
+        return false;
     }
     if(snapshot().state != State::Finished) state_ = State::Cancelling;
     Q_EMIT cancellationRequested();
+    return true;
 }
 
 bool ExplorerTransferController::supportsPause() const {
