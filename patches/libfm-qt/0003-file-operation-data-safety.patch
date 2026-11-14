@@ -1,7 +1,7 @@
 diff -ruN a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
 --- a/src/core/filetransferjob.cpp
 +++ b/src/core/filetransferjob.cpp
-@@ -1,9 +1,45 @@
+@@ -1,9 +1,56 @@
  #include "filetransferjob.h"
  #include "totalsizejob.h"
  #include "fileinfo_p.h"
@@ -9,15 +9,26 @@ diff -ruN a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
 +#include <QCoreApplication>
 +#include <QString>
 +#include <glib/gstdio.h>
++#include <climits>
++#include <cstdlib>
++#include <sys/stat.h>
  
  namespace Fm {
  
 +namespace {
 +
-+bool pathExists(const FilePath& path) {
++// Existence is only ever "absent" when GIO says NOT_FOUND explicitly; any other failure of the query
++// (timeout, busy, network, permission...) is UNKNOWN and must never be treated as "we created it".
++enum class Presence { Absent, Present, Unknown };
++
++Presence queryPresence(const FilePath& path, GCancellable* cancellable = nullptr) {
++    GErrorPtr err;
 +    GFileInfoPtr info{g_file_query_info(path.gfile().get(), G_FILE_ATTRIBUTE_STANDARD_TYPE,
-+                                        G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, nullptr, nullptr), false};
-+    return bool(info);
++                                        G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, cancellable, &err), false};
++    if(info) {
++        return Presence::Present;
++    }
++    return (err.domain() == G_IO_ERROR && err.code() == G_IO_ERROR_NOT_FOUND) ? Presence::Absent : Presence::Unknown;
 +}
 +
 +// "Name - Cópia", "Name - Cópia (2)", ... (before the extension for files), first one that is free.
@@ -35,7 +46,7 @@ diff -ruN a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
 +        pattern.replace("%2", QByteArray::number(n));
 +        pattern.replace("%1", base);
 +        pattern.append(ext);
-+        if(!pathExists(dir.child(pattern.constData()))) {
++        if(queryPresence(dir.child(pattern.constData())) == Presence::Absent) {
 +            return pattern;
 +        }
 +    }
@@ -47,7 +58,7 @@ diff -ruN a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
  FileTransferJob::FileTransferJob(FilePathList srcPaths, Mode mode):
      FileOperationJob{},
      srcPaths_{std::move(srcPaths)},
-@@ -133,9 +169,62 @@
+@@ -133,9 +180,95 @@
          auto size = g_file_info_get_attribute_uint64(srcInfo.get(), G_FILE_ATTRIBUTE_STANDARD_SIZE);
          setCurrentFileProgress(size, 0);
  
@@ -55,57 +66,90 @@ diff -ruN a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
 -        if(!g_file_copy(srcPath.gfile().get(), destPath.gfile().get(), GFileCopyFlags(flags), cancellable().get(),
 -                       (GFileProgressCallback)&gfileCopyProgressCallback, this, &err)) {
 +        // Never let a failed write destroy or half-replace data (audit FO-01/FO-02):
-+        // - an existing destination that the user chose to overwrite is replaced atomically: the new
-+        //   content is written to a private temporary sibling and renamed over it only when complete;
-+        // - a destination that did not exist before is removed again if this copy fails or is cancelled.
-+        // Nothing that this operation did not create is ever deleted.
-+        const bool destExisted = pathExists(destPath);
-+        const bool replaceExisting = destExisted && (flags & G_FILE_COPY_OVERWRITE) && destPath.isNative();
-+        bool ok;
-+        if(replaceExisting) {
-+            ok = false;
++        // - overwriting a NATIVE destination writes the new content to a private temporary sibling and
++        //   renames it over the destination only when complete (the original survives any failure);
++        //   it keeps the original's permissions and, for a symlink, replaces the link's target;
++        //   not kept: owner/ACL/xattrs of the old file, and hardlinks to it (the other names keep the old data);
++        // - a destination is removed after a failed/cancelled copy ONLY when the existence query said
++        //   NOT_FOUND explicitly before the copy. Unknown or present => nothing is deleted.
++        const Presence destPresence = queryPresence(destPath, cancellable().get());
++        const bool overwrite = (flags & G_FILE_COPY_OVERWRITE) != 0;
++        bool ok = false;
++        bool done = false;
++        if(overwrite && destPath.isNative() && destPresence != Presence::Absent) {
++            done = true;
++            // Write through a symlink like before: the final target is what gets replaced.
++            FilePath targetPath = destPath;
++            guint32 targetMode = 0;
++            bool haveMode = false;
++            if(CStrPtr localName = destPath.localPath()) {
++                char resolved[PATH_MAX];
++                if(::realpath(localName.get(), resolved) && g_strcmp0(resolved, localName.get()) != 0) {
++                    targetPath = FilePath::fromLocalPath(resolved);
++                }
++                struct stat st;
++                if(::stat(CStrPtr{g_file_get_path(targetPath.gfile().get())}.get(), &st) == 0 && S_ISREG(st.st_mode)) {
++                    targetMode = st.st_mode & 07777;
++                    haveMode = true;
++                }
++            }
++            const auto targetParent = targetPath.parent();
 +            FilePath tempPath;
-+            const auto destParent = destPath.parent();
-+            for(int attempt = 0; attempt < 8 && destParent.isValid(); ++attempt) {
-+                QByteArray tempName(".");
-+                tempName.append(destPath.baseName().get());
-+                tempName.append('.');
-+                tempName.append(QByteArray::number(qulonglong(g_random_int()), 16));
-+                tempName.append(".partial");
-+                FilePath candidate = destParent.child(tempName.constData());
-+                if(!pathExists(candidate)) {
-+                    tempPath = std::move(candidate);
++            GErrorPtr copyErr;
++            bool copied = false;
++            bool tempCreatedByUs = false;
++            for(int attempt = 0; attempt < 8 && targetParent.isValid() && !isCancelled(); ++attempt) {
++                // Short fixed-size name: it can never exceed NAME_MAX whatever the destination name is.
++                const QByteArray tempName = QByteArrayLiteral(".fm-") +
++                                            QByteArray::number(qulonglong(g_random_int()), 16).rightJustified(8, '0') +
++                                            QByteArrayLiteral(".partial");
++                tempPath = targetParent.child(tempName.constData());
++                copyErr.reset();
++                // No OVERWRITE flag: the create is exclusive, so a name collision fails with EXISTS
++                // (not ours: try another name) and anything else that exists is never touched.
++                copied = g_file_copy(srcPath.gfile().get(), tempPath.gfile().get(),
++                                     GFileCopyFlags(flags & ~G_FILE_COPY_OVERWRITE), cancellable().get(),
++                                     (GFileProgressCallback)&gfileCopyProgressCallback, this, &copyErr);
++                tempCreatedByUs = copied || !(copyErr.domain() == G_IO_ERROR && copyErr.code() == G_IO_ERROR_EXISTS);
++                if(copied || tempCreatedByUs) {
 +                    break;
 +                }
 +            }
-+            if(!tempPath.isValid()) {
-+                g_set_error_literal(&err, G_IO_ERROR, G_IO_ERROR_FAILED, "Cannot create a temporary file next to the destination");
-+            }
-+            else {
-+                GErrorPtr copyErr;
-+                // Created exclusively by this call (no OVERWRITE flag), so it is ours to remove.
-+                bool copied = g_file_copy(srcPath.gfile().get(), tempPath.gfile().get(),
-+                                          GFileCopyFlags(flags & ~G_FILE_COPY_OVERWRITE), cancellable().get(),
-+                                          (GFileProgressCallback)&gfileCopyProgressCallback, this, &copyErr);
-+                if(copied) {
-+                    ok = g_file_move(tempPath.gfile().get(), destPath.gfile().get(),
-+                                     GFileCopyFlags(G_FILE_COPY_OVERWRITE | G_FILE_COPY_NOFOLLOW_SYMLINKS), nullptr,
-+                                     nullptr, nullptr, &copyErr);
++            if(copied) {
++                if(haveMode) {
++                    g_chmod(CStrPtr{g_file_get_path(tempPath.gfile().get())}.get(), int(targetMode));
 +                }
-+                if(!ok) {
-+                    if(!(copyErr.domain() == G_IO_ERROR && copyErr.code() == G_IO_ERROR_EXISTS)) {
-+                        g_file_delete(tempPath.gfile().get(), nullptr, nullptr);
++                ok = g_file_move(tempPath.gfile().get(), targetPath.gfile().get(),
++                                 GFileCopyFlags(G_FILE_COPY_OVERWRITE | G_FILE_COPY_NOFOLLOW_SYMLINKS), nullptr,
++                                 nullptr, nullptr, &copyErr);
++            }
++            else if(!copyErr) {
++                g_set_error_literal(&copyErr, G_IO_ERROR, G_IO_ERROR_FAILED, "Cannot create a temporary file next to the destination");
++            }
++            if(!ok) {
++                if(tempCreatedByUs && tempPath.isValid()) {
++                    g_file_delete(tempPath.gfile().get(), nullptr, nullptr);  // every failed exit path
++                }
++                const bool noTempPossible = !copied && !isCancelled() && copyErr.domain() == G_IO_ERROR &&
++                                            (copyErr.code() == G_IO_ERROR_PERMISSION_DENIED || copyErr.code() == G_IO_ERROR_READ_ONLY);
++                if(noTempPossible) {
++                    // Read-only / sticky folder: no sibling can be created. Fall back to the previous in-place overwrite.
++                    done = false;
++                }
++                else {
++                    if(!copied && copyErr.domain() == G_IO_ERROR && copyErr.code() == G_IO_ERROR_NO_SPACE) {
++                        g_prefix_error(&copyErr, "%s ", tr("Sem espaço para gravar uma cópia temporária ao lado do destino; o arquivo original foi preservado.").toUtf8().constData());
 +                    }
 +                    err = std::move(copyErr);
 +                }
 +            }
 +        }
-+        else {
++        if(!done) {
 +            ok = g_file_copy(srcPath.gfile().get(), destPath.gfile().get(), GFileCopyFlags(flags), cancellable().get(),
 +                             (GFileProgressCallback)&gfileCopyProgressCallback, this, &err);
-+            if(!ok && !destExisted && err.domain() == G_IO_ERROR && err.code() != G_IO_ERROR_EXISTS &&
++            if(!ok && destPresence == Presence::Absent && err.domain() == G_IO_ERROR && err.code() != G_IO_ERROR_EXISTS &&
 +               err.code() != G_IO_ERROR_INVALID_FILENAME && err.code() != G_IO_ERROR_FILENAME_TOO_LONG) {
-+                // We created the destination (it was absent before): drop the partial content.
++                // NOT_FOUND was explicit before the copy, so this operation created the file: drop the partial content.
 +                g_file_delete(destPath.gfile().get(), nullptr, nullptr);
 +            }
 +        }
@@ -113,7 +157,7 @@ diff -ruN a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
              retry = handleError(err, srcPath, srcInfo, destPath, flags);
          }
          else {
-@@ -381,12 +470,8 @@
+@@ -381,12 +514,8 @@
              // the user wants retry the operation again
              retry = true;
          }
@@ -128,7 +172,7 @@ diff -ruN a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
      }
      return retry;
  }
-@@ -401,7 +486,14 @@
+@@ -401,7 +530,14 @@
          false
      };
      if(!srcInfo || isCancelled()) {
@@ -144,7 +188,7 @@ diff -ruN a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
          return false;
      }
  
-@@ -411,14 +503,28 @@
+@@ -411,14 +547,28 @@
  
      bool ret;
      switch(mode_) {
@@ -178,7 +222,7 @@ diff -ruN a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
          break;
      }
      case Mode::LINK:
-@@ -446,7 +552,15 @@
+@@ -446,7 +596,15 @@
      };
  
      if(!destDirInfo || isCancelled()) {
@@ -195,18 +239,34 @@ diff -ruN a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
          return false;
      }
  
+diff -ruN a/src/core/untrashjob.cpp b/src/core/untrashjob.cpp
+--- a/src/core/untrashjob.cpp
++++ b/src/core/untrashjob.cpp
+@@ -52,6 +52,9 @@
+     // However without this, the signals/slots here will cause deadlocks.
+     connect(&fileTransferJob, &FileTransferJob::preparedToRun, this, &UntrashJob::preparedToRun, Qt::DirectConnection);
+     connect(&fileTransferJob, &FileTransferJob::error, this, &UntrashJob::error, Qt::DirectConnection);
++    // The dialog only listens to errorRequested: without this forward, errors of the move subjob
++    // (e.g. original folder missing) never reached the user.
++    connect(&fileTransferJob, &FileTransferJob::errorRequested, this, &UntrashJob::errorRequested, Qt::DirectConnection);
+     connect(&fileTransferJob, &FileTransferJob::fileExists, this, &UntrashJob::fileExists, Qt::DirectConnection);
+ 
+     // cancel the file transfer subjob if the parent job is cancelled
 diff -ruN a/src/fileoperation.cpp b/src/fileoperation.cpp
 --- a/src/fileoperation.cpp
 +++ b/src/fileoperation.cpp
-@@ -282,6 +282,7 @@
+@@ -282,6 +282,10 @@
  }
  
  void FileOperation::onJobError(const GErrorPtr& err, Fm::Job::ErrorSeverity severity, Fm::Job::ErrorAction* response) {
-+    hadErrors_ = true;
++    // Only what the dialog really shows counts (it ignores anything below MODERATE).
++    if(severity >= Fm::Job::ErrorSeverity::MODERATE) {
++        hadErrors_ = true;
++    }
      pauseElapsedTimer();
      showDialog();
      if(response) {
-@@ -326,11 +327,15 @@
+@@ -326,11 +330,15 @@
          if(!unsupportedFiles.empty()) { /* delete them instead */
              /* parent object is not destroyed before this */
              QWidget* pWidget = qobject_cast<QWidget*>(parent());
@@ -234,7 +294,7 @@ diff -ruN a/src/fileoperation.h b/src/fileoperation.h
          return type_;
      }
  
-+    // True when at least one error was shown to the user during the operation (readable from the
++    // True when at least one error of severity MODERATE or higher (the ones the dialog shows) was raised during the operation (readable from the
 +    // finished() signal; used to keep a cut selection on the clipboard after a failed move).
 +    bool hadErrors() const {
 +        return hadErrors_;

@@ -16,14 +16,18 @@ e4783407320e82211b420118664e4df8bf76cbc016944df5176ac4616f6ae877  src/core/job.c
 600ab7c6eb2fd5cb3e42fb92f46d37875b650f1f14848b90db4ebc23e0a9bda1  src/core/filetransferjob.h
 49992c168502c59958a961432de5ee1fd5b126b6d0a566dc9a9793e820b1edaa  src/core/filetransferjob.cpp
 4997bfe58f1ffcccdeae40ad3c96481c4ccf97a7dfd0835e9f1c30186fad9424  src/libfmqtglobals.h
+acea3dcdbcc6170d4af1647ff00bde37eb69818a7c1be23b716ff50ac2ac2531  src/utilities.cpp
+57aae0bd1d79955e08703ef2c15dbb7c4515dd99a7b48cd9af684c42433ee08f  src/core/untrashjob.cpp
 ```
 
 The patch adds an opt-in dialog factory; default construction remains upstream. It makes dialog presentation methods virtual and adds a pointer-response error signal for Qt queued delivery while preserving the pre-existing reference signal for source-level compatibility. This is an ABI change: rebuild the application and any binary consumers against the overlay; do not combine its headers with the SDK library.
 
 Patch 0003 (data safety, audit FO-01..FO-07; regression: `tests/transfer/tst_fileops_safety.cpp`, CTest `fileops-safety`):
-- Overwriting an existing native file copies into a private `.<name>.<random>.partial` sibling and renames it over the destination only when complete, so a failed write leaves the original intact; a destination created by the operation is removed if the copy fails or is cancelled. Nothing the operation did not create is deleted (the unreachable `err.reset()`-before-check cleanup in `handleError` is gone).
+- Overwriting a NATIVE file (also when the existence probe is inconclusive) copies into a short private `.fm-<hex>.partial` sibling (exclusive create; a name collision picks another name) and renames it over the destination only when complete, so a failed write/ENOSPC leaves the original intact and the temp is removed on every exit path. The original's permissions are kept; a destination symlink is written through to its target. Not preserved: owner/ACL/xattrs/SELinux context of the old file, and hardlinks to it (the other names keep the old content). Needs room for two copies (clear error on ENOSPC, original kept). In a folder where no sibling can be created (read-only/sticky) it falls back to the previous GIO in-place replace (which refuses with its own error there). Non-native destinations (smb/sftp/mtp) keep the plain in-place `g_file_copy(OVERWRITE)`: no FO-01 protection there.
+- A destination is removed after a failed/cancelled copy only when the existence query returned `G_IO_ERROR_NOT_FOUND` explicitly before the copy; any other query error means "unknown" and nothing is deleted (the unreachable `err.reset()`-before-check cleanup in `handleError` is gone).
 - Copy into the same folder creates `Nome - Cópia`, `Nome - Cópia (2)`…; move into the same folder is a silent no-op.
 - Vanished source (copy/move) and missing destination folder (restore from trash) now emit a MODERATE error instead of failing silently.
 - The "delete permanently instead of trash?" prompt defaults to No (also Escape).
-- `FileOperation::hadErrors()` (ABI addition); `pasteFilesFromClipboard()` clears a cut selection only after the move finished without errors/cancel and the clipboard is unchanged.
+- `UntrashJob` forwards the move subjob's `errorRequested` (the dialog only listens to that signal), so restore errors are really shown.
+- `FileOperation::hadErrors()` (ABI addition; true only for severity >= MODERATE, i.e. what the dialog shows); `pasteFilesFromClipboard()` clears a cut selection only after the move finished without errors/cancel and the clipboard is unchanged.
 - Not done: FO-05 (folder-over-folder move merge; "Ignorar" on a folder).

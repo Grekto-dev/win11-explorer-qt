@@ -57,7 +57,11 @@ if(ENABLE_HEAVY_TRANSFER_TESTS)
         ${PROJECT_SOURCE_DIR}/tests/transfer/tst_fileops_safety.cpp)
     target_include_directories(tst_fileops_safety PRIVATE ${LIBFMQT_SOURCE_DIR} ${LIBFMQT_INCLUDE_DIR})
     target_link_libraries(tst_fileops_safety PRIVATE Qt6::Core Qt6::Test Qt6::Widgets fm-qt6)
-    add_test(NAME fileops-safety COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:tst_fileops_safety>)
+    # The wrapper creates the private HOME/XDG tree BEFORE the bus (and gvfsd-trash) starts.
+    find_program(FILEOPS_BASH bash REQUIRED)
+    set_target_properties(tst_fileops_safety PROPERTIES ENABLE_EXPORTS ON)  # fault-injection interposers
+    add_test(NAME fileops-safety COMMAND ${FILEOPS_BASH} ${PROJECT_SOURCE_DIR}/tests/transfer/run-fileops-safety.sh
+        $<TARGET_FILE:tst_fileops_safety>)
     set_tests_properties(fileops-safety PROPERTIES TIMEOUT 180 LABELS "transfer;fileops"
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;LD_LIBRARY_PATH=${_private_fm_prefix}/lib:$ENV{LD_LIBRARY_PATH}")
 
