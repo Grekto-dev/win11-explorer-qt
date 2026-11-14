@@ -649,6 +649,22 @@ private Q_SLOTS:
         QCOMPARE(rows, (QList<int>{17, 32, 48, 63}));
     }
 
+    // Review E (partial): a very long current file name is elided to the label width; tooltip has the full text.
+    void transferDialogLongFileNameIsElidedWithFullTooltip() {
+        TransferDialogFixture fx;
+        QVERIFY(fx.dialog);
+        const QString longName = QString(300, QLatin1Char('x')) + QStringLiteral(".bin");
+        fx.dialog->setCurFile(longName);
+        auto* label = fx.child<QLabel>("transferDetailName");
+        QVERIFY(label);
+        QVERIFY(label->text().contains(QChar(0x2026)));
+        QVERIFY(label->fontMetrics().horizontalAdvance(label->text()) <= 393);
+        QVERIFY(label->toolTip().endsWith(longName));
+        QCOMPARE(label->geometry().width(), 393);
+        fx.dialog->setCurFile(QStringLiteral("curto.txt"));
+        QCOMPARE(label->text(), QStringLiteral("Nome: curto.txt"));
+    }
+
     // Review H: measured grid colours (paused): vertical line outside the tint 60,58,40; horizontal line over
     // the tint 89,83,34 (the old blend gave 61,59,41 / 90,84,34).
     void transferDialogGraphGridColoursMatchMeasuredWhenPaused() {

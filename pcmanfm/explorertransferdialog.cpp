@@ -394,7 +394,10 @@ bool ExplorerTransferDialog::recordSpeedSample(std::uint64_t bytes, std::uint64_
 QVector<ExplorerTransferDialog::SpeedSample> ExplorerTransferDialog::speedSamples() const { return samples_; }
 
 void ExplorerTransferDialog::updateDetailTexts() {
-    detailName_->setText(tr("Nome: %1").arg(currentFileName_));
+    // Long names are elided to the measured label width (393 px, geometry unchanged); the tooltip keeps the full text.
+    const QString fullName = tr("Nome: %1").arg(currentFileName_);
+    detailName_->setText(detailName_->fontMetrics().elidedText(fullName, Qt::ElideMiddle, 393));
+    detailName_->setToolTip(fullName);
     detailRemaining_->setText(remainingSeconds_ ? tr("Tempo restante: %1").arg(formatRemaining(remainingSeconds_))
                                                 : tr("Tempo restante: Calculando…"));
     const std::uint64_t items = filesTotal_ ? (filesTotal_ > filesDone_ ? filesTotal_ - filesDone_ : 0) : sourceCount_;
