@@ -676,6 +676,42 @@ private Q_SLOTS:
         QCOMPARE(rows, (QList<int>{17, 32, 48, 63}));
     }
 
+    // Qt renders ToolTip text as rich text whenever it looks like HTML (QLabel::setTextFormat does not apply),
+    // so a tooltip carrying a raw file name is an injection vector (second review, B).
+    static QString tooltipPlainText(const QString& tip) {
+        QTextDocument doc;
+        doc.setHtml(tip);
+        return doc.toPlainText();
+    }
+
+    void transferDialogToolTipsAndLabelsNeutraliseHostileFileNames() {
+        const QString hostile = QStringLiteral("x<img src=\"foto.png\"><b>y&amp;")
+                                + QChar(0x202E) + QStringLiteral("cod.exe") + QChar(0x2066) + QStringLiteral("a\nb\tc");
+        TransferDialogFixture fx(Fm::FileOperation::Copy, QStringLiteral("f.bin"), hostile, true);
+        QVERIFY(fx.dialog);
+        fx.dialog->setDestPath(Fm::FilePath::fromLocalPath(QByteArray(QByteArray("/tmp/") + hostile.toUtf8()).constData()));
+        fx.dialog->setCurFile(QStringLiteral("/tmp/") + hostile);
+        fx.dialog->setPrepared();
+        const QString literal = QStringLiteral("x<img src=\"foto.png\"><b>y&amp;");
+        for(const char* name : {"transferSummary", "transferDetailName"}) {
+            auto* label = fx.child<QLabel>(name);
+            QVERIFY(label);
+            const QString tip = label->toolTip();
+            QVERIFY2(!tip.isEmpty(), name);
+            // The tooltip is rich text whose RENDERING is the literal name: no <img>, no <b> element.
+            QTextDocument doc;
+            doc.setHtml(tip);
+            QVERIFY2(tip.contains(QStringLiteral("&lt;img")), qPrintable(QString::fromLatin1(name) + QStringLiteral(" tip=") + tip));
+            QVERIFY2(doc.toPlainText().contains(literal), qPrintable(QString::fromLatin1(name) + doc.toPlainText()));
+            QVERIFY2(!tip.contains(QStringLiteral("<img")), name);
+            // No bidi/format/control characters survive in either the tooltip or the label text.
+            const QString shown = tooltipPlainText(tip) + label->text();
+            for(const QChar c : shown)
+                QVERIFY2(!(c == QLatin1Char('\n') || c == QLatin1Char('\t') || c == QChar(0x202E) || c == QChar(0x2066)),
+                         qPrintable(QString::fromLatin1(name) + QStringLiteral(" has U+%1").arg(c.unicode(), 4, 16)));
+        }
+    }
+
     // Review E (partial): a very long current file name is elided to the label width; tooltip has the full text.
     void transferDialogLongFileNameIsElidedWithFullTooltip() {
         TransferDialogFixture fx;
@@ -686,7 +722,7 @@ private Q_SLOTS:
         QVERIFY(label);
         QVERIFY(label->text().contains(QChar(0x2026)));
         QVERIFY(label->fontMetrics().horizontalAdvance(label->text()) <= 393);
-        QVERIFY(label->toolTip().endsWith(longName));
+        QVERIFY(tooltipPlainText(label->toolTip()).endsWith(longName));
         QCOMPARE(label->geometry().width(), 393);
         fx.dialog->setCurFile(QStringLiteral("curto.txt"));
         QCOMPARE(label->text(), QStringLiteral("Nome: curto.txt"));
@@ -710,8 +746,8 @@ private Q_SLOTS:
         QFont f = summary->font();
         f.setPixelSize(12);
         QVERIFY2(QFontMetrics(f).horizontalAdvance(doc.toPlainText()) <= 393, qPrintable(doc.toPlainText()));
-        QVERIFY(summary->toolTip().contains(longDir));
-        QVERIFY(summary->toolTip().contains(longDest));
+        QVERIFY(tooltipPlainText(summary->toolTip()).contains(longDir));
+        QVERIFY(tooltipPlainText(summary->toolTip()).contains(longDest));
         QCOMPARE(summary->geometry().width(), 393);
     }
 

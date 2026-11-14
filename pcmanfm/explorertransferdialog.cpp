@@ -198,6 +198,25 @@ private:
     bool yellow_ = false;
 };
 
+// File names are attacker-controlled. Control characters, line breaks and bidi/format characters (U+202A..202E,
+// U+2066..2069, U+200E/F, U+061C, ...) are replaced by U+FFFD so they cannot reorder or hide the text around them.
+QString safeName(const QString& name) {
+    QString out = name;
+    for(QChar& c : out) {
+        const auto cat = c.category();
+        if(cat == QChar::Other_Control || cat == QChar::Other_Format || cat == QChar::Separator_Line
+           || cat == QChar::Separator_Paragraph)
+            c = QChar(0xFFFD);
+    }
+    return out;
+}
+
+// Qt treats ToolTip text as rich text whenever it looks like HTML (QLabel::setTextFormat does not apply to it),
+// so a tooltip carrying a file name must be escaped explicitly.
+QString plainToolTip(const QString& text) {
+    return QStringLiteral("<span>") + text.toHtmlEscaped() + QStringLiteral("</span>");
+}
+
 QString formatRemaining(unsigned int seconds) {
     if(seconds < 60) return QObject::tr("%1 s").arg(seconds);
     if(seconds < 3600) return QObject::tr("%1 min %2 s").arg(seconds / 60).arg(seconds % 60);
@@ -328,6 +347,7 @@ void ExplorerTransferDialog::setSourceFiles(const Fm::FilePathList& files) {
         const QString path = QString::fromUtf8(files.front().toString().get());
         sourceName_ = QFileInfo(QFileInfo(path).absolutePath()).fileName();
         if(sourceName_.isEmpty()) sourceName_ = QFileInfo(path).fileName();
+        sourceName_ = safeName(sourceName_);
     }
     updateTitle();
     setCurFile(currentFileName_);
@@ -336,6 +356,7 @@ void ExplorerTransferDialog::setDestPath(const Fm::FilePath& destination) {
     const QString path = QString::fromUtf8(destination.toString().get());
     destinationName_ = QFileInfo(path).fileName();
     if(destinationName_.isEmpty()) destinationName_ = path;
+    destinationName_ = safeName(destinationName_);
 }
 void ExplorerTransferDialog::setPrepared() {
     const QString count = QString::number(filesTotal_ ? filesTotal_ : sourceCount_);
@@ -349,21 +370,22 @@ void ExplorerTransferDialog::setPrepared() {
     if(both) {
         const QString frame = tr("%1 %2 item de %3 para %4").arg(verb_, count, QString(), QString());
         const int room = std::max(40, (kSummaryWidth - fm.horizontalAdvance(frame)) / 2);
-        const QString src = fm.elidedText(sourceName_, Qt::ElideMiddle, room);
-        const QString dst = fm.elidedText(destinationName_, Qt::ElideMiddle, room);
+        const QString src = fm.elidedText(sourceName_, Qt::ElideMiddle, room, Qt::TextSingleLine);
+        const QString dst = fm.elidedText(destinationName_, Qt::ElideMiddle, room, Qt::TextSingleLine);
         summary_->setText(tr("%1 %2 item de %3 para %4")
                           .arg(verb_, count, link.arg(src.toHtmlEscaped()), link.arg(dst.toHtmlEscaped())));
-        summary_->setToolTip(tr("%1 %2 item de %3 para %4").arg(verb_, count, sourceName_, destinationName_));
+        summary_->setToolTip(plainToolTip(tr("%1 %2 item de %3 para %4").arg(verb_, count, sourceName_, destinationName_)));
     } else if(!sourceName_.isEmpty()) {
         const QString frame = tr("%1 %2 item: %3").arg(verb_, count, QString());
         const QString src = fm.elidedText(sourceName_, Qt::ElideMiddle, std::max(40, kSummaryWidth - fm.horizontalAdvance(frame)));
         summary_->setText(tr("%1 %2 item: %3").arg(verb_, count, src.toHtmlEscaped()));
-        summary_->setToolTip(tr("%1 %2 item: %3").arg(verb_, count, sourceName_));
+        summary_->setToolTip(plainToolTip(tr("%1 %2 item: %3").arg(verb_, count, sourceName_)));
     }
 }
 void ExplorerTransferDialog::setCurFile(QString file) {
     currentFileName_ = QFileInfo(file).fileName();
     if(currentFileName_.isEmpty()) currentFileName_ = file;
+    currentFileName_ = safeName(currentFileName_);
     updateDetailTexts();
 }
 void ExplorerTransferDialog::setPercent(unsigned int percent) {
@@ -443,8 +465,8 @@ QVector<ExplorerTransferDialog::SpeedSample> ExplorerTransferDialog::speedSample
 void ExplorerTransferDialog::updateDetailTexts() {
     // Long names are elided to the measured label width (393 px, geometry unchanged); the tooltip keeps the full text.
     const QString fullName = tr("Nome: %1").arg(currentFileName_);
-    detailName_->setText(detailName_->fontMetrics().elidedText(fullName, Qt::ElideMiddle, 393));
-    detailName_->setToolTip(fullName);
+    detailName_->setText(detailName_->fontMetrics().elidedText(fullName, Qt::ElideMiddle, 393, Qt::TextSingleLine));
+    detailName_->setToolTip(plainToolTip(fullName));
     detailRemaining_->setText(remainingSeconds_ ? tr("Tempo restante: %1").arg(formatRemaining(remainingSeconds_))
                                                 : tr("Tempo restante: Calculando…"));
     const std::uint64_t items = filesTotal_ ? (filesTotal_ > filesDone_ ? filesTotal_ - filesDone_ : 0) : sourceCount_;

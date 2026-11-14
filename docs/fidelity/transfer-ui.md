@@ -11,8 +11,8 @@ resumo, nome atual, barra e seção de detalhes ao layout existente. Os setters
 virtuais usados pelo libfm-qt recebem percentuais/bytes/contagens/estimativa do
 próprio motor. Detalhes só mostram bytes transferidos de verdade e uma
 estimativa fornecida pelo libfm-qt. Não há velocidade inventada. A seção inicia
-recolhida; cancelar usa `reject()` da classe base, que encaminha cancelamento à
-operação. Conflitos e erros continuam nos handlers base e no mesmo diálogo.
+recolhida; cancelar usa `reject()` sobrescrito (ver "Cancelando" abaixo), que
+pede o cancelamento ao backend. Conflitos e erros continuam nos handlers base e no mesmo diálogo.
 
 A referência `20261031T0003-0300/paste_2s.png` mostra a cópia de 2 GiB em estado
 recolhido: resumo com origem/destino, percentual no título, barra verde,
@@ -55,8 +55,13 @@ Implementado em `ExplorerTransferDialog` (sem tocar o motor/`patches/`):
   (`State::Paused`, ou `Pausing` com `paused` verdadeiro); `Cancelando - N%
   concluído` assim que o cancelamento é solicitado. O diálogo **não** é
   escondido ao cancelar: `reject()` é sobrescrito (o da base esconde de
-  imediato) e só encaminha `controller->cancel()` (ou `operation->cancel()`
-  quando não há controller). O `FileOperation` o destrói quando o job termina.
+  imediato). Ele pede o cancelamento ao controller (`cancel()` devolve se o
+  backend o aceitou) ou ao job (`requestCancellation()`); só entra em
+  "Cancelando" se o pedido foi aceito. Sem nada a cancelar (job já terminado
+  ou destacado), cai em `QDialog::reject()` e o diálogo pode ser fechado. O
+  `FileOperation` o destrói quando o job realmente termina (`onJobFinish`).
+  Mover/lixeira/excluir também ficam em "Cancelando" até o job acabar; não há
+  saída se o GIO travar (lacuna conhecida).
 - **Barra**: azul-clara `#60CDFF` em andamento, amarela `#FCE100` pausada ou
   cancelando (valores lidos dos pixels; o verde `#16833b` antigo foi removido).
 - **Botão inline** ⏸/▶ à esquerda do ✕ (glifos desenhados com `QPainter`, sem
@@ -66,12 +71,22 @@ Implementado em `ExplorerTransferDialog` (sem tocar o motor/`patches/`):
   (inclusive Move/Trash/Delete). Cancelando: ▶ esmaecido `#797979`.
 - **Cancelar sem confirmação**, também estando pausado (o controller acorda o
   worker; ver `liveDialogCancelWhilePausedShowsCancellingWithoutConfirmation`).
-- **Detalhes**: gráfico de velocidade (`SpeedSample{fraction, bytesPerSecond}`)
+- **Detalhes**: gráfico de velocidade (`SpeedSample{fraction, bytesPerSecond, intervalSeconds}`; ≤512 amostras por
+  decimação que conserva os bytes)
   alimentado só por `recordSpeedSample(bytes, total, ms)`, chamado a partir de
   `setDataTransferred` (bytes reais do libfm). Sem dados = fundo e grade, sem
-  curva. Intervalos sem bytes novos (pausa) não geram amostra zero inventada.
+  curva. Intervalos sem bytes novos (pausa, estagnação) não geram amostra zero
+  inventada nem avançam o relógio da linha de base: a próxima taxa é a média
+  honesta do intervalo todo. Ao retomar a linha de base reinicia; contadores que
+  voltam atrás rebaseiam; um total diferente descarta a série.
   Linhas `Nome:`, `Tempo restante:` ("Calculando…" até o libfm informar uma
   estimativa > 0) e `Itens restantes: N (tamanho)`.
+- **Nomes de arquivo são entrada hostil**: caracteres de controle, quebras de
+  linha e de formatação/bidi (U+202A–202E, U+2066–2069, U+200E/F…) viram U+FFFD
+  antes de qualquer exibição; o texto vai escapado para o resumo (RichText) e
+  os tooltips são `<span>` com o texto escapado (o Qt trata ToolTip como rich
+  text se parecer HTML, independente de `setTextFormat`). Teste:
+  `transferDialogToolTipsAndLabelsNeutraliseHostileFileNames`.
 - **Tamanhos** (cliente Qt, DPR 1, 96 DPI): 449×165 recolhido, 449×287
   expandido; centros do ⏸/▶ e ✕ em (366; 72,5) e (413; 72,5) nos dois estados.
 
@@ -103,8 +118,8 @@ comportamento com 5–8 fps reais; DPI ≠ 96; E2E com entrada real no executáv
 (nenhuma entrada automatizada foi usada nesta frente).
 
 ### Testes
-`tests/tst_explorer.cpp`: `transferDialog*` (10 testes, dialog estático
-offscreen). `tests/transfer/tst_explorertransfercontroller.cpp`: o teste vivo
+`tests/tst_explorer.cpp`: `transferDialog*` (dialog estático offscreen; a lista
+cresce, consulte o arquivo em vez de contar aqui). `tests/transfer/tst_explorertransfercontroller.cpp`: o teste vivo
 existente agora usa `accessibleName()`/glifo/título no lugar do texto do botão
 (botão agora é só ícone) e foi adicionado
 `liveDialogCancelWhilePausedShowsCancellingWithoutConfirmation`.

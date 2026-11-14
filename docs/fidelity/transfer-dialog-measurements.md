@@ -22,7 +22,7 @@ expandido 449×287.
 |---|---|---|
 | Fundo do corpo | 44,44,44 (#2C2C2C) | A |
 | Borda da janela | 61,61,61 (#3D3D3D) | A |
-| Separador do rodapé | 77,77,77 (#4D4D4D), 1 px, x 3..445 | A, B-pausa |
+| Separador do rodapé | 77,77,77 (#4D4D4D), 1 px; extensão: ver "Comparação" (referência x 1..447, nosso 3..445) | A, B-pausa |
 | Trilho da barra | 56,56,56 (#383838) | A, B-pausa |
 | Borda da barra | 87,87,87 (#575757) | A, B-pausa |
 | Preenchimento em andamento | 96,205,255 (#60CDFF) | A |
