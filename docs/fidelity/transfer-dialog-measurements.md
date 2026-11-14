@@ -65,3 +65,73 @@ Pausa/✕ não mudam de posição ao expandir (verificado em B-pausa × B-exp).
   do texto de "Tempo restante" com estimativa real — só foi observado
   "Calculando…" com a cópia pausada.
 - Cancelar sem pausar; ícone do diálogo; outras versões/temas.
+
+## Comparação (captura Qt × quadros Windows)
+
+Como reproduzir (nada disto escreve no Git; quadros e saídas ficam em `.state/`):
+
+```bash
+source .deps/env.sh
+export LD_LIBRARY_PATH=$PWD/.state/libfm-overlay-prefix/lib:$LD_LIBRARY_PATH
+EXPLORER_TEST_ARTIFACTS=$PWD/.state/capture-run QT_QPA_PLATFORM=offscreen \
+  .state/build/tests/tst_explorer transferDialogCapturesMeasuredStatesWhenArtifactsRequested
+/usr/bin/python3 tools/fidelity/compare_transfer_dialog.py --ours .state/capture-run/transfer-dialog
+```
+
+O caso de teste grava (`grab()`, DPR 1, offscreen) `running-79.png`, `paused-32.png`,
+`paused-32-expanded.png` (com amostras de velocidade simuladas via `recordSpeedSample`, a mesma
+rota dos contadores reais) e `cancelling-53.png`. Sem `EXPLORER_TEST_ARTIFACTS` não grava nada.
+O script recorta os quadros da VM em (496,152) com 449×165/449×287, exclui a faixa de título
+(y<32; nas estatísticas de pixels, y<40 por causa do brilho do banner da VM) e as regiões de
+texto, e escreve `comparison.json`, `side_by_side_*.png` e `diff_*.png` em
+`.state/fidelity/transfer-dialog-compare/<UTC>/` com sha256 de cada insumo.
+Classes: `igual` (≤2 px e ΔRGB≤4), `proxima` (≤2 px, ΔRGB 4–8), `diferente` (>2 px ou ΔRGB>8),
+`ausente` (não mensurável de um lado). Não há limiar de "passa/falha".
+
+Execução final (pós-correções): `…/transfer-dialog-compare/20261114T004639Z/`, `comparison.json`
+sha256 `bd5517b8…cfab`. Contagem por estado (igual/próxima/diferente/ausente):
+andamento-79 25/0/4/0 · pausado-32 23/0/2/2 · pausado-32-expandido 29/1/2/0 · cancelando-53 23/0/4/2.
+Fração de pixels não-texto com ΔRGB>8 (inclui halo do cursor, forma da curva e brilho do banner,
+não é métrica de fidelidade): 6,6 % / 10,7 % / 12,6 % / 12,2 %.
+
+### Desvios corrigidos (teste RED→GREEN e commit por desvio)
+1. **Conteúdo com altura 0 ao abrir recolhido** (achado pela própria captura): `transferContent`
+   saía 449×0 até alternar "Mais detalhes", deixando o diálogo cinza e em branco; o layout herdado
+   da libfm (oculto) o espremia. Agora o layout herdado é desativado e a geometria usa as constantes.
+2. **Anel interno do gráfico**: o quadro de referência tem, dentro da borda #575757, um anel de 1 px
+   #383838 nos quatro lados (ΔRGB 12–19 contra o nosso); passou a ser desenhado.
+3. **Grade horizontal do gráfico**: a referência tem 4 linhas internas em y=107/122/138/153 (locais
+   17/32/48/63); o código desenhava 6 linhas a cada 15 px (extras em y local 2 e 77, ΔRGB 14–17).
+
+### Desvios que ficam só no relatório
+- **Preenchimento da barra × percentual**: no quadro da referência a barra termina em x=327 para o texto "79 %"
+  (76,3 % do interior), em x=224 para "53 %" (47,8 %, nos dois quadros C), e em x=152 para "32 %" (31,8 %, igual ao nosso).
+  Nossa barra é exatamente o percentual. Não se sabe se o Windows anima a barra ou usa outro contador; sem mais
+  medição não se altera a lógica.
+- **Cor de pico do glifo ✕**: referência 229 × nosso 241 (ΔRGB 12) no pixel mais claro. É pico de antialiasing de
+  um traço de ≈1 px; centro (≤0,72 px) e caixa batem. Tinta integrada: referência ≈20–21 px² (quadros limpos)
+  × nosso 25,8 px² — ambíguo (largura do traço), não corrigido.
+- **Cantos inferiores arredondados**: referência tem 5 colunas "fora da janela" na última linha, o nosso é
+  retangular. O arredondamento é do DWM/WM, não do widget.
+- **Borda inferior**: ≈#373737–#393939 na referência × #3D3D3D nosso (ΔRGB 4–6, `proxima`).
+- **Extensão do separador**: referência x 1..447, nosso 3..445 (2 px de cada lado, limite de `igual`);
+  corrige a nota anterior "x 3..445" desta página, que não bate com a leitura atual dos quadros.
+- **Linhas de grade verticais**: referência 185/224/263/302/342/381, nosso 185/225/264/304/343/383
+  (≤2 px, `igual`). A referência corresponde a 28+39,2·k; o nosso usa 27+39,5·k. Não alterado (≤2 px).
+
+### Medido igual
+Cor do fundo (#2C2C2C), borda da janela (#3D3D3D, 1 px), separador (y 120/242, #4D4D4D), borda/trilho/
+preenchimento da barra (cores exatas; x 27..421, y 90..104; preenchimento y 91..103), centro dos glifos
+⏸/▶/✕ (≤0,95 px), cor do ▶ esmaecido (121,121,121), chevron do rodapé (≤0,85 px), borda/área tingida/curva
+do gráfico (cores exatas, área tingida terminando em x=153).
+
+### Limitações
+- Fontes: Segoe UI × fonte Qt; todo texto (resumo, percentual, detalhes, "Mais detalhes") foi excluído.
+- Título: a faixa superior (≈32 px) não existe no cliente Qt (decoração do WM) e só aparece sem banner no quadro
+  suplementar `B_pre_cmd2_1794614329586.png`, usado também como referência do gráfico porque o quadro-chave
+  `B_1794614319274.png` tem o halo do cursor sobre o lado esquerdo do gráfico. Barra de título não comparada.
+- Halo/cursor da VM cobre o ▶ no quadro pausado-32, o ✕ no quadro cancelando-53 e o lado direito da barra
+  nesses dois quadros: essas leituras ficam `ausente` (o ▶ vem do quadro expandido, o ✕ dos quadros A/B-exp).
+- Só 96 DPI, DPR 1; sem hover/pressed; sem estado em andamento do gráfico; a forma da curva não é comparada
+  (nossas amostras são simuladas, as da referência são de uma cópia real).
+- Captura offscreen: sem decoração, sombras nem cantos do DWM; não prova pixel a pixel nem aparência no X11 real.
