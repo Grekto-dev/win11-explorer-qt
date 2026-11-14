@@ -240,7 +240,7 @@ protected Q_SLOTS:
 protected:
     bool event(QEvent* event) override;
     void changeEvent(QEvent* event) override;
-    void closeTab(int index, ViewFrame* viewFrame);
+    void closeTab(int index, ViewFrame* viewFrame, bool remember = true);
     void closeTab(int index) {
         closeTab(index, activeViewFrame_);
     }
@@ -254,6 +254,7 @@ private:
     void setupExplorerChrome();
     void updateExplorerSearch();
     void updateExplorerDeleteLabel();
+    void applyExplorerTheme(); // re-style chrome/menus/buttons when the effective palette flips light<->dark
     void reopenClosedTab();
     ViewFrame* viewFrameForTabBar(TabBar* tabBar);
     void loadBookmarksMenu();
@@ -272,6 +273,7 @@ private:
 private:
     QToolBar* explorerCommands_ = nullptr;
     QLineEdit* explorerSearch_ = nullptr;
+    bool explorerDark_ = false; // scheme the chrome stylesheet was last generated for
     QWidget* explorerTitle_ = nullptr;
     Ui::MainWindow ui;
     Fm::PathEdit* pathEntry_;

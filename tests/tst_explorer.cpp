@@ -57,6 +57,8 @@
 #include <QKeySequence>
 #include <QRegularExpression>
 #include <QMenu>
+#include <unistd.h>
+#include <QStyleHints>
 #include <QFontMetrics>
 #include <QProcess>
 #include <sys/stat.h>
@@ -1132,6 +1134,7 @@ private Q_SLOTS:
         QCOMPARE(button->toolTip(), QStringLiteral("Mover para a Lixeira"));
     }
     void shiftDeleteOnlyActsWhenDeleteActionIsEnabled() {
+        if(geteuid() == 0) QSKIP("root bypasses directory permissions: the 'locked' fixture stays deletable");
         auto& settings = static_cast<PCManFM::Application*>(qApp)->settings();
         const bool oldConfirm = settings.confirmDelete();
         const auto restoreSettings = qScopeGuard([&] { settings.setConfirmDelete(oldConfirm); });
@@ -1231,6 +1234,163 @@ private Q_SLOTS:
         const QString menu = PCManFM::ExplorerAnimation::menuStyleSheet();
         QVERIFY2(!menu.contains(QStringLiteral("background:#f9f9f9")), qPrintable(menu));
         QVERIFY(lightness(menu, QStringLiteral("QMenu"), QStringLiteral("color")) - lightness(menu, QStringLiteral("QMenu"), QStringLiteral("background")) > 100);
+    }
+    // ---- fix cycle 1: dark theme icons / runtime theme switch / tab history / trash label ----
+    static QPalette darkTestPalette() {
+        QPalette dark;
+        dark.setColor(QPalette::Window, QColor(0x20,0x20,0x20)); dark.setColor(QPalette::WindowText, QColor(0xf0,0xf0,0xf0));
+        dark.setColor(QPalette::Base, QColor(0x2b,0x2b,0x2b)); dark.setColor(QPalette::Text, QColor(0xf0,0xf0,0xf0));
+        return dark;
+    }
+    // Luminance gap between the icon's solid pixels and the chrome background (0 when nothing is drawn).
+    static int iconContrast(const QIcon& icon, QIcon::Mode mode, const QColor& bg, int* solidMin = nullptr) {
+        QImage img(24, 24, QImage::Format_ARGB32_Premultiplied); img.fill(bg);
+        { QPainter p(&img); p.drawPixmap(0, 0, icon.pixmap(QSize(24, 24), mode, QIcon::Off)); }
+        const QImage raw = icon.pixmap(QSize(24, 24), mode, QIcon::Off).toImage().convertToFormat(QImage::Format_ARGB32);
+        int best = 0, minSolid = 255;
+        for(int y = 0; y < 24; ++y) for(int x = 0; x < 24; ++x) {
+            const int gap = qAbs(qGray(img.pixel(x, y)) - qGray(bg.rgb()));
+            best = qMax(best, gap);
+            if(qAlpha(raw.pixel(x, y)) >= 250) minSolid = qMin(minSolid, gap);
+        }
+        if(solidMin) *solidMin = minSolid;
+        return best;
+    }
+    void everyChromeIconIsLegibleOnDarkAndUnchangedOnLight() {
+        const QPalette original = QApplication::palette();
+        const auto restore = qScopeGuard([&] { QApplication::setPalette(original); });
+        const QStringList names{QStringLiteral("new"), QStringLiteral("sort"), QStringLiteral("view"), QStringLiteral("more"),
+            QStringLiteral("cut"), QStringLiteral("copy"), QStringLiteral("paste"), QStringLiteral("rename"), QStringLiteral("delete"),
+            QStringLiteral("share"), QStringLiteral("folder"), QStringLiteral("home"), QStringLiteral("trash"), QStringLiteral("computer")};
+        // Light: pixel-identical to the plain SVG rendering that shipped before the dark theme.
+        QPalette light; light.setColor(QPalette::Window, QColor(0xf0,0xf0,0xf0)); light.setColor(QPalette::WindowText, Qt::black);
+        QApplication::setPalette(light);
+        QVERIFY(!PCManFM::ExplorerAnimation::darkMode());
+        for(const auto& name : names) {
+            const QString path = PCManFM::ExplorerIcons::resourcePath(name);
+            const QIcon icon = PCManFM::ExplorerIcons::icon(name);
+            QVERIFY2(!icon.isNull(), qPrintable(name));
+            QString normalPath = path; normalPath.replace(QStringLiteral(".svg"), QStringLiteral("-normal.svg"));
+            const bool stateful = QFile::exists(normalPath);
+            const QImage got = icon.pixmap(QSize(24, 24), QIcon::Normal, QIcon::Off).toImage();
+            const QImage want = QIcon(stateful ? normalPath : path).pixmap(QSize(24, 24), QIcon::Normal, QIcon::Off).toImage();
+            QVERIFY2(got == want, qPrintable(QStringLiteral("light Normal differs: ") + name));
+            if(stateful) {
+                QVERIFY2(icon.pixmap(QSize(24, 24), QIcon::Disabled, QIcon::Off).toImage() == QIcon(path).pixmap(QSize(24, 24), QIcon::Normal, QIcon::Off).toImage(),
+                         qPrintable(QStringLiteral("light Disabled differs: ") + name));
+            }
+        }
+        // Dark: every icon is readable against the dark chrome (#272727), in both modes.
+        QApplication::setPalette(darkTestPalette());
+        QVERIFY(PCManFM::ExplorerAnimation::darkMode());
+        const QColor bg(0x27,0x27,0x27);
+        for(const auto& name : names) {
+            const QIcon icon = PCManFM::ExplorerIcons::icon(name);
+            for(auto mode : {QIcon::Normal, QIcon::Disabled}) {
+                int solid = 0;
+                const int gap = iconContrast(icon, mode, bg, &solid);
+                QVERIFY2(gap > 100 && solid > 100, qPrintable(QStringLiteral("%1 mode %2: gap %3 solid-min %4").arg(name).arg(int(mode)).arg(gap).arg(solid)));
+            }
+        }
+    }
+    void windowButtonsTabCloseAndMenusFollowAPaletteSwitchAtRuntime() {
+        QTemporaryDir folder; QVERIFY(folder.isValid());
+        const QPalette original = QApplication::palette();
+        const auto restore = qScopeGuard([&] { QApplication::setPalette(original); });
+        QPalette light; light.setColor(QPalette::Window, QColor(0xf0,0xf0,0xf0)); light.setColor(QPalette::WindowText, Qt::black);
+        QApplication::setPalette(light);
+        PCManFM::MainWindow window(Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData()));
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto snapshot = [&] {
+            QStringList out{window.styleSheet()};
+            for(auto* b : window.findChildren<QToolButton*>()) if(!b->styleSheet().isEmpty()) out << b->objectName() + QLatin1Char('|') + b->styleSheet();
+            for(auto* m : window.findChildren<QMenu*>()) if(!m->styleSheet().isEmpty()) out << m->objectName() + QLatin1Char('|') + m->styleSheet();
+            return out;
+        };
+        const QStringList lightSnap = snapshot();
+        const auto more = [&] { return window.findChild<QToolButton*>(QStringLiteral("explorerMore")); };
+        QVERIFY(more());
+        const QImage lightMore = more()->icon().pixmap(QSize(20, 20)).toImage();
+        const QColor lightBg(0xff,0xff,0xff);
+        QVERIFY(iconContrast(more()->icon(), QIcon::Normal, lightBg) > 100);
+        QApplication::setPalette(darkTestPalette());
+        QTRY_VERIFY(window.styleSheet() != lightSnap.first());
+        QVERIFY2(!window.styleSheet().contains(QStringLiteral("QToolBar#explorerCommands { min-height:46px; max-height:46px; background:white")), "toolbar still light");
+        const QStringList darkSnap = snapshot();
+        QVERIFY(darkSnap != lightSnap);
+        for(int i = 1; i < darkSnap.size(); ++i) {   // buttons and menus restyled too, none left on the light sheet
+            QVERIFY2(!darkSnap.at(i).contains(QStringLiteral("#f3f3f3")) && !darkSnap.at(i).contains(QStringLiteral("background:#f9f9f9")), qPrintable(darkSnap.at(i)));
+        }
+        QVERIFY(window.styleSheet().contains(QStringLiteral("window-close-dark.svg")));
+        int solid = 0;
+        QVERIFY2(iconContrast(more()->icon(), QIcon::Normal, QColor(0x27,0x27,0x27), &solid) > 100, "More icon invisible on dark chrome");
+        QApplication::setPalette(light);
+        QTRY_COMPARE(window.styleSheet(), lightSnap.first());
+        QCOMPARE(snapshot(), lightSnap);
+        QVERIFY(more()->icon().pixmap(QSize(20, 20)).toImage() == lightMore);
+    }
+    void paletteLuminanceDecidesDarkModeBeforeTheColourScheme() {
+        const QPalette original = QApplication::palette();
+        const auto restore = qScopeGuard([&] { QApplication::setPalette(original); QGuiApplication::styleHints()->unsetColorScheme(); });
+        QPalette light; light.setColor(QPalette::Window, QColor(0xf0,0xf0,0xf0)); light.setColor(QPalette::WindowText, Qt::black);
+        QGuiApplication::styleHints()->setColorScheme(Qt::ColorScheme::Dark);
+        if(QGuiApplication::styleHints()->colorScheme() != Qt::ColorScheme::Dark) QSKIP("platform ignores setColorScheme (offscreen): precedence cannot be exercised");
+        QApplication::setPalette(light);   // forced-Fusion style launch: scheme says dark, palette is light
+        QVERIFY2(!PCManFM::ExplorerAnimation::darkMode(), "dark colour scheme over a light palette must not give white text on light");
+        QApplication::setPalette(darkTestPalette());
+        QVERIFY(PCManFM::ExplorerAnimation::darkMode());
+    }
+    void placeholderTabClosedWithoutUserActionIsNotRememberedAndReopenActivatesTheTab() {
+        struct Probe : PCManFM::MainWindow {
+            using PCManFM::MainWindow::MainWindow;
+            void closeSilently(int index) { closeTab(index, findChild<PCManFM::ViewFrame*>(), false); }
+        };
+        QTemporaryDir root; QVERIFY(root.isValid());
+        const QString a = root.filePath(QStringLiteral("a")), b = root.filePath(QStringLiteral("b"));
+        QVERIFY(QDir().mkpath(a) && QDir().mkpath(b));
+        Probe window(Fm::FilePath::fromLocalPath(root.path().toUtf8().constData()));
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window)); window.activateWindow();
+        QTRY_VERIFY(window.isActiveWindow());
+        auto* tabs = window.findChild<QTabBar*>(QStringLiteral("explorerTabs"));
+        const auto path = [&] { return QString::fromUtf8(window.currentPage()->path().toString().get()); };
+        window.addTab(Fm::FilePath::fromLocalPath(a.toUtf8().constData()));
+        window.addTab(Fm::FilePath::fromLocalPath(b.toUtf8().constData()));
+        QCOMPARE(tabs->count(), 3);
+        window.closeSilently(2);                       // placeholder-style removal: not a user close
+        QTRY_COMPARE(tabs->count(), 2);
+        QTest::keyClick(&window, Qt::Key_T, Qt::ControlModifier | Qt::ShiftModifier);
+        QTest::qWait(60);
+        QCOMPARE(tabs->count(), 2);                    // no ghost tab
+        // A user close is remembered; with SwitchToNewTab=false the reopened tab is still activated.
+        auto& settings = static_cast<PCManFM::Application*>(qApp)->settings();
+        const bool oldSwitch = settings.switchToNewTab();
+        const auto restoreSettings = qScopeGuard([&] { settings.setSwitchToNewTab(oldSwitch); });
+        settings.setSwitchToNewTab(false);
+        tabs->setCurrentIndex(1); QCOMPARE(path(), a);
+        window.findChild<QAction*>(QStringLiteral("actionCloseTab"))->trigger();
+        QTRY_COMPARE(tabs->count(), 1);
+        QTest::keyClick(&window, Qt::Key_T, Qt::ControlModifier | Qt::ShiftModifier);
+        QTRY_COMPARE(tabs->count(), 2);
+        QCOMPARE(tabs->currentIndex(), 1);
+        QCOMPARE(path(), a);
+    }
+    void deleteLabelInsideTrashSaysExcluirBecauseItDeletesPermanently() {
+        QTemporaryDir folder; QVERIFY(folder.isValid());
+        auto& settings = static_cast<PCManFM::Application*>(qApp)->settings();
+        const bool oldTrash = settings.useTrash();
+        const auto restoreSettings = qScopeGuard([&] { settings.setUseTrash(oldTrash); });
+        settings.setUseTrash(true);
+        PCManFM::MainWindow window(Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData()));
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto* button = window.findChild<QToolButton*>(QStringLiteral("explorerDelete"));
+        QVERIFY(button);
+        QCOMPARE(button->toolTip(), QStringLiteral("Mover para a Lixeira"));
+        window.chdir(Fm::FilePath::fromUri("trash:///"));
+        QTRY_COMPARE_WITH_TIMEOUT(QString::fromUtf8(window.currentPage()->path().toString().get()), QStringLiteral("trash:///"), 5000);
+        QTRY_COMPARE(button->toolTip(), QStringLiteral("Excluir"));
+        QCOMPARE(button->accessibleName(), QStringLiteral("Excluir"));
+        window.chdir(Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData()));
+        QTRY_COMPARE(button->toolTip(), QStringLiteral("Mover para a Lixeira"));
     }
     void unsupportedVolumeAutomationIsNotOffered() {
         PCManFM::PreferencesDialog preferences;

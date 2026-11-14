@@ -10,11 +10,20 @@
 
 namespace PCManFM {
 bool ExplorerAnimation::darkMode() {
+    // The EFFECTIVE application palette decides: a dark colour scheme over a light palette
+    // (e.g. a forced Fusion style) must not give light text on a light background.
+    const QPalette palette = QApplication::palette();
+    const int window = palette.color(QPalette::Window).lightness();
+    const int text = palette.color(QPalette::WindowText).lightness();
+    if(qAbs(window - text) >= 64) {
+        return window < text;
+    }
+    // Ambiguous palette (text and background alike): the colour scheme breaks the tie.
     const auto scheme = QGuiApplication::styleHints()->colorScheme();
     if(scheme != Qt::ColorScheme::Unknown) {
         return scheme == Qt::ColorScheme::Dark;
     }
-    return QApplication::palette().color(QPalette::Window).lightness() < 128;
+    return window < 128;
 }
 QString ExplorerAnimation::themed(const QString& css, bool dark) {
     if(!dark) {
@@ -44,7 +53,10 @@ QString ExplorerAnimation::themed(const QString& css, bool dark) {
         out += map.value(m.captured().toLower(), m.captured());
         last = m.capturedEnd();
     }
-    return out + css.mid(last);
+    out += css.mid(last);
+    // The tab close button image is fixed-colour artwork: use its light-ink twin on dark chrome.
+    out.replace(QStringLiteral("places/window-close.svg"), QStringLiteral("places/window-close-dark.svg"));
+    return out;
 }
 QString ExplorerAnimation::menuStyleSheet() {
     // Measured visual target: light opaque popup, thin neutral edge and compact rows.

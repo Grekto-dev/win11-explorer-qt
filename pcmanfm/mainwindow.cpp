@@ -779,7 +779,7 @@ void MainWindow::addTab(Fm::FilePath path) {
                 addTab(path, secondFrame);
                 // On reaching the single tab of the second frame, remove it after adding a tab.
                 if(splitTabsNum_ == 0 && secondFrame->getStackedWidget()->count() == 2) {
-                    closeTab(0, secondFrame);
+                    closeTab(0, secondFrame, false); // discarding the placeholder is not a user close
                 }
                 splitTabsNum_ = -2; // will not change again for the current window
             }
@@ -1368,16 +1368,24 @@ void MainWindow::onFolderUnmounted() {
 
 void MainWindow::reopenClosedTab() {
     if(!closedTabs_.isEmpty()) {
-        addTab(closedTabs_.takeLast());
+        // Always bring the reopened tab to the front, whatever SwitchToNewTab says.
+        auto* frame = activeViewFrame_;
+        addTab(closedTabs_.takeLast(), frame);
+        if(frame) {
+            const int last = frame->getTabBar()->count() - 1;
+            if(last >= 0 && frame->getTabBar()->currentIndex() != last) {
+                frame->getTabBar()->setCurrentIndex(last);
+            }
+        }
     }
 }
 
-void MainWindow::closeTab(int index, ViewFrame* viewFrame) {
+void MainWindow::closeTab(int index, ViewFrame* viewFrame, bool remember) {
     QWidget* page = viewFrame->getStackedWidget()->widget(index);
     if(page) {
         // remember the path (at most 10 entries) so Ctrl+Shift+T can reopen it
         const Fm::FilePath closedPath = static_cast<TabPage*>(page)->path();
-        if(closedPath) {
+        if(remember && closedPath) {
             closedTabs_.append(closedPath);
             while(closedTabs_.size() > 10) {
                 closedTabs_.removeFirst();
@@ -1543,6 +1551,7 @@ void MainWindow::updateViewMenuForCurrentPage() {
         if(auto path = tabPage->path()) {
             ui.actionByDTime->setVisible(strcmp(path.toString().get(), "trash:///") == 0);
         }
+        updateExplorerDeleteLabel(); // "Excluir" inside trash:///, where deleting is permanent
 
         if(tabPage->sortOrder() == Qt::AscendingOrder) {
             ui.actionAscending->setChecked(true);
@@ -1976,8 +1985,13 @@ void MainWindow::setRTLIcons(bool isRTL) {
 
 bool MainWindow::event(QEvent* event) {
     switch(event->type()) {
+    case QEvent::ApplicationPaletteChange:
+    case QEvent::ThemeChange:
+        applyExplorerTheme();
+        break;
     case QEvent::WindowActivate:
         lastActive_ = this;
+        break;
     default:
         break;
     }
