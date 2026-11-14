@@ -32,6 +32,10 @@
 #include <QMimeData>
 #include <libfm-qt6/pathbar.h>
 #include <libfm-qt6/pathedit.h>
+#include <libfm-qt6/filepropsdialog.h>
+#include <libfm-qt6/appchoosercombobox.h>
+#include <libfm-qt6/core/fileinfo.h>
+#include <libfm-qt6/core/folder.h>
 #include <libfm-qt6/folderitemdelegate.h>
 #include <QDir>
 #include <QFile>
@@ -1118,8 +1122,20 @@ private Q_SLOTS:
         box->close();
     }
     void appChooserAvailabilityMatchesTheMenuCacheHelper() {
-        // In this SDK libmenu-cache hardcodes /usr/lib/menu-cache/menu-cached.
-        const bool helperPresent = QFileInfo(QStringLiteral("/usr/lib/menu-cache/menu-cached")).isExecutable();
+        // The helper path is compiled into the loaded libmenu-cache (distro/multiarch/sysroot
+        // differ): use the path the library itself names, or any of the usual locations.
+        bool helperPresent = false;
+        const QString compiled = PCManFM::Launcher::menuCachedHelperPath();
+        if(!compiled.isEmpty()) {
+            helperPresent = QFileInfo(compiled).isExecutable();
+        }
+        else {
+            QStringList dirs{QStringLiteral("/usr/lib"), QStringLiteral("/usr/lib64"), QStringLiteral("/usr/libexec")};
+            const QStringList multiarch = QDir(QStringLiteral("/usr/lib")).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+            for(const QString& m : multiarch) dirs << QStringLiteral("/usr/lib/") + m;
+            for(const QString& d : std::as_const(dirs))
+                helperPresent = helperPresent || QFileInfo(d + QStringLiteral("/menu-cache/menu-cached")).isExecutable();
+        }
         QCOMPARE(PCManFM::Launcher::appChooserAvailable(), helperPresent);
         PCManFM::Launcher::setAppChooserAvailableForTest(1);
         QVERIFY(PCManFM::Launcher::appChooserAvailable());
@@ -1226,6 +1242,175 @@ private Q_SLOTS:
         QTRY_VERIFY_WITH_TIMEOUT(sawErrorDialog, 6000);
         QTest::qWait(500);
         QVERIFY(window->currentPage()->path() == child);
+    }
+    // ---- phase 4 fix cycle 1 ----
+    // D-02 (review B1): Properties -> "Open with" combo -> "Customize" built an AppChooserDialog
+    // (libmenu-cache view) and aborted when the helper is missing.
+    void propertiesCustomizeDoesNotAbortWhenChooserUnavailable() {
+        const auto restore = qScopeGuard([] { PCManFM::Launcher::setAppChooserAvailableForTest(-1); });
+        PCManFM::Launcher::setAppChooserAvailableForTest(0); // forced: independent of the host
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        const QString file = folder.filePath(QStringLiteral("props.txt"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("hello");
+        f.close();
+        const Fm::FilePath path = Fm::FilePath::fromLocalPath(file.toUtf8().constData());
+        GFileInfo* gi = g_file_query_info(path.gfile().get(), "*", G_FILE_QUERY_INFO_NONE, nullptr, nullptr);
+        QVERIFY(gi);
+        Fm::FileInfoList infos;
+        infos.push_back(std::make_shared<Fm::FileInfo>(Fm::GFileInfoPtr{gi, false}, path, path.parent()));
+        Fm::FilePropsDialog* dlg = Fm::FilePropsDialog::showForFiles(infos);
+        QVERIFY(dlg);
+        QTest::qWait(100);
+        auto* combo = dlg->findChild<Fm::AppChooserComboBox*>();
+        QVERIFY(combo);
+        QVERIFY(combo->count() >= 1);
+        const int before = combo->currentIndex();
+        const QString beforeText = combo->itemText(before);
+        combo->setCurrentIndex(combo->count() - 1); // "Customize"
+        // still alive: no AppChooserDialog was built and the selection went back
+        for(QWidget* w : QApplication::topLevelWidgets()) {
+            QVERIFY2(!w->inherits("Fm::AppChooserDialog"), "AppChooserDialog must not be created");
+        }
+        QCOMPARE(combo->itemText(combo->currentIndex()), beforeText);
+        QMessageBox* box = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((box = [] {
+            for(QWidget* w : QApplication::topLevelWidgets())
+                if(w->isVisible() && w->objectName() == QLatin1String("explorerChooserUnavailableMessage")) return qobject_cast<QMessageBox*>(w);
+            return static_cast<QMessageBox*>(nullptr);
+        }()) != nullptr, 3000);
+        box->close();
+        dlg->close();
+    }
+    // D-02: deterministic (no QSKIP): chooseApp with the chooser unavailable never builds it.
+    void chooseAppWithoutHelperReturnsNullAndShowsMessage() {
+        struct TestLauncher : PCManFM::Launcher {
+            using PCManFM::Launcher::chooseApp;
+            TestLauncher() : PCManFM::Launcher(nullptr) {}
+        };
+        const auto restore = qScopeGuard([] { PCManFM::Launcher::setAppChooserAvailableForTest(-1); });
+        PCManFM::Launcher::setAppChooserAvailableForTest(0);
+        TestLauncher launcher;
+        Fm::GErrorPtr err;
+        auto app = launcher.chooseApp(Fm::FileInfoList{}, "application/x-zz-unknown", err);
+        QVERIFY(!app);
+        QMessageBox* box = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((box = [] {
+            for(QWidget* w : QApplication::topLevelWidgets())
+                if(w->isVisible() && w->objectName() == QLatin1String("explorerNoAppMessage")) return qobject_cast<QMessageBox*>(w);
+            return static_cast<QMessageBox*>(nullptr);
+        }()) != nullptr, 3000);
+        QCOMPARE(box->textFormat(), Qt::PlainText);
+        box->close();
+    }
+    // C05 race: another navigation queued in the same cycle as the failed load must win.
+    void restoreAfterFailedNavigationDoesNotOverrideLaterNavigation() {
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        QVERIFY(QDir(folder.path()).mkdir(QStringLiteral("child")));
+        auto root = Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData());
+        auto child = Fm::FilePath::fromLocalPath(folder.filePath(QStringLiteral("child")).toUtf8().constData());
+        QScopedPointer<PCManFM::MainWindow> window(new PCManFM::MainWindow(root));
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window.data()));
+        QTRY_VERIFY(window->currentPage()->path() == root);
+        QTimer closer;
+        connect(&closer, &QTimer::timeout, &closer, [] {
+            for(QWidget* w : QApplication::topLevelWidgets())
+                if(w->isVisible() && qobject_cast<QMessageBox*>(w)) w->close();
+        });
+        closer.start(200);
+        // TabPage::chdir is synchronous (MainWindow::chdir is queued): the failing Folder exists now
+        window->currentPage()->chdir(Fm::FilePath::fromPathStr("/nonexistent/zz-p4-c05-race"));
+        auto folderPtr = window->currentPage()->folder();
+        QVERIFY(folderPtr);
+        QVERIFY(folderPtr->path() != root);
+        // runs right after TabPage::onFolderFinishLoading queued its restore; navigate in the same cycle
+        // our slot is connected after the tab's: it runs right after the restore was queued, so
+        // this navigation happens between the queueing and the execution of the restore
+        QObject::connect(folderPtr.get(), &Fm::Folder::finishLoading, window.data(), [&] {
+            window->currentPage()->chdir(child); // folderPtr keeps the failing Folder alive
+        });
+        QTRY_VERIFY_WITH_TIMEOUT(window->currentPage()->path() == child, 4000);
+        QTest::qWait(600);
+        QVERIFY2(window->currentPage()->path() == child, "restore overwrote the later navigation");
+    }
+    // D-11 (review): closing a window that is not the last must not wipe the saved tab list.
+    void closingANonLastWindowKeepsSavedTabPaths() {
+        auto& app = *static_cast<PCManFM::Application*>(qApp);
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        auto root = Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData());
+        const bool oldReopen = app.settings().reopenLastTabs();
+        const QStringList oldTabs = app.settings().tabPaths();
+        const auto restore = qScopeGuard([&] { app.settings().setReopenLastTabs(oldReopen); app.settings().setTabPaths(oldTabs); });
+        app.settings().setReopenLastTabs(true);
+        QScopedPointer<PCManFM::MainWindow> a(new PCManFM::MainWindow(root));
+        QScopedPointer<PCManFM::MainWindow> b(new PCManFM::MainWindow(root));
+        a->show(); b->show();
+        QVERIFY(QTest::qWaitForWindowExposed(a.data()));
+        QVERIFY(QTest::qWaitForWindowExposed(b.data()));
+        const QStringList sentinel{QStringLiteral("/sentinel-p4-d11")};
+        app.settings().setTabPaths(sentinel);
+        b->close();
+        QCOMPARE(app.settings().tabPaths(), sentinel);
+    }
+    // ui-quick finding: destroying a MainWindow with the breadcrumb address editor focused crashed.
+    void destroyingMainWindowWithFocusedAddressEditorDoesNotCrash() {
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        auto root = Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData());
+        auto* window = new PCManFM::MainWindow(root);
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QApplication::setActiveWindow(window);
+        auto* bar = window->findChild<Fm::PathBar*>();
+        QVERIFY(bar);
+        QMetaObject::invokeMethod(bar, "openEditor");
+        Fm::PathEdit* edit = nullptr;
+        QTRY_VERIFY((edit = bar->findChild<Fm::PathEdit*>()) != nullptr);
+        QTRY_VERIFY_WITH_TIMEOUT(edit->hasFocus(), 2000);
+        delete window; // used to SIGSEGV in PathEdit::focusOutEvent -> PathBar::closeEditor
+        QVERIFY(true);
+    }
+    void expandUserPathLeavesEmptyVariablesAlone() {
+        qputenv("P4_EMPTY_VAR", "");
+        QCOMPARE(PCManFM::Application::expandUserPath(QStringLiteral("$P4_EMPTY_VAR/x")), QStringLiteral("$P4_EMPTY_VAR/x"));
+        QCOMPARE(PCManFM::Application::expandUserPath(QStringLiteral("${P4_EMPTY_VAR}/x")), QStringLiteral("${P4_EMPTY_VAR}/x"));
+        qunsetenv("P4_EMPTY_VAR");
+    }
+    void absolutePathsWithColonSlashAreLocalNotUris() {
+        QVERIFY(PCManFM::Application::isLocalPathArgument(QStringLiteral("/mnt/a:/b")));
+        QVERIFY(PCManFM::Application::isLocalPathArgument(QStringLiteral("/tmp/x")));
+        QVERIFY(PCManFM::Application::isLocalPathArgument(QStringLiteral("relative/dir")));
+        QVERIFY(!PCManFM::Application::isLocalPathArgument(QStringLiteral("sftp://host/x")));
+        QVERIFY(!PCManFM::Application::isLocalPathArgument(QStringLiteral("trash:///")));
+        QVERIFY(!PCManFM::Application::isLocalPathArgument(QStringLiteral("computer:///")));
+        QVERIFY(!PCManFM::Application::isLocalPathArgument(QStringLiteral("smb://h/s")));
+        QVERIFY(!PCManFM::Application::isLocalPathArgument(QStringLiteral("file:///tmp")));
+    }
+    void typedPathKeepsTrailingSpaceWhenThatFolderExists() {
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        const QString withSpace = folder.filePath(QStringLiteral("name "));
+        QVERIFY(QDir().mkdir(withSpace));
+        QCOMPARE(PCManFM::Application::normalizeTypedPath(withSpace), withSpace);
+        // not existing as typed: the accidental surrounding blanks are dropped
+        QVERIFY(QDir().mkdir(folder.filePath(QStringLiteral("plain"))));
+        QCOMPARE(PCManFM::Application::normalizeTypedPath(QStringLiteral("  ") + folder.filePath(QStringLiteral("plain")) + QStringLiteral("  ")),
+                 folder.filePath(QStringLiteral("plain")));
+        QVERIFY(PCManFM::Application::normalizeTypedPath(QStringLiteral("   ")).isEmpty());
+    }
+    void translationsAreSearchedRelativeToTheBinaryFirst() {
+        const QStringList dirs = PCManFM::Application::translationDirs();
+        const QString appDir = QCoreApplication::applicationDirPath();
+        QVERIFY(dirs.size() >= 3);
+        QCOMPARE(dirs.at(0), QDir::cleanPath(appDir + QStringLiteral("/../share/win11-explorer-qt/translations")));
+        QCOMPARE(dirs.at(1), QDir::cleanPath(appDir + QStringLiteral("/../share/pcmanfm-qt/translations")));
+        QVERIFY(dirs.last().endsWith(QStringLiteral("/translations")));
+        QVERIFY(QDir::isAbsolutePath(dirs.last()));
     }
     void toolbarCopyPasteAndRenameOperateOnRealFiles() {
         QTemporaryDir folder;

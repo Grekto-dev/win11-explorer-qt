@@ -87,7 +87,16 @@ public:
 
     // Expands a leading "~", "~/..." or "$VAR"/"${VAR}" (variable must be set) in a path
     // typed by the user or given on the command line. Anything else is returned unchanged.
+    // (an unset or empty variable is left untouched).
     static QString expandUserPath(const QString& path);
+    // True for a local path argument; false for a URI ("sftp://...", "trash:///"). A path
+    // starting with '/' is always local, even if it contains ":/".
+    static bool isLocalPathArgument(const QString& path);
+    // Address-bar text -> path: expansion + blank input rejected (empty result); surrounding
+    // whitespace is kept when the path as typed exists.
+    static QString normalizeTypedPath(const QString& typed);
+    // Translation directories, relocatable ones (<bin>/../share/...) before PCMANFM_DATA_DIR.
+    static QStringList translationDirs();
 
     // Persist the settings soon (debounced) so a crash does not lose the window state.
     void scheduleSettingsSave();

@@ -29,6 +29,7 @@
 #include <QApplication>
 #include <QCursor>
 #include <QMessageBox>
+#include <QPointer>
 #include <QScrollBar>
 #include <QToolButton>
 #include <QLabel>
@@ -478,7 +479,11 @@ void TabPage::onFolderFinishLoading() {
         restorePending_ = false;
         if(folder_ && !folder_->isValid() && restorePath_) {
             // C05: the folder could not be loaded at all; go back to where we were
-            QTimer::singleShot(0, this, [this] {
+            const quint64 generation = navGeneration_;
+            QTimer::singleShot(0, this, [this, generation] {
+                if(generation != navGeneration_) {
+                    return; // the user/app already navigated elsewhere: do not override it
+                }
                 const Fm::FilePath previous = restorePath_;
                 const Fm::BrowseHistory history = restoreHistory_;
                 chdir(previous, false);
@@ -550,7 +555,18 @@ void TabPage::onFolderError(const Fm::GErrorPtr& err, Fm::Job::ErrorSeverity sev
             if(!path.hasUriScheme("admin")) {
                 MountOperation* op = new MountOperation(true, this);
                 op->mountEnclosingVolume(path);
-                if(op->wait()) { // blocking event loop, wait for mount operation to finish.
+                // B1b (documented limit): the mount may need user interaction (password
+                // dialogs) while this slot runs inside the Folder's BlockingQueued error signal,
+                // so the answer must be known on return and an event loop is still nested here.
+                // Make it safe: never touch a destroyed tab or a folder that changed meanwhile.
+                QPointer<TabPage> self(this);
+                const Fm::Folder* folderBefore = folder_.get();
+                const bool mounted = op->wait();
+                if(!self || self->folder_.get() != folderBefore) {
+                    response = Fm::Job::ErrorAction::CONTINUE;
+                    return;
+                }
+                if(mounted) { // blocking event loop, wait for mount operation to finish.
                     // This will reload the folder, which generates a new "start-loading"
                     // signal, so we get more "start-loading" signals than "finish-loading"
                     // signals. FIXME: This is a bug of libfm.
@@ -576,6 +592,7 @@ void TabPage::onFolderError(const Fm::GErrorPtr& err, Fm::Job::ErrorSeverity sev
         // D-04: never nest an event loop here (this runs inside job/D-Bus driven code):
         // show the error without blocking.
         auto* box = new QMessageBox(QMessageBox::Critical, tr("Error"), err.message(), QMessageBox::Ok, this);
+        box->setTextFormat(Qt::PlainText); // messages/names from remote shares are not rich text
         box->setAttribute(Qt::WA_DeleteOnClose);
         box->setWindowModality(Qt::NonModal);
         box->show();
@@ -668,6 +685,7 @@ QString TabPage::pathName() {
 void TabPage::chdir(Fm::FilePath newPath, bool addHistory) {
     // qDebug() << "TABPAGE CHDIR:" << newPath.toString().get();
     restorePending_ = false;
+    ++navGeneration_;
     if(filterBar_){
         filterBar_->clear();
     }

@@ -108,6 +108,7 @@ Application::Application(int& argc, char** argv):
     setOrganizationDomain(QStringLiteral("grekto.dev"));
     setWindowIcon(QIcon::fromTheme(QStringLiteral("win11-explorer-qt")));
 
+    Launcher::installAppChooserGuard(this); // D-02: Properties -> Open with -> Customize
     underWayland_ = QGuiApplication::platformName() == QStringLiteral("wayland");
 
     // QDBusConnection::sessionBus().registerObject("/org/pcmanfm/Application", this);
@@ -360,7 +361,7 @@ bool Application::parseCommandLineArgs() {
                     QStringList valid;
                     for(const QString& raw : std::as_const(paths)) {
                         const QString expanded = expandUserPath(raw);
-                        if(!expanded.contains(QStringLiteral(":/"))) {
+                        if(isLocalPathArgument(expanded)) {
                             const QFileInfo info(QDir(QDir::currentPath()).absoluteFilePath(expanded));
                             if(!info.exists() && !info.isSymLink()) {
                                 qCritical().noquote() << QStringLiteral("win11-explorer-qt: cannot open '%1': no such file or directory").arg(expanded);
@@ -395,8 +396,12 @@ void Application::init() {
     installTranslator(libFm_.translator());
 
     // install our own tranlations
-    if(translator.load(QStringLiteral("pcmanfm-qt_") + QLocale::system().name(), QStringLiteral(PCMANFM_DATA_DIR) + QStringLiteral("/translations"))) {
-        installTranslator(&translator);
+    const QString translationFile = QStringLiteral("pcmanfm-qt_") + QLocale::system().name();
+    for(const QString& dir : translationDirs()) {
+        if(translator.load(translationFile, dir)) {
+            installTranslator(&translator);
+            break;
+        }
     }
 }
 
@@ -555,12 +560,48 @@ QString Application::expandUserPath(const QString& path) {
         if(m.hasMatch()) {
             const QString name = m.captured(1).isEmpty() ? m.captured(2) : m.captured(1);
             const QByteArray key = name.toLocal8Bit();
-            if(qEnvironmentVariableIsSet(key.constData())) {
+            // an unset OR empty variable is left alone (an empty one would turn "$X/a" into "/a")
+            if(!qEnvironmentVariableIsEmpty(key.constData())) {
                 return qEnvironmentVariable(key.constData()) + path.mid(m.capturedLength());
             }
         }
     }
     return path;
+}
+
+// A command-line/address-bar argument is a local path unless it is a URI ("scheme:..."). An
+// absolute path (leading '/') is always local, even if it contains ":/" (e.g. /mnt/a:/b).
+bool Application::isLocalPathArgument(const QString& path) {
+    if(path.startsWith(QLatin1Char('/'))) {
+        return true;
+    }
+    static const QRegularExpression schemeRe(QStringLiteral("^[A-Za-z][A-Za-z0-9+.-]*:"));
+    return !schemeRe.match(path).hasMatch();
+}
+
+// Text typed in an address bar: expand "~"/"$VAR", ignore blank input, and only strip the
+// surrounding whitespace when the path as typed does not exist (a POSIX name may end in a space).
+QString Application::normalizeTypedPath(const QString& typed) {
+    const QString trimmed = typed.trimmed();
+    if(trimmed.isEmpty()) {
+        return QString();
+    }
+    if(trimmed != typed) {
+        const QString literal = expandUserPath(typed);
+        if(isLocalPathArgument(literal) && QFileInfo::exists(literal)) {
+            return literal;
+        }
+    }
+    return expandUserPath(trimmed);
+}
+
+// Directories searched for translations: relocatable ones first, the build-time prefix last.
+QStringList Application::translationDirs() {
+    const QString appDir = QCoreApplication::applicationDirPath();
+    return {
+        QDir::cleanPath(appDir + QStringLiteral("/../share/win11-explorer-qt/translations")),
+        QDir::cleanPath(appDir + QStringLiteral("/../share/pcmanfm-qt/translations")),
+        QStringLiteral(PCMANFM_DATA_DIR) + QStringLiteral("/translations")};
 }
 
 void Application::launchFiles(const QString& cwd, const QStringList& paths, bool inNewWindow, bool reopenLastTabs) {

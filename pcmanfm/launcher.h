@@ -53,6 +53,12 @@ public:
     static bool appChooserAvailable();
     // Test hook: 1 = pretend available, 0 = pretend unavailable, -1 = autodetect.
     static void setAppChooserAvailableForTest(int state);
+    // Path of the menu-cached helper compiled into the loaded libmenu-cache (cached; empty if unknown).
+    static QString menuCachedHelperPath();
+    // Installs the application-wide guard that keeps every Fm::AppChooserComboBox ("Customize")
+    // from building the libmenu-cache chooser when it is unavailable.
+    static void installAppChooserGuard(QObject* app);
+    static void showChooserUnavailableMessage(QWidget* parent = nullptr);
     // Non-blocking "no application associated" message (never aborts, never nests an event loop).
     static void showNoAppMessage(QWidget* parent = nullptr);
     // Chooser replacement used when appChooserAvailable() is false: pick an executable.

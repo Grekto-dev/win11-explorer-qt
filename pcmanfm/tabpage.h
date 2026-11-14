@@ -344,6 +344,7 @@ private:
     Fm::BrowseHistory restoreHistory_;
     Fm::FilePath restorePath_;
     bool restorePending_ = false;
+    quint64 navGeneration_ = 0; // bumped by every chdir(); stale deferred restores are dropped
     bool overrideCursor_;
     FolderSettings folderSettings_;
     QTimer* selectionTimer_;

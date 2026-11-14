@@ -23,6 +23,11 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QComboBox>
+#include <QSignalBlocker>
+#include <QEvent>
+#include <memory>
+#include <libfm-qt6/appchoosercombobox.h>
 #include <QStringList>
 #include <dlfcn.h>
 #include "mainwindow.h"
@@ -48,7 +53,7 @@ int appChooserOverride = -1;
 
 // Path of the helper the *loaded* libmenu-cache will exec: it is a string compiled into the
 // library ("/usr/lib/menu-cache/menu-cached" for the sysroot build), so read it from the binary.
-QString menuCachedPathOfLoadedLibrary() {
+QString readMenuCachedPathOfLoadedLibrary() {
     void* sym = dlsym(RTLD_DEFAULT, "menu_cache_lookup");
     Dl_info info;
     if(!sym || !dladdr(sym, &info) || !info.dli_fname) {
@@ -72,6 +77,60 @@ QString menuCachedPathOfLoadedLibrary() {
     }
     return QString();
 }
+
+// The lookup reads the whole library: do it once (the loaded library cannot change).
+QString menuCachedPathOfLoadedLibrary() {
+    static const QString cached = readMenuCachedPathOfLoadedLibrary();
+    return cached;
+}
+
+// D-02 (all entry points): Fm::AppChooserComboBox (Properties -> "Open with" -> "Customize")
+// builds an AppChooserDialog -> AppMenuView -> menu_cache_lookup(), which g_error()s (SIGTRAP)
+// when the helper is missing. libfm-qt is not patched here: when the chooser is unavailable the
+// combo's own handler is detached and replaced by one that never builds the dialog.
+class AppChooserGuard : public QObject {
+public:
+    using QObject::QObject;
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if(event->type() == QEvent::Polish) {
+            if(auto* combo = qobject_cast<Fm::AppChooserComboBox*>(watched)) {
+                guard(combo);
+            }
+        }
+        return false;
+    }
+    static void guard(Fm::AppChooserComboBox* combo) {
+        if(Launcher::appChooserAvailable() || combo->property("explorerChooserGuarded").toBool()) {
+            return;
+        }
+        combo->setProperty("explorerChooserGuarded", true);
+        QObject::disconnect(combo, &QComboBox::currentIndexChanged, combo, nullptr);
+        auto previous = std::make_shared<int>(combo->currentIndex());
+        QObject::connect(combo, &QComboBox::currentIndexChanged, combo, [combo, previous](int index) {
+            if(index < 0) {
+                return;
+            }
+            if(index == combo->count() - 1) { // "Customize"
+                {
+                    QSignalBlocker blocker(combo);
+                    combo->setCurrentIndex(*previous);
+                }
+                Launcher::showChooserUnavailableMessage(combo->window());
+            }
+            else {
+                *previous = index;
+            }
+        });
+    }
+};
+}
+
+void Launcher::installAppChooserGuard(QObject* app) {
+    app->installEventFilter(new AppChooserGuard(app));
+}
+
+QString Launcher::menuCachedHelperPath() {
+    return menuCachedPathOfLoadedLibrary();
 }
 
 void Launcher::setAppChooserAvailableForTest(int state) {
@@ -107,11 +166,24 @@ void Launcher::showNoAppMessage(QWidget* parent) {
     auto* box = new QMessageBox(QMessageBox::Information, QObject::tr("No application associated"),
                                 QObject::tr("No application is associated with this file type."),
                                 QMessageBox::Ok, parent);
+    box->setTextFormat(Qt::PlainText);
     box->setInformativeText(QObject::tr("Use \"Open with\" to choose an application."));
     box->setAttribute(Qt::WA_DeleteOnClose);
     box->setObjectName(QStringLiteral("explorerNoAppMessage"));
     box->setWindowModality(Qt::NonModal);
     box->show(); // non-blocking on purpose
+}
+
+void Launcher::showChooserUnavailableMessage(QWidget* parent) {
+    auto* box = new QMessageBox(QMessageBox::Information, QObject::tr("Application chooser unavailable"),
+                                QObject::tr("The application chooser is not available in this environment "
+                                            "(the libmenu-cache helper \"menu-cached\" was not found)."),
+                                QMessageBox::Ok, parent);
+    box->setTextFormat(Qt::PlainText);
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    box->setObjectName(QStringLiteral("explorerChooserUnavailableMessage"));
+    box->setWindowModality(Qt::NonModal);
+    box->show();
 }
 
 Fm::GAppInfoPtr Launcher::pickApplicationWithoutMenuCache(QWidget* parent) {

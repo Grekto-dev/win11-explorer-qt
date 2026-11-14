@@ -399,7 +399,19 @@ MainWindow::MainWindow(Fm::FilePath path):
     }
 }
 
-MainWindow::~MainWindow() = default;
+MainWindow::~MainWindow() {
+    // The breadcrumb's address editor (Fm::PathEdit) reacts to losing focus by editing the
+    // PathBar's layout; if that happens while this window is being torn down it crashes
+    // (SIGSEGV in PathEdit::focusOutEvent -> PathBar::closeEditor). Close the editors and drop
+    // the focus while every widget is still alive.
+    const auto bars = findChildren<Fm::PathBar*>();
+    for(Fm::PathBar* bar : bars) {
+        QMetaObject::invokeMethod(bar, "closeEditor", Qt::DirectConnection);
+    }
+    if(QWidget* focused = focusWidget()) {
+        focused->clearFocus();
+    }
+}
 
 // Activate a view frame appropriately and give a special style to the inactive one(s).
 // NOTE: This function is called only with the split mode.
@@ -421,8 +433,8 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
         if(auto* edit = qobject_cast<Fm::PathEdit*>(watched)) {
             const int key = static_cast<QKeyEvent*>(event)->key();
             if(edit != pathEntry_ && (key == Qt::Key_Return || key == Qt::Key_Enter)) {
-                const QString expanded = Application::expandUserPath(edit->text().trimmed());
-                if(expanded != edit->text()) {
+                const QString expanded = Application::normalizeTypedPath(edit->text());
+                if(!expanded.isEmpty() && expanded != edit->text()) {
                     edit->setText(expanded);
                 }
             }
@@ -896,7 +908,7 @@ void MainWindow::onPathEntryReturnPressed() {
     }
     if(pathEntry != nullptr) {
         // C04: expand "~"/"$VAR"; C05 (minor): whitespace-only input is not a path
-        const QString text = Application::expandUserPath(pathEntry->text().trimmed());
+        const QString text = Application::normalizeTypedPath(pathEntry->text());
         if(text.isEmpty()) {
             return;
         }
@@ -1434,9 +1446,18 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     }
 
     // remember last tab paths only if this is the last window
+    // D-11 (review): when another window stays open, keep the tab list saved so far instead of
+    // overwriting it with an empty one (a crash before the last window closes would lose it).
+    bool otherWindowOpen = false;
+    for(QWidget* w : QApplication::topLevelWidgets()) {
+        if(w != this && qobject_cast<MainWindow*>(w) && w->isVisible()) {
+            otherWindowOpen = true;
+            break;
+        }
+    }
     QStringList tabPaths;
     int splitNum = 0;
-    if(lastActive_ == nullptr && settings.reopenLastTabs()) {
+    if(lastActive_ == nullptr && !otherWindowOpen && settings.reopenLastTabs()) {
         for(int i = 0; i < ui.viewSplitter->count(); ++i) {
             if(ViewFrame* viewFrame = qobject_cast<ViewFrame*>(ui.viewSplitter->widget(i))) {
                 int n = viewFrame->getStackedWidget()->count();
@@ -1451,8 +1472,10 @@ void MainWindow::closeEvent(QCloseEvent* event) {
             }
         }
     }
-    settings.setTabPaths(tabPaths);
-    settings.setSplitViewTabsNum(splitNum);
+    if(!otherWindowOpen) {
+        settings.setTabPaths(tabPaths);
+        settings.setSplitViewTabsNum(splitNum);
+    }
     // D-11: do not wait for aboutToQuit to persist (a crash would lose this)
     static_cast<Application*>(qApp)->scheduleSettingsSave();
 }
