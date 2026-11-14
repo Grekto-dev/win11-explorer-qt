@@ -336,6 +336,30 @@ private Q_SLOTS:
         QVERIFY(!fx.dialog->isVisible());
     }
 
+    // Review D: ▶ shown after the pause ACK (controller still "Pausing" until its next tick) must resume on click.
+    void transferDialogResumeClickWorksDuringPausingWithAck() {
+        using State = ExplorerTransferController::State;
+        TransferDialogFixture fx(Fm::FileOperation::Copy, QStringLiteral("fixture3g.bin"), QString(), true);
+        QVERIFY(fx.dialog);
+        fx.dialog->show();
+        auto* pause = fx.child<QPushButton>("pauseButton");
+        auto* controller = fx.dialog->findChild<ExplorerTransferController*>();
+        QVERIFY(controller && pause->isVisible());
+        QTest::mouseClick(pause, Qt::LeftButton);
+        QCOMPARE(controller->snapshot().state, State::Pausing);
+        QVERIFY(controller->snapshot().pauseRequested);
+        QVERIFY(!pause->isEnabled());                               // no ACK yet
+        fx.dialog->applyTransferState(State::Pausing, true);        // the ACK telemetry
+        QCOMPARE(pause->accessibleName(), QStringLiteral("Retomar"));
+        QVERIFY(pause->isEnabled());
+        QCOMPARE(controller->snapshot().state, State::Pausing);     // controller itself has not ticked yet
+        QTest::mouseClick(pause, Qt::LeftButton);
+        QCOMPARE(controller->snapshot().state, State::Running);     // the click was not swallowed
+        QVERIFY(!controller->snapshot().pauseRequested);
+        QCOMPARE(pause->accessibleName(), QStringLiteral("Pausar"));
+        QVERIFY(!fx.dialog->windowTitle().startsWith(QStringLiteral("Pausado")));
+    }
+
     void transferDialogHasMeasuredCollapsedAndExpandedSizes() {
         TransferDialogFixture fx;
         QVERIFY(fx.dialog);

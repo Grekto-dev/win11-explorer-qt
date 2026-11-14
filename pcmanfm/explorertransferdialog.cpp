@@ -470,10 +470,15 @@ void ExplorerTransferDialog::toggleDetails() {
 
 void ExplorerTransferDialog::togglePause() {
     if(!controller_) return;
-    const auto state = controller_->snapshot().state;
-    if(state == ExplorerTransferController::State::Paused)
+    using State = ExplorerTransferController::State;
+    const auto snapshot = controller_->snapshot();
+    // ▶ is shown from the real backend ACK, which can precede the controller's own Pausing->Paused tick:
+    // what the button shows must be what the click does (paused_ is set only from an ACKed state).
+    const bool acknowledgedPause = snapshot.state == State::Paused ||
+                                   (snapshot.state == State::Pausing && (snapshot.paused || paused_));
+    if(acknowledgedPause)
         controller_->resume();
-    else if(state == ExplorerTransferController::State::Running)
+    else if(snapshot.state == State::Running)
         controller_->pause();
     refreshPauseState();
 }
