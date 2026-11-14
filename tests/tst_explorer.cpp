@@ -36,6 +36,7 @@
 #include <libfm-qt6/filemenu.h>
 #include <libfm-qt6/sidepane.h>
 #include <QFileDialog>
+#include <QCompleter>
 #include <libfm-qt6/appchoosercombobox.h>
 #include <libfm-qt6/core/fileinfo.h>
 #include <libfm-qt6/core/folder.h>
@@ -1703,13 +1704,12 @@ private Q_SLOTS:
         QTemporaryDir folder;
         QVERIFY(folder.isValid());
         auto root = Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData());
-        QScopedPointer<PCManFM::MainWindow> window(new PCManFM::MainWindow(root));
-        window->show();
-        QVERIFY(QTest::qWaitForWindowExposed(window.data()));
-        QTRY_VERIFY(window->currentPage()->path() == root);
-        auto* page = window->currentPage();
-        auto folderPtr = page->folder();
+        // a bare tab (no MainWindow): nobody else reacts to the signal by navigating
+        PCManFM::TabPage tab;
+        tab.chdir(root);
+        auto folderPtr = tab.folder();
         QVERIFY(folderPtr);
+        auto* page = &tab;
         const quint64 before = page->navGeneration();
         Q_EMIT folderPtr->unmount();
         QVERIFY2(page->navGeneration() > before, "unmounting the shown folder must invalidate the navigation generation");
