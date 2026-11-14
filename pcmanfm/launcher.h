@@ -67,7 +67,8 @@ public:
     static void showChooserUnavailableMessage(QWidget* parent = nullptr, const QString& text = QString());
     // True for the libmenu-cache backed locations (menu:///applications/...): they need menu-cached.
     // The scheme is compared case-insensitively. Also true for a search:// location with a menu:
-    // root (the search job enumerates its roots).
+    // root, also behind nested search:// roots (the search job enumerates its roots; analysed up to
+    // depth 4, deeper chains count as menu while menuCacheUnusable()).
     static bool isMenuCachePath(const Fm::FilePath& path);
     // Textual form for typed/CLI text: starts (after leading blanks) with "menu:", any case.
     static bool isMenuCacheText(const QString& text);
