@@ -655,6 +655,9 @@ void TabPage::onFolderRemoved() {
 void TabPage::onFolderUnmount() {
     // the folder we're showing is unmounted, destroy the widget
     qDebug("folder unmount");
+    // B1b: whatever deferred/nested work was started for this folder (the NOT_MOUNTED mount wait in
+    // onFolderError, a pending C05 restore) is stale now: it must not act on the unmounted folder.
+    ++navGeneration_;
     // NOTE: We cannot delete the page or change its directory here
     // because unmounting might be done from places view, in which case,
     // the mount operation is a child of the places view and should be
@@ -688,9 +691,7 @@ void TabPage::chdir(Fm::FilePath newPath, bool addHistory) {
     // Review 2: menu://applications/ is built with menu_cache_lookup_sync, which aborts the whole
     // process when menu-cached is missing. Refuse the navigation (non-blocking message).
     if(Launcher::isMenuCachePath(newPath) && !Launcher::appChooserAvailable()) {
-        Launcher::showChooserUnavailableMessage(window(),
-            tr("The Applications view is not available in this environment "
-               "(the libmenu-cache helper \"menu-cached\" was not found)."));
+        Launcher::showMenuUnavailableMessage(window());
         if(folder_) {
             return;
         }

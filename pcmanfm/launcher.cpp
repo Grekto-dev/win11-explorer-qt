@@ -31,6 +31,10 @@
 #include <QEvent>
 #include <memory>
 #include <libfm-qt6/appchoosercombobox.h>
+#include <libfm-qt6/pathedit.h>
+#include <QLineEdit>
+#include <QMetaObject>
+#include <strings.h>
 #include <QStringList>
 #include <dlfcn.h>
 #include "mainwindow.h"
@@ -98,6 +102,13 @@ public:
         if(event->type() == QEvent::Polish) {
             if(auto* combo = qobject_cast<Fm::AppChooserComboBox*>(watched)) {
                 guard(combo);
+            }
+        }
+        // Review 3: every Fm::PathEdit (toolbar entry, the breadcrumb's inline editor); the
+        // focus-in is a second chance before PathEdit::focusInEvent reloads its completer.
+        if(event->type() == QEvent::Polish || event->type() == QEvent::FocusIn) {
+            if(auto* edit = qobject_cast<Fm::PathEdit*>(watched)) {
+                Launcher::guardPathEdit(edit);
             }
         }
         return false;
@@ -191,7 +202,70 @@ void Launcher::showChooserUnavailableMessage(QWidget* parent, const QString& tex
 }
 
 bool Launcher::isMenuCachePath(const Fm::FilePath& path) {
-    return path && path.hasUriScheme("menu");
+    if(!path) {
+        return false;
+    }
+    const auto scheme = path.uriScheme();
+    return scheme && strcasecmp(scheme.get(), "menu") == 0;
+}
+
+bool Launcher::isMenuCacheText(const QString& text) {
+    int i = 0;
+    while(i < text.size() && text.at(i).isSpace()) {
+        ++i;
+    }
+    return text.mid(i, 5).compare(QLatin1String("menu:"), Qt::CaseInsensitive) == 0;
+}
+
+void Launcher::showMenuUnavailableMessage(QWidget* parent) {
+    showChooserUnavailableMessage(parent,
+        QObject::tr("The Applications view is not available in this environment "
+                    "(the libmenu-cache helper \"menu-cached\" was not found)."));
+}
+
+void Launcher::guardPathEdit(Fm::PathEdit* edit) {
+    if(!edit || edit->property("explorerMenuGuarded").toBool()) {
+        return;
+    }
+    edit->setProperty("explorerMenuGuarded", true);
+    // PathEdit::onTextChanged (private slot) is what starts the completer job. Take its place:
+    // forward every text but the ones that would enumerate a menu: location.
+    // (connected with a pointer-to-member, so a SIGNAL/SLOT-string disconnect cannot find it; drop
+    // every textChanged -> edit connection, the edit has no other one.)
+    QObject::disconnect(edit, &QLineEdit::textChanged, edit, nullptr);
+    QObject::connect(edit, &QLineEdit::textChanged, edit, [edit](const QString& text) {
+        if(menuCacheUnusable() && isMenuCacheText(text)) {
+            return; // would reach menu_cache_lookup_sync (abort without menu-cached)
+        }
+        QMetaObject::invokeMethod(edit, "onTextChanged", Qt::DirectConnection, Q_ARG(QString, text));
+    });
+    // text already there (set before the guard existed): its prefix may be loaded on focus-in
+    if(menuCacheUnusable() && isMenuCacheText(edit->text())) {
+        edit->clear();
+    }
+}
+
+bool Launcher::launchPaths(QWidget* parent, const Fm::FilePathList& paths) {
+    if(menuCacheUnusable()) {
+        Fm::FilePathList allowed;
+        bool dropped = false;
+        for(const auto& path : paths) {
+            if(isMenuCachePath(path)) {
+                dropped = true;
+            }
+            else {
+                allowed.push_back(path);
+            }
+        }
+        if(dropped) {
+            showMenuUnavailableMessage(parent ? parent : static_cast<QWidget*>(mainWindow_));
+            if(allowed.empty()) {
+                return false;
+            }
+            return Fm::FileLauncher::launchPaths(parent, allowed);
+        }
+    }
+    return Fm::FileLauncher::launchPaths(parent, paths);
 }
 
 void Launcher::guardFileMenu(Fm::FileMenu* menu, QWidget* parent) {

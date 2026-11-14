@@ -25,6 +25,7 @@
 
 namespace Fm {
 class FileMenu;
+class PathEdit;
 }
 
 namespace PCManFM {
@@ -65,7 +66,24 @@ public:
     // Non-blocking, PlainText. An empty text selects the generic "chooser unavailable" wording.
     static void showChooserUnavailableMessage(QWidget* parent = nullptr, const QString& text = QString());
     // True for the libmenu-cache backed locations (menu:///applications/...): they need menu-cached.
+    // The scheme is compared case-insensitively.
     static bool isMenuCachePath(const Fm::FilePath& path);
+    // Textual form for typed/CLI text: starts (after leading blanks) with "menu:", any case.
+    static bool isMenuCacheText(const QString& text);
+    // True when navigating to / listing / querying 'menu:' would abort the process.
+    static bool menuCacheUnusable() {
+        return !appChooserAvailable();
+    }
+    // Non-blocking, PlainText: "the Applications view is unavailable".
+    static void showMenuUnavailableMessage(QWidget* parent = nullptr);
+    // Review 3: an address editor (Fm::PathEdit) enumerates the typed prefix in a thread to fill its
+    // completer; for "menu:" that reaches menu_cache_lookup_sync. When menu-cache is unusable the
+    // editor's own textChanged handler is replaced by one that skips "menu:" text. Installed on
+    // every Fm::PathEdit by the application-wide filter (also callable directly).
+    static void guardPathEdit(Fm::PathEdit* edit);
+    // Hides FileLauncher::launchPaths: FileInfoJob would query_info a menu:// child (lookup_sync).
+    // Menu locations are dropped (with a message) when menu-cache is unusable.
+    bool launchPaths(QWidget* parent, const Fm::FilePathList& paths);
     // D-02: makes the "Open with > Other Applications" entry of any Fm::FileMenu safe (side pane
     // tree, views, desktop): when the chooser is unavailable it opens an executable picker
     // instead of libfm-qt's AppChooserDialog. No-op when the chooser is available.

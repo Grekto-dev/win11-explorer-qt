@@ -571,12 +571,31 @@ bool Application::isLocalPathArgument(const QString& path) {
     return !schemeRe.match(path).hasMatch();
 }
 
+// Environment rule (review 3): "~" and "$VAR" are expanded exactly once, by the process that
+// received the argument from the user (the second instance, in the caller's environment), and the
+// primary instance receives the final, ABSOLUTE local path (or URI). A forwarded local path never
+// starts with '$' or '~', so the primary's own expansion in doLaunchFiles (kept for the first
+// instance and for D-Bus callers such as ShowFolders) cannot expand it a second time with the
+// server's environment.
 QStringList Application::validateCliPaths(const QStringList& raw, const QString& cwd, bool* anyMissing) {
     QStringList valid;
     for(const QString& r : raw) {
-        const QString expanded = expandUserPath(r); // only to validate; r is what gets forwarded
+        const QString expanded = expandUserPath(r);
+        if(expanded.isEmpty()) {
+            continue; // an empty argument is ignored (as doLaunchFiles always did)
+        }
+        if(Launcher::isMenuCacheText(expanded) && Launcher::menuCacheUnusable()) {
+            // any depth: even a child is queried (FileInfoJob) by the launcher before any chdir
+            qCritical().noquote() << QStringLiteral("win11-explorer-qt: cannot open '%1': the Applications view (menu:) is not available "
+                                                    "(the libmenu-cache helper \"menu-cached\" was not found)").arg(expanded);
+            if(anyMissing) {
+                *anyMissing = true;
+            }
+            continue;
+        }
         if(isLocalPathArgument(expanded)) {
-            const QFileInfo info(QDir(cwd).absoluteFilePath(expanded));
+            const QString absolute = QDir(cwd).absoluteFilePath(expanded);
+            const QFileInfo info(absolute);
             if(!info.exists() && !info.isSymLink()) {
                 qCritical().noquote() << QStringLiteral("win11-explorer-qt: cannot open '%1': no such file or directory").arg(expanded);
                 if(anyMissing) {
@@ -584,8 +603,10 @@ QStringList Application::validateCliPaths(const QStringList& raw, const QString&
                 }
                 continue;
             }
+            valid.push_back(absolute);
+            continue;
         }
-        valid.push_back(r);
+        valid.push_back(expanded);
     }
     return valid;
 }
@@ -643,6 +664,7 @@ void Application::launchFiles(const QString& cwd, const QStringList& paths, bool
 void Application::doLaunchFiles(const QString& cwd, const QStringList& paths, bool inNewWindow, bool reopenLastTabs) {
     Fm::FilePathList pathList;
     auto _paths = paths;
+    bool menuRefused = false;
 
     openingLastTabs_ = reopenLastTabs && settings_.reopenLastTabs() && !settings_.tabPaths().isEmpty();
     if(openingLastTabs_) {
@@ -658,7 +680,15 @@ void Application::doLaunchFiles(const QString& cwd, const QStringList& paths, bo
         if(arg.isEmpty()) {
             continue;
         }
+        if(Launcher::isMenuCacheText(arg) && Launcher::menuCacheUnusable()) {
+            menuRefused = true; // FileInfoJob would query it (lookup_sync); the launcher must never see it
+            continue;
+        }
         pathList.push_back(filePathFromArgument(arg, cwd));
+    }
+    if(menuRefused) {
+        Launcher::showMenuUnavailableMessage(MainWindow::lastActive());
+        // nothing else to open: the empty launch below is a no-op and the last-tabs fallback still runs
     }
 
     if(!inNewWindow && settings_.singleWindowMode()) {
