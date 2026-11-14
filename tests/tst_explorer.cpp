@@ -453,12 +453,16 @@ private Q_SLOTS:
         QCOMPARE(samples[1].fraction, 0.3);
         QCOMPARE(samples[1].bytesPerSecond, 2'000'000.0);
         // setDataTransferred (the libfm feed) records through the same real-byte path.
+        // Deterministic: the dialog's clock is injected, no real time passes (no qWait).
         TransferDialogFixture live;
+        qint64 nowMs = 0;
+        live.dialog->setClockForTesting([&nowMs] { return nowMs; });
         live.dialog->setDataTransferred(1'000, 10'000);
-        QTest::qWait(30);
+        nowMs = 500;
         live.dialog->setDataTransferred(5'000, 10'000);
         QCOMPARE(live.dialog->speedSamples().size(), 1);
-        QVERIFY(live.dialog->speedSamples().first().bytesPerSecond > 0.0);
+        QCOMPARE(live.dialog->speedSamples().first().bytesPerSecond, 8'000.0);   // 4000 B in 0.5 s
+        QCOMPARE(live.dialog->speedSamples().first().fraction, 0.5);
     }
 
     void transferDialogSpeedGraphRendersEmptyBaselineThenYellowAreaWhenPaused() {

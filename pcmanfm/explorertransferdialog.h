@@ -9,6 +9,7 @@
 #include <QVector>
 #include <QElapsedTimer>
 #include <QPointer>
+#include <functional>
 #include "explorertransfercontroller.h"
 
 class ExplorerTransferController;
@@ -36,6 +37,8 @@ public:
     // Returns false (and records nothing) for non-advancing time or bytes.
     bool recordSpeedSample(std::uint64_t bytes, std::uint64_t total, qint64 atMs);
     QVector<SpeedSample> speedSamples() const;
+    // Test seam: replaces the elapsed-time source used by setDataTransferred() (ms since the dialog started).
+    void setClockForTesting(std::function<qint64()> clockMs) { clockMs_ = std::move(clockMs); }
     // Maps the controller state to title/bar/glyphs; refreshPauseState() feeds it
     // from the live controller, tests drive the pure mapping directly.
     void applyTransferState(ExplorerTransferController::State state, bool pauseAcknowledged);
@@ -87,6 +90,7 @@ private:
     std::uint64_t filesTotal_ = 0;
     std::uint64_t sourceCount_ = 1;
     QElapsedTimer clock_;
+    std::function<qint64()> clockMs_;
     QVector<SpeedSample> samples_;
     bool haveLastObservation_ = false;
     std::uint64_t lastBytes_ = 0;

@@ -324,7 +324,7 @@ void ExplorerTransferDialog::setPercent(unsigned int percent) {
 }
 void ExplorerTransferDialog::setDataTransferred(std::uint64_t finished, std::uint64_t total) {
     transferred_ = finished; total_ = total;
-    recordSpeedSample(finished, total, clock_.elapsed());
+    recordSpeedSample(finished, total, clockMs_ ? clockMs_() : clock_.elapsed());
     updateDetailTexts();
 }
 void ExplorerTransferDialog::setFilesProcessed(std::uint64_t finished, std::uint64_t total) {
