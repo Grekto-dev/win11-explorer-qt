@@ -75,6 +75,7 @@ private Q_SLOTS:
     void defaultDialogFactoryReceivesPointerBasedErrorWithoutTestRegistration();
     void transferDialogFactoryBuildsCollapsedRealProgressUi();
     void liveOperationPauseButtonWaitsForBackendAck();
+    void liveDialogCancelWhilePausedShowsCancellingWithoutConfirmation();
     void preservesExplicitConflictResponseOnLiveJob();
     void reportsRealTwoGiBCopyProgressAndIntegrity();
     void cooperativePauseCapabilityIsNotAdvertisedByUnsupportedJobs();
@@ -536,7 +537,7 @@ void ExplorerTransferControllerTest::liveOperationPauseButtonWaitsForBackendAck(
             << "request=" << (job && job->pauseRequested()) << "ack=" << (job && job->isPauseAcknowledged())
             << "current=" << s.currentFileBytes << "finished=" << s.finishedBytes << "total=" << s.totalBytes
             << "disk=" << QFileInfo(copiedPath).size() << "gui_ticks=" << responsiveTicks
-            << "caption=" << (pause ? pause->text() : QStringLiteral("no-dialog"));
+            << "caption=" << (pause ? pause->accessibleName() : QStringLiteral("no-dialog"));
     };
     QTimer diagnosticTimer;
     diagnosticTimer.setInterval(500);
@@ -579,7 +580,7 @@ void ExplorerTransferControllerTest::liveOperationPauseButtonWaitsForBackendAck(
     QVERIFY(job->pauseRequested());
     QVERIFY(!job->isPauseAcknowledged());
     QCOMPARE(controller->snapshot().state, ExplorerTransferController::State::Pausing);
-    QCOMPARE(pause->text(), QStringLiteral("Pausando…"));
+    QCOMPARE(pause->accessibleName(), QStringLiteral("Pausando…"));
     QVERIFY(!pause->isEnabled());
     phase = "request-without-ack-worker-held";
     trace();
@@ -589,20 +590,23 @@ void ExplorerTransferControllerTest::liveOperationPauseButtonWaitsForBackendAck(
     QTest::qWait(75);
     QVERIFY(responsiveTicks > ticksBeforeAck);
     QVERIFY(!job->isPauseAcknowledged());
-    QCOMPARE(pause->text(), QStringLiteral("Pausando…"));
+    QCOMPARE(pause->accessibleName(), QStringLiteral("Pausando…"));
     const qint64 releasedAt = pauseClock.elapsed();
     release();
     phase = "awaiting-gio-checkpoint";
     QVERIFY2(QTest::qWaitFor([&] {
         return !finished.isEmpty() || (controller && controller->snapshot().paused
-            && pause && pause->text() == QStringLiteral("Retomar") && pause->isEnabled());
+            && pause && pause->accessibleName() == QStringLiteral("Retomar") && pause->isEnabled());
     }, int(ioDeadline.remainingTime())), "real pause ACK / UI not observed within the shared 180 s I/O budget");
     QVERIFY2(finished.isEmpty(), "copy completed before a partial-copy pause ACK");
     QVERIFY(controller);
     QVERIFY(job->pauseRequested());
     QVERIFY(job->isPauseAcknowledged());
     QVERIFY(controller->snapshot().paused);
-    QCOMPARE(pause->text(), QStringLiteral("Retomar"));
+    QCOMPARE(pause->accessibleName(), QStringLiteral("Retomar"));
+    QCOMPARE(pause->property("glyph").toString(), QStringLiteral("resume"));
+    QVERIFY2(capturedTransferDialog->windowTitle().startsWith(QStringLiteral("Pausado - ")),
+             qPrintable(capturedTransferDialog->windowTitle()));
     const qint64 ackObservedAt = pauseClock.elapsed();
     const qint64 ackLatencyMs = ackObservedAt - requestedAt;
     const qint64 pausedBytes = QFileInfo(copiedPath).size();
@@ -627,6 +631,8 @@ void ExplorerTransferControllerTest::liveOperationPauseButtonWaitsForBackendAck(
     if(!capture.isEmpty()) QVERIFY(capturedTransferDialog->grab().save(capture));
     QTest::mouseClick(pause, Qt::LeftButton);
     QVERIFY(!job->pauseRequested());
+    QVERIFY2(!capturedTransferDialog->windowTitle().startsWith(QStringLiteral("Pausado")),
+             qPrintable(capturedTransferDialog->windowTitle()));
     phase = "resumed";
     trace();
     QVERIFY2(QTest::qWaitFor([&] { return finished.count() == 1; }, int(ioDeadline.remainingTime())),
@@ -643,6 +649,78 @@ void ExplorerTransferControllerTest::liveOperationPauseButtonWaitsForBackendAck(
                       << "pause_button_ack_label=" << QStringLiteral("Retomar")
                       << "completed_bytes=" << QFileInfo(copiedPath).size()
                       << "screenshot=" << (capture.isEmpty() ? QStringLiteral("not-requested") : capture);
+}
+
+void ExplorerTransferControllerTest::liveDialogCancelWhilePausedShowsCancellingWithoutConfirmation() {
+    constexpr qsizetype chunkBytes = 4 * 1024 * 1024;
+    constexpr int chunks = 768;  // 3 GiB: the GIO copy checkpoint lands after 2 GiB, i.e. genuinely mid-copy
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString source = root.filePath(QStringLiteral("ui-cancel-source-3GiB.bin"));
+    const QString destination = root.filePath(QStringLiteral("destination"));
+    QVERIFY(QDir().mkpath(destination));
+    QFile file(source);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    const QByteArray block(chunkBytes, 'K');
+    for(int i = 0; i < chunks; ++i) QCOMPARE(file.write(block), qint64(block.size()));
+    file.close();
+
+    Fm::FileOperation::setDialogFactory(&captureExplorerTransferDialog);
+    capturedTransferDialog = nullptr;
+    const Fm::FilePathList sources{Fm::FilePath::fromLocalPath(source.toLocal8Bit().constData())};
+    Fm::FileOperation operation(Fm::FileOperation::Copy, sources);
+    operation.setAutoDestroy(false);
+    operation.setDestination(Fm::FilePath::fromLocalPath(destination.toLocal8Bit().constData()));
+    QSignalSpy finished(&operation, &Fm::FileOperation::finished);
+    QPointer<Fm::FileOperationJob> job(operation.job());
+    QSignalSpy cancelledSpy(job.data(), &Fm::Job::cancelled);
+    std::promise<void> releaseWorker;
+    const auto released = releaseWorker.get_future().share();
+    const auto preparationReached = std::make_shared<std::atomic_bool>(false);
+    connect(job, &Fm::FileOperationJob::preparedToRun, &operation, [released, preparationReached] {
+        *preparationReached = true;
+        released.wait_for(std::chrono::seconds(15));
+    }, Qt::DirectConnection);
+    bool workerReleased = false;
+    const auto release = [&] { if(!workerReleased) { workerReleased = true; releaseWorker.set_value(); } };
+    const auto cleanup = qScopeGuard([&] {
+        release();
+        Fm::FileOperation::setDialogFactory(nullptr);
+        if(job && finished.isEmpty()) {
+            job->cancel();
+            QTest::qWaitFor([&] { return !finished.isEmpty(); }, 60000);
+        }
+    });
+    QVERIFY(operation.run());
+    QVERIFY2(QTest::qWaitFor([&] { return capturedTransferDialog && preparationReached->load(); }, 10000),
+             "real delayed dialog / preparation rendezvous not reached");
+    QPointer<ExplorerTransferDialog> dialog = capturedTransferDialog;
+    auto* pause = dialog->findChild<QPushButton*>(QStringLiteral("pauseButton"));
+    auto* cancel = dialog->findChild<QPushButton*>(QStringLiteral("transferCancelButton"));
+    QVERIFY(pause && cancel && pause->isVisible());
+    QTest::mouseClick(pause, Qt::LeftButton);
+    release();
+    QVERIFY2(QTest::qWaitFor([&] {
+        return !finished.isEmpty() || (job && job->isPauseAcknowledged() && pause->accessibleName() == QStringLiteral("Retomar"));
+    }, 120000), "real pause ACK not observed");
+    QVERIFY2(finished.isEmpty(), "copy completed before the pause ACK");
+    QVERIFY(dialog->windowTitle().startsWith(QStringLiteral("Pausado - ")));
+
+    QTest::mouseClick(cancel, Qt::LeftButton);
+    // Cancelling is shown immediately, with no confirmation, and the dialog is not hidden.
+    QVERIFY2(dialog->windowTitle().startsWith(QStringLiteral("Cancelando - ")), qPrintable(dialog->windowTitle()));
+    QVERIFY(!QApplication::activeModalWidget());
+    for(QWidget* w : QApplication::topLevelWidgets())
+        QVERIFY2(!(qobject_cast<QMessageBox*>(w) && w->isVisible()), "cancel opened a confirmation box");
+    QVERIFY(dialog->isVisible());
+    QVERIFY(!cancel->isEnabled());
+    // The paused worker wakes and the job really ends; the dialog is only gone after that.
+    QVERIFY2(QTest::qWaitFor([&] { return finished.count() == 1; }, 60000), "cancelled paused copy never finished");
+    QCOMPARE(cancelledSpy.count(), 1);
+    const qint64 destBytes = QFileInfo(QDir(destination).filePath(QFileInfo(source).fileName())).size();
+    qInfo().noquote() << "LIVE_CANCEL_UI dest_bytes_after_cancel=" << destBytes
+                      << "fixture_bytes=" << qint64(chunkBytes) * chunks;
+    QVERIFY2(destBytes < qint64(chunkBytes) * chunks, "cancel did not interrupt the paused copy (destination is complete)");
 }
 
 void ExplorerTransferControllerTest::defaultDialogFactoryReceivesPointerBasedErrorWithoutTestRegistration() {

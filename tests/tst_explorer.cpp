@@ -179,13 +179,18 @@ private Q_SLOTS:
         fx.dialog->applyTransferState(ExplorerTransferController::State::Cancelling, false);
         QCOMPARE(pause->property("glyph").toString(), QStringLiteral("resume"));
         QVERIFY(!pause->isEnabled());                               // dimmed ▶ while cancelling
-        // The glyph is drawn, not a font character: the paused ▶ is white on the dark body, dimmed (#797979) while cancelling.
-        const QImage dim = pause->grab().toImage();
-        QColor brightest(0, 0, 0);
-        for(int y = 0; y < dim.height(); ++y)
-            for(int x = 0; x < dim.width(); ++x)
-                if(QColor(dim.pixel(x, y)).value() > brightest.value()) brightest = QColor(dim.pixel(x, y));
-        QVERIFY2(brightest.red() < 200 && brightest.red() > 60, qPrintable(brightest.name()));
+        // The glyph is drawn, not a font character: the centre of the ▶ is white when active and
+        // the measured dim grey #797979 while cancelling.
+        const auto centrePixel = [&] {
+            const QImage img = pause->grab().toImage();
+            return QColor(img.pixel(img.width() / 2, img.height() / 2));
+        };
+        QCOMPARE(centrePixel(), QColor(121, 121, 121));
+        TransferDialogFixture active;
+        active.dialog->setPauseAvailable(true);
+        active.dialog->applyTransferState(ExplorerTransferController::State::Paused, true);
+        const QImage lit = active.child<QPushButton>("pauseButton")->grab().toImage();
+        QCOMPARE(QColor(lit.pixel(lit.width() / 2, lit.height() / 2)), QColor(255, 255, 255));
     }
 
     void transferDialogHasNoPauseButtonWithoutBackendCapability() {
