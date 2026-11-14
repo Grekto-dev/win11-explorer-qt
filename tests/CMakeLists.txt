@@ -46,6 +46,21 @@ if(ENABLE_HEAVY_TRANSFER_TESTS)
     set_tests_properties(transfer-controller-heavy PROPERTIES TIMEOUT 360 LABELS "heavy;transfer" RUN_SERIAL TRUE
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;LD_LIBRARY_PATH=${_private_fm_prefix}/lib:$ENV{LD_LIBRARY_PATH}")
 
+    # Data-loss / file-operation regressions (FO-01..FO-07) against the private overlay. Runs under a
+    # private D-Bus session because restoring from trash:/// needs gvfsd-trash (HOME/XDG_* are redirected
+    # to a temporary directory by the test itself before GIO caches them).
+    find_program(DBUS_RUN_SESSION dbus-run-session)
+    if(NOT DBUS_RUN_SESSION)
+        message(FATAL_ERROR "fileops-safety needs dbus-run-session")
+    endif()
+    add_executable(tst_fileops_safety
+        ${PROJECT_SOURCE_DIR}/tests/transfer/tst_fileops_safety.cpp)
+    target_include_directories(tst_fileops_safety PRIVATE ${LIBFMQT_SOURCE_DIR} ${LIBFMQT_INCLUDE_DIR})
+    target_link_libraries(tst_fileops_safety PRIVATE Qt6::Core Qt6::Test Qt6::Widgets fm-qt6)
+    add_test(NAME fileops-safety COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:tst_fileops_safety>)
+    set_tests_properties(fileops-safety PROPERTIES TIMEOUT 180 LABELS "transfer;fileops"
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;LD_LIBRARY_PATH=${_private_fm_prefix}/lib:$ENV{LD_LIBRARY_PATH}")
+
     # Deterministic Job cancellation lifetime regression. The executable
     # interposes pthread_cond_broadcast, so its symbols must be exported.
     find_package(Threads REQUIRED)

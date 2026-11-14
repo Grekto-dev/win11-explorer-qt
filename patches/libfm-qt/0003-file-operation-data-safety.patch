@@ -1,0 +1,278 @@
+diff -ruN a/src/core/filetransferjob.cpp b/src/core/filetransferjob.cpp
+--- a/src/core/filetransferjob.cpp
++++ b/src/core/filetransferjob.cpp
+@@ -1,9 +1,45 @@
+ #include "filetransferjob.h"
+ #include "totalsizejob.h"
+ #include "fileinfo_p.h"
++#include <QByteArray>
++#include <QCoreApplication>
++#include <QString>
++#include <glib/gstdio.h>
+ 
+ namespace Fm {
+ 
++namespace {
++
++bool pathExists(const FilePath& path) {
++    GFileInfoPtr info{g_file_query_info(path.gfile().get(), G_FILE_ATTRIBUTE_STANDARD_TYPE,
++                                        G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, nullptr, nullptr), false};
++    return bool(info);
++}
++
++// "Name - Cópia", "Name - Cópia (2)", ... (before the extension for files), first one that is free.
++QByteArray uniqueCopyName(const FilePath& dir, const char* name, bool isDir) {
++    const QByteArray original(name);
++    QByteArray base = original, ext;
++    const int dot = original.lastIndexOf('.');
++    if(!isDir && dot > 0 && dot < original.size() - 1) {
++        base = original.left(dot);
++        ext = original.mid(dot);
++    }
++    for(int n = 1; n < 100000; ++n) {
++        QByteArray pattern = (n == 1 ? QCoreApplication::translate("Fm::FileTransferJob", "%1 - Cópia")
++                                     : QCoreApplication::translate("Fm::FileTransferJob", "%1 - Cópia (%2)")).toUtf8();
++        pattern.replace("%2", QByteArray::number(n));
++        pattern.replace("%1", base);
++        pattern.append(ext);
++        if(!pathExists(dir.child(pattern.constData()))) {
++            return pattern;
++        }
++    }
++    return original;
++}
++
++}
++
+ FileTransferJob::FileTransferJob(FilePathList srcPaths, Mode mode):
+     FileOperationJob{},
+     srcPaths_{std::move(srcPaths)},
+@@ -133,9 +169,62 @@
+         auto size = g_file_info_get_attribute_uint64(srcInfo.get(), G_FILE_ATTRIBUTE_STANDARD_SIZE);
+         setCurrentFileProgress(size, 0);
+ 
+-        // do the file operation
+-        if(!g_file_copy(srcPath.gfile().get(), destPath.gfile().get(), GFileCopyFlags(flags), cancellable().get(),
+-                       (GFileProgressCallback)&gfileCopyProgressCallback, this, &err)) {
++        // Never let a failed write destroy or half-replace data (audit FO-01/FO-02):
++        // - an existing destination that the user chose to overwrite is replaced atomically: the new
++        //   content is written to a private temporary sibling and renamed over it only when complete;
++        // - a destination that did not exist before is removed again if this copy fails or is cancelled.
++        // Nothing that this operation did not create is ever deleted.
++        const bool destExisted = pathExists(destPath);
++        const bool replaceExisting = destExisted && (flags & G_FILE_COPY_OVERWRITE) && destPath.isNative();
++        bool ok;
++        if(replaceExisting) {
++            ok = false;
++            FilePath tempPath;
++            const auto destParent = destPath.parent();
++            for(int attempt = 0; attempt < 8 && destParent.isValid(); ++attempt) {
++                QByteArray tempName(".");
++                tempName.append(destPath.baseName().get());
++                tempName.append('.');
++                tempName.append(QByteArray::number(qulonglong(g_random_int()), 16));
++                tempName.append(".partial");
++                FilePath candidate = destParent.child(tempName.constData());
++                if(!pathExists(candidate)) {
++                    tempPath = std::move(candidate);
++                    break;
++                }
++            }
++            if(!tempPath.isValid()) {
++                g_set_error_literal(&err, G_IO_ERROR, G_IO_ERROR_FAILED, "Cannot create a temporary file next to the destination");
++            }
++            else {
++                GErrorPtr copyErr;
++                // Created exclusively by this call (no OVERWRITE flag), so it is ours to remove.
++                bool copied = g_file_copy(srcPath.gfile().get(), tempPath.gfile().get(),
++                                          GFileCopyFlags(flags & ~G_FILE_COPY_OVERWRITE), cancellable().get(),
++                                          (GFileProgressCallback)&gfileCopyProgressCallback, this, &copyErr);
++                if(copied) {
++                    ok = g_file_move(tempPath.gfile().get(), destPath.gfile().get(),
++                                     GFileCopyFlags(G_FILE_COPY_OVERWRITE | G_FILE_COPY_NOFOLLOW_SYMLINKS), nullptr,
++                                     nullptr, nullptr, &copyErr);
++                }
++                if(!ok) {
++                    if(!(copyErr.domain() == G_IO_ERROR && copyErr.code() == G_IO_ERROR_EXISTS)) {
++                        g_file_delete(tempPath.gfile().get(), nullptr, nullptr);
++                    }
++                    err = std::move(copyErr);
++                }
++            }
++        }
++        else {
++            ok = g_file_copy(srcPath.gfile().get(), destPath.gfile().get(), GFileCopyFlags(flags), cancellable().get(),
++                             (GFileProgressCallback)&gfileCopyProgressCallback, this, &err);
++            if(!ok && !destExisted && err.domain() == G_IO_ERROR && err.code() != G_IO_ERROR_EXISTS &&
++               err.code() != G_IO_ERROR_INVALID_FILENAME && err.code() != G_IO_ERROR_FILENAME_TOO_LONG) {
++                // We created the destination (it was absent before): drop the partial content.
++                g_file_delete(destPath.gfile().get(), nullptr, nullptr);
++            }
++        }
++        if(!ok) {
+             retry = handleError(err, srcPath, srcInfo, destPath, flags);
+         }
+         else {
+@@ -381,12 +470,8 @@
+             // the user wants retry the operation again
+             retry = true;
+         }
+-        const bool is_no_space = (err.domain() == G_IO_ERROR && err.code() == G_IO_ERROR_NO_SPACE);
+-        /* FIXME: ask to leave partial content? */
+-        if(is_no_space) {
+-            // run out of disk space. delete the partial content we copied.
+-            g_file_delete(destPath.gfile().get(), cancellable().get(), nullptr);
+-        }
++        // NOTE: removing partial content is done by copyRegularFile(), which knows whether the
++        // destination was created by this operation (it was unreachable code here: err was reset first).
+     }
+     return retry;
+ }
+@@ -401,7 +486,14 @@
+         false
+     };
+     if(!srcInfo || isCancelled()) {
+-        // FIXME: report error
++        if(!isCancelled()) {
++            // The source vanished (or is unreadable): tell the user instead of failing silently.
++            if(!err) {
++                g_set_error_literal(&err, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
++                                    tr("O item de origem não está mais disponível.").toUtf8().constData());
++            }
++            emitError(err, ErrorSeverity::MODERATE);
++        }
+         return false;
+     }
+ 
+@@ -411,14 +503,28 @@
+ 
+     bool ret;
+     switch(mode_) {
+-    case Mode::MOVE:
+-        ret = moveFile(srcPath, srcInfo, destDirPath,
+-                       hasDestDirPath_ && destCopyName ? destCopyName : destFileName);
++    case Mode::MOVE: {
++        const char* moveName = hasDestDirPath_ && destCopyName ? destCopyName : destFileName;
++        if(srcPath == destDirPath.child(moveName)) {
++            // Moving an item onto itself (same folder): nothing to do, and nothing to ask.
++            setCurrentFile(srcPath);
++            addFinishedAmount(g_file_info_get_attribute_uint64(srcInfo.get(), G_FILE_ATTRIBUTE_STANDARD_SIZE), 1);
++            ret = true;
++            break;
++        }
++        ret = moveFile(srcPath, srcInfo, destDirPath, moveName);
+         break;
++    }
+     case Mode::COPY: {
+         bool deleteSrc = false;
+-        ret = copyFile(srcPath, srcInfo, destDirPath,
+-                       hasDestDirPath_ && destCopyName ? destCopyName : destFileName, deleteSrc);
++        const char* copyName = hasDestDirPath_ && destCopyName ? destCopyName : destFileName;
++        QByteArray uniqueName;
++        if(srcPath == destDirPath.child(copyName)) {
++            // Copying an item into its own folder: make a new "Name - Cópia" like Explorer does.
++            uniqueName = uniqueCopyName(destDirPath, copyName, g_file_info_get_file_type(srcInfo.get()) == G_FILE_TYPE_DIRECTORY);
++            copyName = uniqueName.constData();
++        }
++        ret = copyFile(srcPath, srcInfo, destDirPath, copyName, deleteSrc);
+         break;
+     }
+     case Mode::LINK:
+@@ -446,7 +552,15 @@
+     };
+ 
+     if(!destDirInfo || isCancelled()) {
+-        // FIXME: report errors
++        if(!isCancelled()) {
++            // e.g. restoring from the trash when the original folder no longer exists.
++            const char* itemName = g_file_info_get_display_name(srcInfo.get());
++            GErrorPtr destErr{G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
++                              tr("Não foi possível mover ou restaurar \"%1\": a pasta de destino não existe ou não está acessível.%2")
++                                  .arg(QString::fromUtf8(itemName ? itemName : ""),
++                                       err ? QStringLiteral("\n") + QString::fromUtf8(err->message) : QString())};
++            emitError(destErr, ErrorSeverity::MODERATE);
++        }
+         return false;
+     }
+ 
+diff -ruN a/src/fileoperation.cpp b/src/fileoperation.cpp
+--- a/src/fileoperation.cpp
++++ b/src/fileoperation.cpp
+@@ -282,6 +282,7 @@
+ }
+ 
+ void FileOperation::onJobError(const GErrorPtr& err, Fm::Job::ErrorSeverity severity, Fm::Job::ErrorAction* response) {
++    hadErrors_ = true;
+     pauseElapsedTimer();
+     showDialog();
+     if(response) {
+@@ -326,11 +327,15 @@
+         if(!unsupportedFiles.empty()) { /* delete them instead */
+             /* parent object is not destroyed before this */
+             QWidget* pWidget = qobject_cast<QWidget*>(parent());
+-            if(QMessageBox::question(pWidget ? pWidget->window() : nullptr,
+-                                     tr("Error"),
+-                                     tr("Some files cannot be moved to trash can because "
+-                                        "the underlying file systems don't support this operation.\n"
+-                                        "Do you want to delete them instead?")) == QMessageBox::Yes) {
++            // Permanent deletion: "No" is the default and the Escape button, so a reflex Enter never deletes.
++            QMessageBox box(QMessageBox::Warning, tr("Excluir permanentemente?"),
++                            tr("Não foi possível mover %1 item(ns) para a lixeira porque o sistema de arquivos "
++                               "não oferece esse recurso.\n\nExcluir permanentemente? Essa ação não pode ser desfeita.")
++                                .arg(unsupportedFiles.size()),
++                            QMessageBox::Yes | QMessageBox::No, pWidget ? pWidget->window() : nullptr);
++            box.setDefaultButton(QMessageBox::No);
++            box.setEscapeButton(QMessageBox::No);
++            if(box.exec() == QMessageBox::Yes) {
+                 deleteFiles(std::move(unsupportedFiles), false);
+             }
+             tryReload = false;
+diff -ruN a/src/fileoperation.h b/src/fileoperation.h
+--- a/src/fileoperation.h
++++ b/src/fileoperation.h
+@@ -97,6 +97,12 @@
+         return type_;
+     }
+ 
++    // True when at least one error was shown to the user during the operation (readable from the
++    // finished() signal; used to keep a cut selection on the clipboard after a failed move).
++    bool hadErrors() const {
++        return hadErrors_;
++    }
++
+     // convenient static functions
+     static FileOperation* copyFiles(Fm::FilePathList srcFiles, Fm::FilePath dest, QWidget* parent = nullptr);
+ 
+@@ -181,6 +187,7 @@
+     bool updateRemainingTime_;
+     QString curFile;
+     bool autoDestroy_;
++    bool hadErrors_ = false;
+ };
+ 
+ }
+diff -ruN a/src/utilities.cpp b/src/utilities.cpp
+--- a/src/utilities.cpp
++++ b/src/utilities.cpp
+@@ -104,8 +104,19 @@
+ 
+     if(!paths.empty()) {
+         if(isCut) {
+-            FileOperation::moveFiles(paths, destPath, parent);
+-            clipboard->clear(QClipboard::Clipboard);
++            // Keep the cut selection on the clipboard until the move really succeeded (audit FO-07).
++            const QByteArray signature = data->data(QStringLiteral("x-special/gnome-copied-files")) +
++                                         data->data(QStringLiteral("text/uri-list"));
++            if(auto* operation = FileOperation::moveFiles(paths, destPath, parent)) {
++                QObject::connect(operation, &FileOperation::finished, clipboard, [operation, clipboard, signature] {
++                    const QMimeData* current = clipboard->mimeData();
++                    if(!operation->hadErrors() && !operation->isCancelled() && current &&
++                       current->data(QStringLiteral("x-special/gnome-copied-files")) +
++                       current->data(QStringLiteral("text/uri-list")) == signature) {
++                        clipboard->clear(QClipboard::Clipboard);
++                    }
++                });
++            }
+         }
+         else {
+             FileOperation::copyFiles(paths, destPath, parent);

@@ -1,9 +1,9 @@
 # libfm-qt progress-dialog seam overlay
 
 - Upstream: libfm-qt 2.4.0, Git revision `4294f29ed314388f1f6d051ae0128320354e417a`.
-- Patch: `0001-opt-in-progress-dialog.patch` and `0002-cooperative-local-copy-pause.patch` (unified diffs against `src/`; apply in order).
+- Patch: `0001-opt-in-progress-dialog.patch`, `0002-cooperative-local-copy-pause.patch` and `0003-file-operation-data-safety.patch` (unified diffs against `src/`; apply in order).
 - License: LGPL-2.1-or-later; unmodified upstream text is `LICENSE.LGPL-2.1` (SHA-256 `b3aa400aca6d2ba1f0bd03bd98d03d1fe7489a3bbb26969d72016360af8a5c9d`). Modified upstream files retain their original copyright/license notices. See the upstream checkout for AUTHORS and remaining notices.
-- No SDK source or installed files are patched in place. `scripts/fidelity/build-libfm-overlay.sh` validates origin revision and hashes, copies to ignored `.state/overlay-source`, applies both patches, then builds/installs under `.state/libfm-overlay-*`.
+- No SDK source or installed files are patched in place. `scripts/fidelity/build-libfm-overlay.sh` validates origin revision and hashes, copies to ignored `.state/overlay-source`, applies the three patches, then builds/installs under `.state/libfm-overlay-*`.
 - Patch 0002 keeps the pause/cancel gate in a `std::shared_ptr` that `Job::requestCancellation()` retains (together with the `GCancellable`) BEFORE waking the worker, so a QThreadPool autoDelete Job destroyed mid-call is never touched afterwards. The caller must still keep the Job alive until the call is entered. Regression: `tests/transfer/tst_job_cancel_lifetime.cpp` (needs `MALLOC_PERTURB_` and `GLIBC_TUNABLES=glibc.malloc.tcache_count=0`; CTest sets both).
 - Patch 0002 adds checkpoint-based pause only for a single native regular-file COPY using `g_file_copy()` progress callbacks; it does not cover MOVE/LINK, directories, remote providers, or other job types. `LIBFM_QT_COOPERATIVE_COPY_PAUSE_API` is the compile-time capability/API marker. The overlay changes ABI: rebuild the application and any binary consumers against it; do not combine its headers with the SDK library.
 
@@ -19,3 +19,11 @@ e4783407320e82211b420118664e4df8bf76cbc016944df5176ac4616f6ae877  src/core/job.c
 ```
 
 The patch adds an opt-in dialog factory; default construction remains upstream. It makes dialog presentation methods virtual and adds a pointer-response error signal for Qt queued delivery while preserving the pre-existing reference signal for source-level compatibility. This is an ABI change: rebuild the application and any binary consumers against the overlay; do not combine its headers with the SDK library.
+
+Patch 0003 (data safety, audit FO-01..FO-07; regression: `tests/transfer/tst_fileops_safety.cpp`, CTest `fileops-safety`):
+- Overwriting an existing native file copies into a private `.<name>.<random>.partial` sibling and renames it over the destination only when complete, so a failed write leaves the original intact; a destination created by the operation is removed if the copy fails or is cancelled. Nothing the operation did not create is deleted (the unreachable `err.reset()`-before-check cleanup in `handleError` is gone).
+- Copy into the same folder creates `Nome - Cópia`, `Nome - Cópia (2)`…; move into the same folder is a silent no-op.
+- Vanished source (copy/move) and missing destination folder (restore from trash) now emit a MODERATE error instead of failing silently.
+- The "delete permanently instead of trash?" prompt defaults to No (also Escape).
+- `FileOperation::hadErrors()` (ABI addition); `pasteFilesFromClipboard()` clears a cut selection only after the move finished without errors/cancel and the clipboard is unchanged.
+- Not done: FO-05 (folder-over-folder move merge; "Ignorar" on a folder).

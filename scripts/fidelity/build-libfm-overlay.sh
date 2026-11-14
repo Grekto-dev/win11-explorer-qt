@@ -54,6 +54,7 @@ mkdir -p "$OVERLAY_SOURCE"
 git -C "$SDK_SOURCE" archive --format=tar "$EXPECTED_REV" | tar -xf - -C "$OVERLAY_SOURCE"
 patch --directory="$OVERLAY_SOURCE" -p1 --forward < "$ROOT/patches/libfm-qt/0001-opt-in-progress-dialog.patch"
 patch --directory="$OVERLAY_SOURCE" -p1 --forward < "$ROOT/patches/libfm-qt/0002-cooperative-local-copy-pause.patch"
+patch --directory="$OVERLAY_SOURCE" -p1 --forward < "$ROOT/patches/libfm-qt/0003-file-operation-data-safety.patch"
 
 cmake -S "$OVERLAY_SOURCE" -B "$BUILD_DIR" -GNinja \
     -DCMAKE_MAKE_PROGRAM="$NINJA_BIN" \
