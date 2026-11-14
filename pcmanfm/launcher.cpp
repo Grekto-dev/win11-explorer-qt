@@ -207,6 +207,54 @@ void Launcher::showChooserUnavailableMessage(QWidget* parent, const QString& tex
     box->show();
 }
 
+namespace {
+
+// Review 5: vfs-search.c decodes each root (g_uri_unescape_segment) and hands it to
+// g_file_new_for_commandline_arg, so a root that decodes to another "search://..." is itself a
+// search location whose roots are enumerated in turn. Analyse that chain recursively.
+constexpr int kMaxSearchDepth = 4;
+
+bool isSearchText(const QString& text) {
+    int i = 0;
+    while(i < text.size() && text.at(i).isSpace()) {
+        ++i;
+    }
+    return text.mid(i, 7).compare(QLatin1String("search:"), Qt::CaseInsensitive) == 0;
+}
+
+// \a uri is a (decoded) search: URI. depth 0 is the outermost one.
+bool searchUriReachesMenuCache(const QString& uri, int depth) {
+    if(depth > kMaxSearchDepth) {
+        // too deep to follow: fail closed, but only when menu-cache really is unusable
+        return Launcher::menuCacheUnusable();
+    }
+    int start = 0;
+    while(start < uri.size() && uri.at(start).isSpace()) {
+        ++start;
+    }
+    QString rest = uri.mid(start + 7); // after "search:"
+    if(rest.startsWith(QLatin1String("//"))) {
+        rest.remove(0, 2);
+    }
+    const int query = rest.indexOf(QLatin1Char('?'));
+    if(query >= 0) {
+        rest.truncate(query);
+    }
+    const QStringList roots = rest.split(QLatin1Char(','));
+    for(const QString& root : roots) {
+        const QString decoded = QUrl::fromPercentEncoding(root.toUtf8());
+        if(Launcher::isMenuCacheText(decoded)) {
+            return true;
+        }
+        if(isSearchText(decoded) && searchUriReachesMenuCache(decoded, depth + 1)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
 bool Launcher::isMenuCachePath(const Fm::FilePath& path) {
     if(!path) {
         return false;
@@ -220,26 +268,13 @@ bool Launcher::isMenuCachePath(const Fm::FilePath& path) {
     }
     // search://<root>[,<root>...]?<options>: libfm's search job enumerates every root
     // (vfs-search.c: g_file_new_for_commandline_arg + g_file_enumerate_children), so a menu: root
-    // makes the whole search location a menu-cache location.
+    // makes the whole search location a menu-cache location, also through nested search:// roots.
     if(strcasecmp(scheme.get(), "search") == 0) {
         const auto uri = path.uri();
         if(!uri) {
             return false;
         }
-        QString rest = QString::fromUtf8(uri.get()).mid(7); // after "search:"
-        if(rest.startsWith(QLatin1String("//"))) {
-            rest.remove(0, 2);
-        }
-        const int query = rest.indexOf(QLatin1Char('?'));
-        if(query >= 0) {
-            rest.truncate(query);
-        }
-        const QStringList roots = rest.split(QLatin1Char(','));
-        for(const QString& root : roots) {
-            if(isMenuCacheText(QUrl::fromPercentEncoding(root.toUtf8()))) {
-                return true;
-            }
-        }
+        return searchUriReachesMenuCache(QString::fromUtf8(uri.get()), 0);
     }
     return false;
 }

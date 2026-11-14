@@ -181,6 +181,15 @@ void focusAddressEditor(QWidget* window, Fm::PathEdit* edit) {
     edit->setFocus(Qt::OtherFocusReason);
     QTRY_VERIFY2_WITH_TIMEOUT(edit->hasFocus(), "the address editor must own the keyboard focus", 3000);
 }
+static QString p4SearchWrap(const QString& inner) {
+    return QStringLiteral("search://") + QString::fromLatin1(QUrl::toPercentEncoding(inner))
+           + QStringLiteral("/?recursive=1");
+}
+static QString p4SearchNested(int layers, const QString& innermost) {
+    QString uri = innermost;
+    for(int i = 0; i < layers; ++i) uri = p4SearchWrap(uri);
+    return uri;
+}
 QMessageBox* findChooserUnavailableBox() {
     for(QWidget* w : QApplication::topLevelWidgets())
         if(w->isVisible() && w->objectName() == QLatin1String("explorerChooserUnavailableMessage")) return qobject_cast<QMessageBox*>(w);
@@ -2155,6 +2164,90 @@ private Q_SLOTS:
             if(w->inherits("Fm::FilePropsDialog")) w->close();
             else if(w->isVisible() && qobject_cast<QMessageBox*>(w)) w->close();
         }
+    }
+    // ---- review 5: search:// roots are decoded recursively (nested search://) ----
+    void isMenuCachePathParsesSearchRoots_data() {
+        QTest::addColumn<QString>("uri");
+        QTest::addColumn<bool>("isMenu");
+        QTest::newRow("percent-encoded scheme char") << QStringLiteral("search://%6Denu:%2F%2Fapplications%2F?recursive=1") << true;
+        QTest::newRow("percent-encoded colon") << QStringLiteral("search://menu%3A%2F%2Fapplications%2F") << true;
+        QTest::newRow("second root") << QStringLiteral("search:///tmp,menu://x?recursive=1") << true;
+        QTest::newRow("upper case scheme") << QStringLiteral("SEARCH://menu%3A%2F%2Fapplications%2F?recursive=1") << true;
+        QTest::newRow("nested 1 level (review 5)")
+            << QStringLiteral("search://search%3A%2F%2Fmenu%253A%252F%252Fapplications%2F?recursive=1") << true;
+        QTest::newRow("nested 1 level, upper case inner") << p4SearchWrap(QStringLiteral("SEARCH://menu%3A%2F%2Fapplications%2F")) << true;
+        QTest::newRow("nested 2 levels")
+            << p4SearchNested(2, QStringLiteral("menu://applications/")) << true;
+        QTest::newRow("nested 3 levels, menu as 2nd root of the inner")
+            << p4SearchNested(2, QStringLiteral("search:///tmp,menu://x?recursive=1")) << true;
+        QTest::newRow("nested 5 layers (within limit), menu") << p4SearchNested(5, QStringLiteral("menu://applications/")) << true;
+        QTest::newRow("nested 6 layers (first beyond the limit)") << p4SearchNested(6, QStringLiteral("/tmp")) << true;
+        QTest::newRow("nested 20 layers (depth exceeded)") << p4SearchNested(20, QStringLiteral("/tmp")) << true;
+        QTest::newRow("local root is not menu") << QStringLiteral("search:///tmp/menu:y?name=menu:") << false;
+        QTest::newRow("local root ending in menu:") << QStringLiteral("search:///home/x/menu:") << false;
+        QTest::newRow("menu: only in the options") << QStringLiteral("search:///tmp?name=menu://x&recursive=1") << false;
+        QTest::newRow("nested, local innermost, within limit") << p4SearchNested(3, QStringLiteral("/home/x/menu:y")) << false;
+        QTest::newRow("nested 5 layers (limit), local innermost") << p4SearchNested(5, QStringLiteral("/tmp")) << false;
+    }
+    void isMenuCachePathParsesSearchRoots() {
+        QFETCH(QString, uri);
+        QFETCH(bool, isMenu);
+        const auto restore = qScopeGuard([] { PCManFM::Launcher::setAppChooserAvailableForTest(-1); });
+        PCManFM::Launcher::setAppChooserAvailableForTest(0);
+        const auto path = Fm::FilePath::fromUri(uri.toUtf8().constData());
+        QVERIFY2(path, qPrintable(uri));
+        QCOMPARE(PCManFM::Launcher::isMenuCachePath(path), isMenu);
+    }
+    void isMenuCachePathLocalPathIsNotMenu() {
+        const auto restore = qScopeGuard([] { PCManFM::Launcher::setAppChooserAvailableForTest(-1); });
+        PCManFM::Launcher::setAppChooserAvailableForTest(0);
+        QVERIFY(!PCManFM::Launcher::isMenuCachePath(Fm::FilePath::fromPathStr("/home/x/menu:y")));
+    }
+    // Past the depth limit the answer is "menu" (fail closed) only while menu-cache is unusable.
+    void isMenuCachePathDepthExceededFailsClosedOnlyWhenUnusable() {
+        const auto restore = qScopeGuard([] { PCManFM::Launcher::setAppChooserAvailableForTest(-1); });
+        const auto deep = Fm::FilePath::fromUri(p4SearchNested(20, QStringLiteral("/tmp")).toUtf8().constData());
+        QVERIFY(deep);
+        PCManFM::Launcher::setAppChooserAvailableForTest(0);
+        QVERIFY(PCManFM::Launcher::isMenuCachePath(deep));
+        PCManFM::Launcher::setAppChooserAvailableForTest(1);
+        QVERIFY(!PCManFM::Launcher::isMenuCachePath(deep));
+    }
+    // Integration: the nested URI used to reach TabPage::chdir / ShowItemProperties and abort.
+    void nestedSearchUriChdirAndPropertiesDoNotAbortWhenChooserUnavailable() {
+        const auto restore = qScopeGuard([] { PCManFM::Launcher::setAppChooserAvailableForTest(-1); });
+        PCManFM::Launcher::setAppChooserAvailableForTest(0);
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        auto root = Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData());
+        QScopedPointer<PCManFM::MainWindow> window(new PCManFM::MainWindow(root));
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window.data()));
+        QTRY_VERIFY(window->currentPage()->path() == root);
+        const QStringList nested = {
+            QStringLiteral("search://search%3A%2F%2Fmenu%253A%252F%252Fapplications%2F?recursive=1"),
+            p4SearchNested(2, QStringLiteral("menu://applications/")),
+        };
+        auto countProps = [] {
+            int n = 0;
+            for(QWidget* w : QApplication::topLevelWidgets())
+                if(w->inherits("Fm::FilePropsDialog")) ++n;
+            return n;
+        };
+        const int before = countProps();
+        for(const QString& uri : nested) {
+            window->chdir(Fm::FilePath::fromUri(uri.toUtf8().constData()));
+            window->currentPage()->chdir(Fm::FilePath::fromUri(uri.toUtf8().constData()));
+            static_cast<PCManFM::Application*>(qApp)->ShowItemProperties({uri}, QString());
+        }
+        QMessageBox* box = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((box = findChooserUnavailableBox()) != nullptr, 3000);
+        QCOMPARE(box->textFormat(), Qt::PlainText);
+        QTest::qWait(1000); // listing / FileInfoJob run in worker threads: they must not have started
+        QVERIFY(window->currentPage()->path() == root);
+        QCOMPARE(countProps(), before);
+        for(QWidget* w : QApplication::topLevelWidgets())
+            if(w->isVisible() && qobject_cast<QMessageBox*>(w)) w->close();
     }
     // Review 4 (medium-low): the Find Files dialog accepted 'menu:' folders; the resulting
     // search:// job enumerates them (libfm vfs-search -> g_file_enumerate_children on each root).
