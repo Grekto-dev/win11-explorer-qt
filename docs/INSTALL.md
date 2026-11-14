@@ -51,6 +51,10 @@ Empacotados: Qt 6.8.3 (o sistema só tem 6.4.2 e o projeto exige ≥ 6.6), ICU 7
 3. Wayland não testado (plugin `libqwayland*` não é empacotado; só xcb). Plugin `xcb` testado apenas por carga de biblioteca; a execução real foi feita com `offscreen` — nenhuma janela foi aberta na sessão gráfica do usuário.
 4. glib do sistema < 2.80 não testado; Qt/ICU empacotados somam ≈45 MiB.
 
-## Plano `.deb` (não implementado nesta rodada)
+## Pacote `.deb` (experimental, só inspecionado — nunca instalado)
 
-Para distribuir: instalar o prefixo em `/opt/win11-explorer-qt/` e usar CPack DEB (`CPACK_GENERATOR=DEB`, `CPACK_PACKAGING_INSTALL_PREFIX=/opt/win11-explorer-qt`) sobre um alvo `install(...)` que reproduza `portable_prefix.py` (binário em `libexec/`, wrapper em `bin/`, libs Qt/ICU/libfm em `lib/`); `Depends:` explícito (`libc6 (>= 2.39), libglib2.0-0t64 (>= 2.80), libmenu-cache3, menu-cached, libxcb-cursor0, libxkbcommon-x11-0, libgl1, libgtk-3-0t64`), não `SHLIBDEPS`, porque as libs privadas não estão no dpkg. `postinst` só `update-desktop-database` do próprio diretório e `gtk-update-icon-cache`, sem `update-alternatives` nem MIME default. Link `/usr/bin/win11-explorer-qt` → wrapper. Este ambiente não tem `dpkg-deb`/`fakeroot` verificados, então não foi gerado.
+```bash
+./scripts/make-deb.sh --prefix "$HOME/.local/opt/win11-explorer-qt" --out .state/deb [--without-debug]
+```
+
+Gera `win11-explorer-qt_2.4.1+win11explorer1_amd64.deb` (≈53 MiB com símbolos) com o prefixo em `/opt/win11-explorer-qt/`, link `/usr/bin/win11-explorer-qt`, `.desktop` com `Exec=/opt/win11-explorer-qt/bin/...` e o ícone em `/usr/share/icons`. `Depends:` explícito (`libc6 >= 2.39`, `libglib2.0-0t64 >= 2.80`, `libmenu-cache3`, `menu-cached`, `libxcb-cursor0`, `libxkbcommon-x11-0`, `libgl1`, `libegl1`, …), porque as bibliotecas privadas não são conhecidas pelo dpkg (SHLIBDEPS não serve). Sem scripts de manutenção: nada de `update-alternatives`, MIME default ou autostart. Testado por `dpkg-deb -I/-c` e pelo teste `DebPackage` (sem instalar; instalar exige root). Instalar o `.deb` também puxa `libmenu-cache3` + `menu-cached`, o que resolve o crash D-02 (veja limites acima) — mas o `libmenu-cache.so.3` empacotado procura `/usr/lib/menu-cache/menu-cached` e o pacote do Ubuntu instala em `/usr/lib/x86_64-linux-gnu/menu-cache/`; **não verificado** que o caminho coincide.

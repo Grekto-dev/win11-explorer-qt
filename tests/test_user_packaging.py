@@ -174,5 +174,33 @@ class PortablePrefixGuards(unittest.TestCase):
             self.assertNotEqual(self.make('--prefix', 'relative/dir', home=tmp).returncode, 0)
 
 
+class DebPackage(unittest.TestCase):
+    def test_deb_has_system_paths_explicit_depends_and_no_dev_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prefix = fake_prefix(Path(tmp))
+            out = Path(tmp) / 'out'
+            result = subprocess.run(['bash', str(ROOT / 'scripts/make-deb.sh'), '--prefix', str(prefix),
+                                     '--out', str(out)], env=dict(CLEAN_ENV, HOME=tmp), text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            debs = list(out.glob('win11-explorer-qt_*_amd64.deb'))
+            self.assertEqual(len(debs), 1, debs)
+            info = subprocess.run(['dpkg-deb', '-I', str(debs[0])], text=True, capture_output=True).stdout
+            self.assertIn('Package: win11-explorer-qt', info)
+            self.assertIn('libglib2.0-0t64 (>= 2.80)', info)
+            self.assertIn('libmenu-cache3', info)
+            listing = subprocess.run(['dpkg-deb', '-c', str(debs[0])], text=True, capture_output=True).stdout
+            self.assertIn('./opt/win11-explorer-qt/bin/win11-explorer-qt', listing)
+            self.assertIn('./usr/share/applications/win11-explorer-qt.desktop', listing)
+            self.assertIn('./usr/bin/win11-explorer-qt -> /opt/win11-explorer-qt/bin/win11-explorer-qt', listing)
+            self.assertNotIn('.deps', listing)
+            self.assertNotIn('./etc/', listing)
+            desktop = subprocess.run(['dpkg-deb', '--fsys-tarfile', str(debs[0])], capture_output=True).stdout
+            tar = subprocess.run(['tar', '-xO', './usr/share/applications/win11-explorer-qt.desktop'],
+                                 input=desktop, capture_output=True).stdout.decode()
+            self.assertIn('Exec=/opt/win11-explorer-qt/bin/win11-explorer-qt %U', tar)
+            self.assertNotIn('@BINDIR@', tar)
+            self.assertFalse(any(m in listing for m in ('mimeapps', 'autostart')))
+
+
 if __name__ == '__main__':
     unittest.main()
