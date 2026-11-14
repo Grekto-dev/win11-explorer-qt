@@ -1,0 +1,35 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: win11-explorer-qt
+Source: https://github.com/Grekto-dev/win11-explorer-qt
+
+Files: opt/win11-explorer-qt/libexec/win11-explorer-qt usr/share/applications/* usr/share/icons/*
+Copyright: PCManFM-Qt authors (see AUTHORS), Grekto-dev and contributors
+License: GPL-2+
+ This program is free software; you can redistribute it and/or modify it under the terms of the
+ GNU General Public License as published by the Free Software Foundation; either version 2 of the
+ License, or (at your option) any later version.
+ On Debian systems the full text is in /usr/share/common-licenses/GPL-2; a copy of the
+ distributed text is in /usr/share/doc/win11-explorer-qt/LICENSE.
+
+Files: opt/win11-explorer-qt/lib/libfm-qt6.so.*
+Copyright: LXQt team and libfm-qt authors; patches by Grekto-dev
+License: LGPL-2.1+
+ Full text: /usr/share/doc/win11-explorer-qt/LICENSE.libfm-qt.LGPL-2.1
+
+Files: opt/win11-explorer-qt/lib/libQt6* opt/win11-explorer-qt/plugins/*
+Copyright: The Qt Company Ltd. and other Qt contributors (Qt 6.8.3, unmodified official binaries)
+License: LGPL-3
+ Full texts: /usr/share/doc/win11-explorer-qt/LICENSE.Qt-LGPL-3.0 and LICENSE.Qt-GPL-3.0.
+ Corresponding source: https://download.qt.io/archive/qt/6.8/6.8.3/single/qt-everywhere-src-6.8.3.tar.xz
+ The libraries are shared objects in /opt/win11-explorer-qt/lib and may be replaced by ABI-compatible
+ builds; see THIRD_PARTY_NOTICES.md.
+
+Files: opt/win11-explorer-qt/lib/libicu*
+Copyright: 1991-2023 Unicode, Inc. and others
+License: ICU
+ Full text: /usr/share/doc/win11-explorer-qt/LICENSE.ICU
+
+Files: opt/win11-explorer-qt/share/doc/*
+Copyright: see the individual files
+License: GPL-2+ and LGPL-3 and ICU
+ Component list, versions and source offer: /usr/share/doc/win11-explorer-qt/THIRD_PARTY_NOTICES.md

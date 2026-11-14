@@ -1,0 +1,4 @@
+# Pinned build tool for scripts/portable_prefix.py (used only when no system `patchelf` is on PATH).
+# manylinux x86_64 wheel; installed with `uv pip install --require-hashes` (see docs/INSTALL.md).
+patchelf==0.19.3.0 \
+    --hash=sha256:1668a30fcc414debbb1604cd0a361b2f28a33a0ff6e74a74bc71766ee746e21f

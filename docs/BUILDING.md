@@ -120,3 +120,6 @@ A configuração do SDK inclui os caminhos locais absolutos definidos por `.deps
 ## Instalação estável (uso diário)
 
 `scripts/build.sh RelWithDebInfo` (padrão) compila o app **e** o overlay da libfm-qt otimizados (`LIBFMQT_OVERLAY_BUILD_TYPE` acompanha o tipo; `Debug` continua disponível). O prefixo relocável, o atalho de usuário e a prova de relocação estão em [INSTALL.md](INSTALL.md): `scripts/make-portable-prefix.sh`, `scripts/install-user.sh`, `scripts/verify-relocation.py`.
+
+
+Empacotamento para uso diário (prefixo relocável, `.deb`, requisitos como `patchelf` fixado por versão/hash e rede): `docs/INSTALL.md`.

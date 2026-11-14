@@ -5,7 +5,8 @@
 # only replaces an existing directory that carries this script's marker file.
 set -euo pipefail
 repo="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd)"
-prefix="${HOME:-}/.local/opt/win11-explorer-qt"
+[[ -n "${HOME:-}" && "$HOME" = /* && "$HOME" != / ]] || { echo "HOME must be a non-empty absolute directory other than / (got: '${HOME:-}')" >&2; exit 2; }
+prefix="$HOME/.local/opt/win11-explorer-qt"
 install_dir="$repo/.state/install"
 overlay="$repo/.state/libfm-overlay-prefix"
 while (($#)); do
