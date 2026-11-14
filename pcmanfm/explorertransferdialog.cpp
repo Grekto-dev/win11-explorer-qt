@@ -199,10 +199,12 @@ private:
 };
 
 // File names are attacker-controlled. Control characters, line breaks and bidi/format characters (U+202A..202E,
-// U+2066..2069, U+200E/F, U+061C, ...) are replaced by U+FFFD so they cannot reorder or hide the text around them.
+// U+2066..2069, U+200E/F, U+061C, ... BMP only; astral tag characters are not handled) are replaced by U+FFFD so they cannot reorder or hide the text around them.
 QString safeName(const QString& name) {
     QString out = name;
     for(QChar& c : out) {
+        // ZWNJ/ZWJ (U+200C/200D) are Cf but legitimate (composed emoji, Persian/Indic scripts) and cannot reorder text.
+        if(c.unicode() == 0x200C || c.unicode() == 0x200D) continue;
         const auto cat = c.category();
         if(cat == QChar::Other_Control || cat == QChar::Other_Format || cat == QChar::Separator_Line
            || cat == QChar::Separator_Paragraph)
@@ -377,7 +379,7 @@ void ExplorerTransferDialog::setPrepared() {
         summary_->setToolTip(plainToolTip(tr("%1 %2 item de %3 para %4").arg(verb_, count, sourceName_, destinationName_)));
     } else if(!sourceName_.isEmpty()) {
         const QString frame = tr("%1 %2 item: %3").arg(verb_, count, QString());
-        const QString src = fm.elidedText(sourceName_, Qt::ElideMiddle, std::max(40, kSummaryWidth - fm.horizontalAdvance(frame)));
+        const QString src = fm.elidedText(sourceName_, Qt::ElideMiddle, std::max(40, kSummaryWidth - fm.horizontalAdvance(frame)), Qt::TextSingleLine);
         summary_->setText(tr("%1 %2 item: %3").arg(verb_, count, src.toHtmlEscaped()));
         summary_->setToolTip(plainToolTip(tr("%1 %2 item: %3").arg(verb_, count, sourceName_)));
     }

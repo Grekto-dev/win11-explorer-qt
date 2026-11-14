@@ -83,7 +83,7 @@ Implementado em `ExplorerTransferDialog` (sem tocar o motor/`patches/`):
   estimativa > 0) e `Itens restantes: N (tamanho)`.
 - **Nomes de arquivo são entrada hostil**: caracteres de controle, quebras de
   linha e de formatação/bidi (U+202A–202E, U+2066–2069, U+200E/F…) viram U+FFFD
-  antes de qualquer exibição; o texto vai escapado para o resumo (RichText) e
+  antes de qualquer exibição (somente BMP: caracteres de tag astrais, U+E0000…, não são tratados; ZWJ/ZWNJ U+200C/200D são preservados por serem legítimos em emoji compostos e escritas persa/indianas); o texto vai escapado para o resumo (RichText) e
   os tooltips são `<span>` com o texto escapado (o Qt trata ToolTip como rich
   text se parecer HTML, independente de `setTextFormat`). Teste:
   `transferDialogToolTipsAndLabelsNeutraliseHostileFileNames`.

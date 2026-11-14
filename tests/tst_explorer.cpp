@@ -684,6 +684,22 @@ private Q_SLOTS:
         return doc.toPlainText();
     }
 
+    // Second-review blocking finding: ZWJ/ZWNJ are Cf but are part of legitimate names (composed emoji, Persian
+    // and Indic scripts) and cannot reorder text, so they must survive; accents and CJK are untouched.
+    void transferDialogKeepsLegitimateFileNamesIntact() {
+        TransferDialogFixture fx;
+        QVERIFY(fx.dialog);
+        const QString legit = QStringLiteral("caf\u00e9-\u65e5\u672c\u8a9e-")
+                              + QStringLiteral("\U0001F468\u200D\U0001F469\u200D\U0001F467")   // family emoji (ZWJ)
+                              + QStringLiteral("-\u0645\u06cc\u200C\u062e\u0648\u0627\u0647\u0645.txt");   // Persian (ZWNJ)
+        fx.dialog->setCurFile(QStringLiteral("/tmp/") + legit);
+        auto* label = fx.child<QLabel>("transferDetailName");
+        QVERIFY(label);
+        QVERIFY2(label->text() == QStringLiteral("Nome: ") + legit, qPrintable(label->text()));
+        QVERIFY(!label->text().contains(QChar(0xFFFD)));
+        QVERIFY(Qt::mightBeRichText(label->toolTip()));
+    }
+
     void transferDialogToolTipsAndLabelsNeutraliseHostileFileNames() {
         const QString hostile = QStringLiteral("x<img src=\"foto.png\"><b>y&amp;")
                                 + QChar(0x202E) + QStringLiteral("cod.exe") + QChar(0x2066) + QStringLiteral("a\nb\tc");
