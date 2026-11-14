@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Name=Win11 Explorer Qt
+Name[pt_BR]=Explorador — Win11 Explorer Qt
+Comment=Windows 11-inspired file manager based on PCManFM-Qt
+Comment[pt_BR]=Gerenciador de arquivos inspirado no Windows 11, baseado no PCManFM-Qt
+Exec=@BINDIR@/win11-explorer-qt %U
+Icon=win11-explorer-qt
+Terminal=false
+Categories=System;FileTools;FileManager;Qt;
+# Offered in "Open with" for folders only; this file never claims the default
+# handler (the installer neither runs xdg-mime nor update-desktop-database).
+MimeType=inode/directory;
+StartupNotify=true
+StartupWMClass=win11-explorer-qt
+Actions=NewWindow;
+
+[Desktop Action NewWindow]
+Name=New Window
+Name[pt_BR]=Nova janela
+Exec=@BINDIR@/win11-explorer-qt -n

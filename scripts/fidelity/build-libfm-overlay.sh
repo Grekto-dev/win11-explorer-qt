@@ -57,7 +57,7 @@ patch --directory="$OVERLAY_SOURCE" -p1 --forward < "$ROOT/patches/libfm-qt/0002
 
 cmake -S "$OVERLAY_SOURCE" -B "$BUILD_DIR" -GNinja \
     -DCMAKE_MAKE_PROGRAM="$NINJA_BIN" \
-    -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_BUILD_TYPE="${LIBFMQT_OVERLAY_BUILD_TYPE:-Debug}" \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" \
     -DCMAKE_PREFIX_PATH="$PREFIX;$SDK_PREFIX;$QT_ROOT" \
     -DCMAKE_MODULE_PATH="$SDK_PREFIX/share/cmake/lxqt2-build-tools/find-modules" \
