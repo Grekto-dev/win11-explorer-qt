@@ -43,3 +43,59 @@ Não é E2E de pausa no executável standalone nem teste de controles Windows.
 As capturas antigas de setters/layout continuam sendo fixtures estáticas;
 não devem ser confundidas com essa captura viva. O atraso de exibição de
 1.000 ms não foi removido. Veja `integration.md` para o gate completo.
+
+## Fase 3: alinhamento com a referência Windows medida
+
+Medições e nomes dos quadros usados: `transfer-dialog-measurements.md`. A
+tabela comportamental está em `transfer-controls-reference.md`.
+
+Implementado em `ExplorerTransferDialog` (sem tocar o motor/`patches/`):
+- **Títulos** (janela e linha do percentual): `N% concluído`;
+  `Pausado - N% concluído` somente após ACK real do backend
+  (`State::Paused`, ou `Pausing` com `paused` verdadeiro); `Cancelando - N%
+  concluído` assim que o cancelamento é solicitado. O diálogo **não** é
+  escondido ao cancelar: `reject()` é sobrescrito (o da base esconde de
+  imediato) e só encaminha `controller->cancel()` (ou `operation->cancel()`
+  quando não há controller). O `FileOperation` o destrói quando o job termina.
+- **Barra**: azul-clara `#60CDFF` em andamento, amarela `#FCE100` pausada ou
+  cancelando (valores lidos dos pixels; o verde `#16833b` antigo foi removido).
+- **Botão inline** ⏸/▶ à esquerda do ✕ (glifos desenhados com `QPainter`, sem
+  fonte/recurso Microsoft; `accessibleName`/dica carregam "Pausar", "Pausando…",
+  "Retomar"). `Pausando…` fica desabilitado: nenhum "Retomar" antes do ACK. Só
+  aparece se o job anunciar `supportsPause()`; sem capability o botão fica oculto
+  (inclusive Move/Trash/Delete). Cancelando: ▶ esmaecido `#797979`.
+- **Cancelar sem confirmação**, também estando pausado (o controller acorda o
+  worker; ver `liveDialogCancelWhilePausedShowsCancellingWithoutConfirmation`).
+- **Detalhes**: gráfico de velocidade (`SpeedSample{fraction, bytesPerSecond}`)
+  alimentado só por `recordSpeedSample(bytes, total, ms)`, chamado a partir de
+  `setDataTransferred` (bytes reais do libfm). Sem dados = fundo e grade, sem
+  curva. Intervalos sem bytes novos (pausa) não geram amostra zero inventada.
+  Linhas `Nome:`, `Tempo restante:` ("Calculando…" até o libfm informar uma
+  estimativa > 0) e `Itens restantes: N (tamanho)`.
+- **Tamanhos** (cliente Qt, DPR 1, 96 DPI): 449×165 recolhido, 449×287
+  expandido; centros do ⏸/▶ e ✕ em (366; 72,5) e (413; 72,5) nos dois estados.
+
+### Aproximações Qt (não são paridade pixel a pixel)
+- O tamanho Windows medido é o retângulo visível DWM, que inclui a barra de
+  título (≈32 px, coberta pelo banner da VM; altura não medida). Aqui o
+  cliente Qt tem 449×165/287 e a decoração vem do gerenciador de janelas, então
+  a faixa superior do cliente é espaçamento vazio e a janela inteira com
+  decoração é maior que a do Windows.
+- Gráfico em andamento (azul), cor do texto-resumo, tipografia (sem Segoe UI),
+  hover dos botões e escala vertical da curva não foram medidos; o desenho
+  azul usa a mesma construção observada em amarelo.
+- "Itens restantes" usa o número de itens de origem quando o libfm não envia
+  contagem de arquivos (a cópia por tamanho não chama `setFilesProcessed`).
+- Formato do "Tempo restante" (`1 min 15 s`) não foi observado no Windows.
+
+### Não verificado
+Cancelar sem pausar no Windows; texto de velocidade com a cópia ativa;
+comportamento com 5–8 fps reais; DPI ≠ 96; E2E com entrada real no executável
+(nenhuma entrada automatizada foi usada nesta frente).
+
+### Testes
+`tests/tst_explorer.cpp`: `transferDialog*` (10 testes, dialog estático
+offscreen). `tests/transfer/tst_explorertransfercontroller.cpp`: o teste vivo
+existente agora usa `accessibleName()`/glifo/título no lugar do texto do botão
+(botão agora é só ícone) e foi adicionado
+`liveDialogCancelWhilePausedShowsCancellingWithoutConfirmation`.
