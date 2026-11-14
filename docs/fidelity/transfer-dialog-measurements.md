@@ -66,6 +66,24 @@ Pausa/✕ não mudam de posição ao expandir (verificado em B-pausa × B-exp).
   "Calculando…" com a cópia pausada.
 - Cancelar sem pausar; ícone do diálogo; outras versões/temas.
 
+### Decisões e limites registrados (revisão do diálogo, ciclo 1)
+- Cor do resumo `#D0D0D0`: **escolhida, não medida** (o halo/banner cobre a região).
+- Eixo X do gráfico: **fração de bytes** copiados, não tempo.
+- Nomes longos são **elididos** (meio, largura 393 px, tooltip com o texto completo) em vez de quebra de linha;
+  o Windows não foi observado com nomes longos.
+- Foco por teclado: indicador desenhado (1 px branco) só com foco por Tab/Backtab/atalho; em repouso o visual
+  medido não muda. Botões desenhados não são `default`/`autoDefault` (Enter não os aciona).
+- Esc e ✕ cancelam **sem confirmação** (comportamento do `QDialog::reject()`); **Esc não foi observado no Windows**.
+- Tema escuro forçado (o diálogo não segue o tema claro do sistema).
+- "Itens restantes" cai para a contagem de itens de origem quando o libfm não envia contagem de arquivos.
+- Os quadros de referência ficam **fora do Git** (`.state/`); as medições não são reproduzíveis sem a VM.
+- A região `grafico_cor_curva` do comparador passou a `diferente` por causa da regra "sem platô à esquerda"
+  com fixture cuja primeira amostra está em 5 %, **não** por regressão de renderização.
+- O estado azul (em andamento) do gráfico **não foi medido**.
+- **Pausa cooperativa: o ACK só é confirmado depois que o glib termina cada chamada `copy_file_range` (até
+  2 GiB−4 KiB; arquivos menores só confirmam no fim). É limitação do backend, não do diálogo; o Windows
+  confirmou em ≤ ~610 ms.**
+
 ## Comparação (captura Qt × quadros Windows)
 
 Como reproduzir (nada disto escreve no Git; quadros e saídas ficam em `.state/`):

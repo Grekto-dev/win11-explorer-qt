@@ -88,6 +88,15 @@ Implementado em `ExplorerTransferDialog` (sem tocar o motor/`patches/`):
   contagem de arquivos (a cópia por tamanho não chama `setFilesProcessed`).
 - Formato do "Tempo restante" (`1 min 15 s`) não foi observado no Windows.
 
+- Revisão ciclo 1 (resumo): `#D0D0D0` do resumo escolhida (não medida); eixo X do gráfico = fração de bytes, não
+  tempo; nomes elididos (resumo e "Nome:") em vez de word-wrap, tooltip com o texto completo; foco por teclado
+  desenhado só com Tab; Esc/✕ cancelam sem confirmação (Esc não observado no Windows); tema escuro forçado;
+  quadros de referência fora do Git (medições não reproduzíveis sem a VM); `grafico_cor_curva` ficou `diferente`
+  pela regra "sem platô à esquerda" (primeira amostra em 5 %), não por regressão de renderização; gráfico azul
+  não medido.
+- Lacuna de backend: a pausa cooperativa só confirma o ACK depois que o glib termina cada `copy_file_range` (até
+  2 GiB−4 KiB; arquivos menores só no fim) — limitação do backend, não do diálogo; o Windows confirmou em ≤ ~610 ms.
+
 ### Não verificado
 Cancelar sem pausar no Windows; texto de velocidade com a cópia ativa;
 comportamento com 5–8 fps reais; DPI ≠ 96; E2E com entrada real no executável
