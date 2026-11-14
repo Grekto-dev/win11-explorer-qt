@@ -47,7 +47,19 @@ public:
         openWithDefaultFileManager_ = open;
     }
 
+    // D-02: the libfm-qt app chooser builds a libmenu-cache view; when the loaded
+    // libmenu-cache cannot find its menu-cached helper it calls g_error() and the whole
+    // process aborts (SIGTRAP). This tells whether building the chooser is safe.
+    static bool appChooserAvailable();
+    // Test hook: 1 = pretend available, 0 = pretend unavailable, -1 = autodetect.
+    static void setAppChooserAvailableForTest(int state);
+    // Non-blocking "no application associated" message (never aborts, never nests an event loop).
+    static void showNoAppMessage(QWidget* parent = nullptr);
+    // Chooser replacement used when appChooserAvailable() is false: pick an executable.
+    static Fm::GAppInfoPtr pickApplicationWithoutMenuCache(QWidget* parent);
+
 protected:
+    Fm::GAppInfoPtr chooseApp(const Fm::FileInfoList& fileInfos, const char* mimeType, Fm::GErrorPtr& err) override;
     bool openFolder(GAppLaunchContext* ctx, const Fm::FileInfoList& folderInfos, Fm::GErrorPtr& err) override;
     void launchedFiles(const Fm::FileInfoList& files) const override;
     void launchedPaths(const Fm::FilePathList& paths) const override;

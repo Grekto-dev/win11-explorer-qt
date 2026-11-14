@@ -297,6 +297,8 @@ Q_SIGNALS:
     void backwardRequested();
     void folderUnmounted();
     void backspacePressed();
+    // emitted after a failed navigation put the tab back on the previous folder
+    void previousFolderRestored();
 
 protected:
     virtual bool eventFilter(QObject* watched, QEvent* event);
@@ -338,6 +340,10 @@ private:
     QString statusText_[StatusTextNum];
     Fm::BrowseHistory history_; // browsing history
     Fm::FilePath lastFolderPath_; // last browsed folder
+    // C05: state before a history-adding chdir, to undo it if the new folder cannot be loaded
+    Fm::BrowseHistory restoreHistory_;
+    Fm::FilePath restorePath_;
+    bool restorePending_ = false;
     bool overrideCursor_;
     FolderSettings folderSettings_;
     QTimer* selectionTimer_;

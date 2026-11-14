@@ -474,6 +474,19 @@ void TabPage::localizeTitle(const Fm::FilePath& path) {
 }
 
 void TabPage::onFolderFinishLoading() {
+    if(restorePending_) {
+        restorePending_ = false;
+        if(folder_ && !folder_->isValid() && restorePath_) {
+            // C05: the folder could not be loaded at all; go back to where we were
+            QTimer::singleShot(0, this, [this] {
+                const Fm::FilePath previous = restorePath_;
+                const Fm::BrowseHistory history = restoreHistory_;
+                chdir(previous, false);
+                history_ = history;
+                Q_EMIT previousFolderRestored();
+            });
+        }
+    }
     auto fi = folder_->info();
     if(fi) { // if loading of the folder fails, it's possible that we don't have FmFileInfo.
         title_ = fi->displayName();
@@ -560,8 +573,12 @@ void TabPage::onFolderError(const Fm::GErrorPtr& err, Fm::Job::ErrorSeverity sev
          * https://sourceforge.net/tracker/?func=detail&aid=3411298&group_id=156956&atid=801864
          * */
 
-        // FIXME: consider replacing this modal dialog with an info bar to improve usability
-        QMessageBox::critical(this, tr("Error"), err.message());
+        // D-04: never nest an event loop here (this runs inside job/D-Bus driven code):
+        // show the error without blocking.
+        auto* box = new QMessageBox(QMessageBox::Critical, tr("Error"), err.message(), QMessageBox::Ok, this);
+        box->setAttribute(Qt::WA_DeleteOnClose);
+        box->setWindowModality(Qt::NonModal);
+        box->show();
     }
     response = Fm::Job::ErrorAction::CONTINUE;
 }
@@ -650,6 +667,7 @@ QString TabPage::pathName() {
 
 void TabPage::chdir(Fm::FilePath newPath, bool addHistory) {
     // qDebug() << "TABPAGE CHDIR:" << newPath.toString().get();
+    restorePending_ = false;
     if(filterBar_){
         filterBar_->clear();
     }
@@ -668,6 +686,13 @@ void TabPage::chdir(Fm::FilePath newPath, bool addHistory) {
 
         // remember the previous folder path that we have browsed.
         lastFolderPath_ = folder_->path();
+
+        // C05: remember how to undo this navigation if the new folder fails to load
+        restorePending_ = addHistory && folder_->isValid();
+        if(restorePending_) {
+            restorePath_ = folder_->path();
+            restoreHistory_ = history_;
+        }
 
         if(addHistory) {
             // store current scroll pos in the browse history

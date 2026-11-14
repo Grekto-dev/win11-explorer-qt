@@ -25,6 +25,7 @@
 #include <QDBusConnectionInterface>
 #include <QDBusInterface>
 #include <QDir>
+#include <QFileInfo>
 #include <QVector>
 #include <QLocale>
 #include <QLibraryInfo>
@@ -111,7 +112,17 @@ Application::Application(int& argc, char** argv):
 
     // QDBusConnection::sessionBus().registerObject("/org/pcmanfm/Application", this);
     QDBusConnection dbus = QDBusConnection::sessionBus();
-    if(dbus.registerService(QLatin1String(serviceName))) {
+    if(!dbus.isConnected()) {
+        // D-06: without a session bus there is no single-instance service. Do not pretend
+        // to be a second instance (that exited silently with rc=0); run standalone.
+        qWarning().noquote() << QStringLiteral("win11-explorer-qt: session D-Bus unavailable (%1); running without single-instance support")
+                                .arg(dbus.lastError().message());
+        isPrimaryInstance = true;
+        setStyle(new ProxyStyle());
+        connect(this, &Application::aboutToQuit, this, &Application::onAboutToQuit);
+        installSigtermHandler();
+    }
+    else if(dbus.registerService(QLatin1String(serviceName))) {
         // we successfully registered the service
         isPrimaryInstance = true;
         setStyle(new ProxyStyle());
@@ -304,8 +315,15 @@ bool Application::parseCommandLineArgs() {
     else {
         QDBusConnection dbus = QDBusConnection::sessionBus();
         QDBusInterface iface(QLatin1String(serviceName), QStringLiteral("/Application"), QLatin1String(ifaceName), dbus, this);
+        iface.setTimeout(5000); // never hang the shell for the 25 s D-Bus default
+        auto checkReply = [this](const QDBusMessage& reply) {
+            if(reply.type() == QDBusMessage::ErrorMessage) {
+                qCritical().noquote() << QStringLiteral("win11-explorer-qt: request to the running instance failed: %1").arg(reply.errorMessage());
+                exitCode_ = EXIT_FAILURE;
+            }
+        };
         if(parser.isSet(quitOption)) {
-            iface.call(QStringLiteral("quit"));
+            iface.call(QStringLiteral("quit")); // the reply may never arrive: the instance exits
             return false;
         }
 
@@ -320,10 +338,10 @@ bool Application::parseCommandLineArgs() {
             iface.call(QStringLiteral("desktopPrefrences"), parser.value(desktopPrefOption));
         }
         else if(parser.isSet(findFilesOption)) { // file searching utility
-            iface.call(QStringLiteral("findFiles"), parser.positionalArguments());
+            checkReply(iface.call(QStringLiteral("findFiles"), parser.positionalArguments()));
         }
         else if(parser.isSet(showPrefOption)) { // preferences dialog
-            iface.call(QStringLiteral("preferences"), parser.value(showPrefOption));
+            checkReply(iface.call(QStringLiteral("preferences"), parser.value(showPrefOption)));
         }
         else if(parser.isSet(setWallpaperOption) || parser.isSet(wallpaperModeOption)) { // set wall paper
             iface.call(QStringLiteral("setWallpaper"), parser.value(setWallpaperOption), parser.value(wallpaperModeOption));
@@ -336,7 +354,27 @@ bool Application::parseCommandLineArgs() {
                     reopenLastTabs = true; // open last tab paths only if no path is specified
                     paths.push_back(QDir::currentPath());
                 }
-                iface.call(QStringLiteral("launchFiles"), QDir::currentPath(), paths, parser.isSet(newWindowOption), reopenLastTabs);
+                else {
+                    // D-04/D-05: expand "~" here and reject missing local paths in the caller,
+                    // with a message on stderr and rc!=0, instead of a modal in the server.
+                    QStringList valid;
+                    for(const QString& raw : std::as_const(paths)) {
+                        const QString expanded = expandUserPath(raw);
+                        if(!expanded.contains(QStringLiteral(":/"))) {
+                            const QFileInfo info(QDir(QDir::currentPath()).absoluteFilePath(expanded));
+                            if(!info.exists() && !info.isSymLink()) {
+                                qCritical().noquote() << QStringLiteral("win11-explorer-qt: cannot open '%1': no such file or directory").arg(expanded);
+                                exitCode_ = EXIT_FAILURE;
+                                continue;
+                            }
+                        }
+                        valid.push_back(expanded);
+                    }
+                    paths = valid;
+                }
+                if(!paths.isEmpty()) {
+                    checkReply(iface.call(QStringLiteral("launchFiles"), QDir::currentPath(), paths, parser.isSet(newWindowOption), reopenLastTabs));
+                }
             }
         }
     }
@@ -365,7 +403,7 @@ void Application::init() {
 int Application::exec() {
 
     if(!parseCommandLineArgs()) {
-        return 0;
+        return exitCode_;
     }
 
     if(daemonMode_) { // keep running even when there is no window opened.
@@ -383,6 +421,23 @@ void Application::onUserDirsChanged() {
 void Application::onAboutToQuit() {
     qDebug("aboutToQuit");
 
+    settings_.save();
+}
+
+// D-11: settings were only written in aboutToQuit, so a crash lost window size/tabs.
+void Application::scheduleSettingsSave() {
+    if(!isPrimaryInstance) {
+        return;
+    }
+    if(!saveTimer_) {
+        saveTimer_ = new QTimer(this);
+        saveTimer_->setSingleShot(true);
+        connect(saveTimer_, &QTimer::timeout, this, &Application::saveSettingsNow);
+    }
+    saveTimer_->start(1000);
+}
+
+void Application::saveSettingsNow() {
     settings_.save();
 }
 
@@ -490,7 +545,33 @@ void Application::connectToServer() {
     dlg->show();
 }
 
+QString Application::expandUserPath(const QString& path) {
+    if(path == QLatin1String("~") || path.startsWith(QLatin1String("~/"))) {
+        return QDir::homePath() + path.mid(1);
+    }
+    if(path.startsWith(QLatin1Char('$'))) {
+        static const QRegularExpression varRe(QStringLiteral("^\\$(?:\\{([A-Za-z_][A-Za-z0-9_]*)\\}|([A-Za-z_][A-Za-z0-9_]*))"));
+        const auto m = varRe.match(path);
+        if(m.hasMatch()) {
+            const QString name = m.captured(1).isEmpty() ? m.captured(2) : m.captured(1);
+            const QByteArray key = name.toLocal8Bit();
+            if(qEnvironmentVariableIsSet(key.constData())) {
+                return qEnvironmentVariable(key.constData()) + path.mid(m.capturedLength());
+            }
+        }
+    }
+    return path;
+}
+
 void Application::launchFiles(const QString& cwd, const QStringList& paths, bool inNewWindow, bool reopenLastTabs) {
+    // D-04: return to the (D-Bus) caller immediately; the work may run nested event loops
+    // and modal dialogs, which used to hold the caller for the 25 s D-Bus timeout.
+    QMetaObject::invokeMethod(this, [this, cwd, paths, inNewWindow, reopenLastTabs] {
+        doLaunchFiles(cwd, paths, inNewWindow, reopenLastTabs);
+    }, Qt::QueuedConnection);
+}
+
+void Application::doLaunchFiles(const QString& cwd, const QStringList& paths, bool inNewWindow, bool reopenLastTabs) {
     Fm::FilePathList pathList;
     Fm::FilePath cwd_path;
     auto _paths = paths;
@@ -503,11 +584,11 @@ void Application::launchFiles(const QString& cwd, const QStringList& paths, bool
     }
 
     for(const QString& it : std::as_const(_paths)) {
-        QByteArray pathName = it.toLocal8Bit();
-        Fm::FilePath path;
-        if(pathName == "~") { // special case for home dir
-            path = Fm::FilePath::homeDir();
+        QByteArray pathName = expandUserPath(it).toLocal8Bit();
+        if(pathName.isEmpty()) {
+            continue;
         }
+        Fm::FilePath path;
         if(pathName[0] == '/') { // absolute path
             path = Fm::FilePath::fromLocalPath(pathName.constData());
         }
@@ -565,7 +646,7 @@ void Application::launchFiles(const QString& cwd, const QStringList& paths, bool
         if(!hasWindow) {
             _paths.clear();
             _paths.push_back(QDir::currentPath());
-            launchFiles(QDir::currentPath(), _paths, inNewWindow, false);
+            doLaunchFiles(QDir::currentPath(), _paths, inNewWindow, false);
         }
     }
 }

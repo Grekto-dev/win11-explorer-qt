@@ -18,6 +18,7 @@
 #include <QStyleOptionViewItem>
 #include <QProxyStyle>
 #include "view.h"
+#include "launcher.h"
 #include <QtTest>
 #include <QTemporaryDir>
 #include <QToolBar>
@@ -30,6 +31,7 @@
 #include <QClipboard>
 #include <QMimeData>
 #include <libfm-qt6/pathbar.h>
+#include <libfm-qt6/pathedit.h>
 #include <libfm-qt6/folderitemdelegate.h>
 #include <QDir>
 #include <QFile>
@@ -1052,6 +1054,147 @@ private Q_SLOTS:
         QTRY_VERIFY(window->isMaximized());
         QTest::mouseClick(maximize, Qt::LeftButton);
         QTRY_VERIFY(!window->isMaximized());
+    }
+    // D-02: opening a file with no associated application used to abort the whole
+    // process (libmenu-cache g_error -> SIGTRAP) when the app chooser was built.
+    void openingFileWithoutAssociatedAppDoesNotAbort() {
+        GAppInfo* existing = g_app_info_get_default_for_type("application/octet-stream", FALSE);
+        if(existing) {
+            g_object_unref(existing);
+            QSKIP("this environment has a default handler for application/octet-stream");
+        }
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        const QString file = folder.filePath(QStringLiteral("x.zzqqunknown"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(QByteArray("\x01\x02\x03\x04", 4));
+        f.close();
+        Fm::FilePathList list;
+        list.push_back(Fm::FilePath::fromLocalPath(file.toUtf8().constData()));
+        QTimer closer;
+        connect(&closer, &QTimer::timeout, &closer, [] {
+            for(QWidget* w : QApplication::topLevelWidgets()) {
+                if(w->isVisible() && qobject_cast<QDialog*>(w)) w->close();
+            }
+        });
+        closer.start(500);
+        PCManFM::Launcher launcher(nullptr);
+        launcher.launchPaths(nullptr, list);
+        QVERIFY(true); // reaching this line means the process did not abort
+    }
+    // D-02 (deterministic, any environment): with the app chooser unavailable the launch is
+    // reported with a non-blocking message instead of building the libmenu-cache view.
+    void noAssociatedAppShowsNonBlockingMessageWhenChooserUnavailable() {
+        GAppInfo* existing = g_app_info_get_default_for_type("application/octet-stream", FALSE);
+        if(existing) {
+            g_object_unref(existing);
+            QSKIP("this environment has a default handler for application/octet-stream");
+        }
+        const auto restore = qScopeGuard([] { PCManFM::Launcher::setAppChooserAvailableForTest(-1); });
+        PCManFM::Launcher::setAppChooserAvailableForTest(0);
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        const QString file = folder.filePath(QStringLiteral("y.zzqqunknown"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(QByteArray("\x01\x02\x03\x04", 4));
+        f.close();
+        Fm::FilePathList list;
+        list.push_back(Fm::FilePath::fromLocalPath(file.toUtf8().constData()));
+        PCManFM::Launcher launcher(nullptr);
+        QElapsedTimer t;
+        t.start();
+        launcher.launchPaths(nullptr, list);
+        QVERIFY2(t.elapsed() < 3000, "launch must not wait for the user");
+        QMessageBox* box = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((box = [] {
+            for(QWidget* w : QApplication::topLevelWidgets())
+                if(w->isVisible() && w->objectName() == QLatin1String("explorerNoAppMessage")) return qobject_cast<QMessageBox*>(w);
+            return static_cast<QMessageBox*>(nullptr);
+        }()) != nullptr, 3000);
+        QVERIFY(box->text().contains(QStringLiteral("No application")));
+        QVERIFY(!box->isModal() || box->windowModality() == Qt::NonModal);
+        box->close();
+    }
+    void appChooserAvailabilityMatchesTheMenuCacheHelper() {
+        // In this SDK libmenu-cache hardcodes /usr/lib/menu-cache/menu-cached.
+        const bool helperPresent = QFileInfo(QStringLiteral("/usr/lib/menu-cache/menu-cached")).isExecutable();
+        QCOMPARE(PCManFM::Launcher::appChooserAvailable(), helperPresent);
+        PCManFM::Launcher::setAppChooserAvailableForTest(1);
+        QVERIFY(PCManFM::Launcher::appChooserAvailable());
+        PCManFM::Launcher::setAppChooserAvailableForTest(0);
+        QVERIFY(!PCManFM::Launcher::appChooserAvailable());
+        PCManFM::Launcher::setAppChooserAvailableForTest(-1);
+    }
+    // D-05 / C04
+    void userPathsExpandTildeAndSimpleVariables() {
+        const QString home = QDir::homePath();
+        QCOMPARE(PCManFM::Application::expandUserPath(QStringLiteral("~")), home);
+        QCOMPARE(PCManFM::Application::expandUserPath(QStringLiteral("~/Documentos")), home + QStringLiteral("/Documentos"));
+        qputenv("P4_TEST_DIR", "/tmp/p4dir");
+        QCOMPARE(PCManFM::Application::expandUserPath(QStringLiteral("$P4_TEST_DIR/x")), QStringLiteral("/tmp/p4dir/x"));
+        QCOMPARE(PCManFM::Application::expandUserPath(QStringLiteral("${P4_TEST_DIR}")), QStringLiteral("/tmp/p4dir"));
+        QCOMPARE(PCManFM::Application::expandUserPath(QStringLiteral("$P4_NOT_SET/x")), QStringLiteral("$P4_NOT_SET/x"));
+        QCOMPARE(PCManFM::Application::expandUserPath(QStringLiteral("~other/x")), QStringLiteral("~other/x"));
+        QCOMPARE(PCManFM::Application::expandUserPath(QStringLiteral("/a/~/b")), QStringLiteral("/a/~/b"));
+        QCOMPARE(PCManFM::Application::expandUserPath(QStringLiteral("rel/$HOME")), QStringLiteral("rel/$HOME"));
+        qunsetenv("P4_TEST_DIR");
+    }
+    void breadcrumbAddressEditExpandsTilde() {
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        auto root = Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData());
+        QScopedPointer<PCManFM::MainWindow> window(new PCManFM::MainWindow(root));
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window.data()));
+        auto* bar = window->findChild<Fm::PathBar*>();
+        QVERIFY(bar);
+        QMetaObject::invokeMethod(bar, "openEditor");
+        Fm::PathEdit* edit = nullptr;
+        QTRY_VERIFY((edit = bar->findChild<Fm::PathEdit*>()) != nullptr);
+        QTest::qWait(50);
+        edit->setText(QStringLiteral("~"));
+        QTest::keyClick(edit, Qt::Key_Return);
+        QTRY_VERIFY(window->currentPage()->path() == Fm::FilePath::homeDir());
+    }
+    // D-11
+    void settingsArePersistedSoonWithoutWaitingForQuit() {
+        auto& app = *static_cast<PCManFM::Application*>(qApp);
+        if(!app.isPrimary()) QSKIP("another instance owns the D-Bus service; only the primary persists settings");
+        app.settings().setLastWindowWidth(1234);
+        app.scheduleSettingsSave();
+        const QString file = app.settings().profileDir(app.settings().profileName()) + QStringLiteral("/settings.conf");
+        auto contains = [&file] {
+            QFile f(file);
+            return f.open(QIODevice::ReadOnly) && f.readAll().contains("LastWindowWidth=1234");
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(contains(), 4000);
+    }
+    // C05: a failed address-bar navigation must leave the tab on the previous folder.
+    void invalidAddressRestoresPreviousFolder() {
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        auto root = Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData());
+        QScopedPointer<PCManFM::MainWindow> window(new PCManFM::MainWindow(root));
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window.data()));
+        QTRY_VERIFY(window->currentPage()->path() == root);
+        bool sawErrorDialog = false;
+        QTimer closer;
+        connect(&closer, &QTimer::timeout, &closer, [&sawErrorDialog] {
+            for(QWidget* w : QApplication::topLevelWidgets()) {
+                if(w->isVisible() && qobject_cast<QMessageBox*>(w)) {
+                    sawErrorDialog = true;
+                    w->close();
+                }
+            }
+        });
+        closer.start(300);
+        window->chdir(Fm::FilePath::fromPathStr("/nonexistent/zz-p4-crash-nav"));
+        QTRY_VERIFY_WITH_TIMEOUT(sawErrorDialog, 5000); // the navigation really failed
+        QTRY_VERIFY_WITH_TIMEOUT(window->currentPage()->path() == root, 3000);
+        QVERIFY(!window->currentPage()->canBackward());
     }
     void toolbarCopyPasteAndRenameOperateOnRealFiles() {
         QTemporaryDir folder;

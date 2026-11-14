@@ -20,6 +20,11 @@
 
 #include "launcher.h"
 #include <QFileInfo>
+#include <QFile>
+#include <QFileDialog>
+#include <QMessageBox>
+#include <QStringList>
+#include <dlfcn.h>
 #include "mainwindow.h"
 #include "application.h"
 #include <libfm-qt6/core/filepath.h>
@@ -37,6 +42,99 @@ Launcher::Launcher(PCManFM::MainWindow* mainWindow):
 }
 
 Launcher::~Launcher() = default;
+
+namespace {
+int appChooserOverride = -1;
+
+// Path of the helper the *loaded* libmenu-cache will exec: it is a string compiled into the
+// library ("/usr/lib/menu-cache/menu-cached" for the sysroot build), so read it from the binary.
+QString menuCachedPathOfLoadedLibrary() {
+    void* sym = dlsym(RTLD_DEFAULT, "menu_cache_lookup");
+    Dl_info info;
+    if(!sym || !dladdr(sym, &info) || !info.dli_fname) {
+        return QString();
+    }
+    QFile lib(QString::fromLocal8Bit(info.dli_fname));
+    if(!lib.open(QIODevice::ReadOnly)) {
+        return QString();
+    }
+    const QByteArray data = lib.readAll();
+    const QByteArray tail("/menu-cached");
+    int idx = 0;
+    while((idx = data.indexOf(tail, idx)) >= 0) {
+        const int start = data.lastIndexOf('\0', idx) + 1;
+        const int end = data.indexOf('\0', idx);
+        const QByteArray candidate = data.mid(start, end < 0 ? -1 : end - start);
+        if(candidate.startsWith('/') && candidate.endsWith(tail)) {
+            return QString::fromLocal8Bit(candidate);
+        }
+        idx += tail.size();
+    }
+    return QString();
+}
+}
+
+void Launcher::setAppChooserAvailableForTest(int state) {
+    appChooserOverride = state;
+}
+
+bool Launcher::appChooserAvailable() {
+    if(appChooserOverride >= 0) {
+        return appChooserOverride == 1;
+    }
+    if(!dlsym(RTLD_DEFAULT, "menu_cache_lookup")) {
+        return true; // libmenu-cache not in use: nothing can abort
+    }
+    const QString helper = menuCachedPathOfLoadedLibrary();
+    if(!helper.isEmpty()) {
+        return QFileInfo(helper).isExecutable();
+    }
+    static const QStringList candidates = {
+        QStringLiteral("/usr/lib/menu-cache/menu-cached"),
+        QStringLiteral("/usr/lib/x86_64-linux-gnu/menu-cache/menu-cached"),
+        QStringLiteral("/usr/lib/aarch64-linux-gnu/menu-cache/menu-cached"),
+        QStringLiteral("/usr/lib64/menu-cache/menu-cached"),
+        QStringLiteral("/usr/libexec/menu-cache/menu-cached")};
+    for(const QString& c : candidates) {
+        if(QFileInfo(c).isExecutable()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void Launcher::showNoAppMessage(QWidget* parent) {
+    auto* box = new QMessageBox(QMessageBox::Information, QObject::tr("No application associated"),
+                                QObject::tr("No application is associated with this file type."),
+                                QMessageBox::Ok, parent);
+    box->setInformativeText(QObject::tr("Use \"Open with\" to choose an application."));
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    box->setObjectName(QStringLiteral("explorerNoAppMessage"));
+    box->setWindowModality(Qt::NonModal);
+    box->show(); // non-blocking on purpose
+}
+
+Fm::GAppInfoPtr Launcher::pickApplicationWithoutMenuCache(QWidget* parent) {
+    const QString exe = QFileDialog::getOpenFileName(parent, QObject::tr("Choose an application"),
+                                                     QStringLiteral("/usr/bin"));
+    if(exe.isEmpty()) {
+        return Fm::GAppInfoPtr{};
+    }
+    gchar* quoted = g_shell_quote(exe.toLocal8Bit().constData());
+    const QByteArray cmd = QByteArray(quoted) + " %F";
+    g_free(quoted);
+    Fm::GErrorPtr err;
+    GAppInfo* app = g_app_info_create_from_commandline(cmd.constData(), nullptr, G_APP_INFO_CREATE_NONE, &err);
+    return Fm::GAppInfoPtr{app, false};
+}
+
+Fm::GAppInfoPtr Launcher::chooseApp(const Fm::FileInfoList& fileInfos, const char* mimeType, Fm::GErrorPtr& err) {
+    if(!appChooserAvailable()) {
+        showNoAppMessage();
+        return Fm::GAppInfoPtr{};
+    }
+    return Fm::FileLauncher::chooseApp(fileInfos, mimeType, err);
+}
 
 bool Launcher::openFolder(GAppLaunchContext* ctx, const Fm::FileInfoList& folderInfos, Fm::GErrorPtr& /*err*/) {
     auto fi = folderInfos[0];
