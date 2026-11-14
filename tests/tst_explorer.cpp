@@ -465,6 +465,109 @@ private Q_SLOTS:
         QCOMPARE(live.dialog->speedSamples().first().fraction, 0.5);
     }
 
+    // Review C1: after Retomar the baseline restarts, so the first observation after a pause is not turned
+    // into a falsely low rate averaged over the whole pause.
+    void transferDialogSpeedBaselineRestartsOnResume() {
+        TransferDialogFixture fx;
+        QVERIFY(fx.dialog);
+        fx.dialog->setPauseAvailable(true);
+        constexpr std::uint64_t total = 10'000'000;
+        fx.dialog->recordSpeedSample(0, total, 0);
+        QVERIFY(fx.dialog->recordSpeedSample(1'000'000, total, 1000));
+        fx.dialog->applyTransferState(ExplorerTransferController::State::Paused, true);
+        fx.dialog->applyTransferState(ExplorerTransferController::State::Running, false);   // Retomar, 60 s later
+        QVERIFY(!fx.dialog->recordSpeedSample(1'100'000, total, 61'000));                  // new baseline, no sample
+        QVERIFY(fx.dialog->recordSpeedSample(2'100'000, total, 62'000));
+        const auto samples = fx.dialog->speedSamples();
+        QCOMPARE(samples.size(), 2);
+        QCOMPARE(samples[1].bytesPerSecond, 1'000'000.0);
+        QVERIFY(samples[1].fraction > samples[0].fraction);
+    }
+
+    // Review C2: a stall (no new bytes) must not advance the baseline clock; the next rate is the honest
+    // average over the whole interval, not the inflated rate of the last tick alone.
+    void transferDialogSpeedAfterStallIsAveragedOverTheStall() {
+        TransferDialogFixture fx;
+        QVERIFY(fx.dialog);
+        constexpr std::uint64_t total = 10'000'000;
+        fx.dialog->recordSpeedSample(0, total, 0);
+        QVERIFY(fx.dialog->recordSpeedSample(1'000'000, total, 1000));
+        QVERIFY(!fx.dialog->recordSpeedSample(1'000'000, total, 5000));   // 4 s without a byte
+        QVERIFY(fx.dialog->recordSpeedSample(2'000'000, total, 6000));    // 1 MB over the 5 s since the last advance
+        const auto samples = fx.dialog->speedSamples();
+        QCOMPARE(samples.size(), 2);
+        QCOMPARE(samples[1].bytesPerSecond, 200'000.0);
+    }
+
+    // Review C3: counters that go backwards or a total that changes never produce a non-monotonic series.
+    void transferDialogSpeedSeriesStaysMonotonicWhenCountersMisbehave() {
+        TransferDialogFixture fx;
+        QVERIFY(fx.dialog);
+        constexpr std::uint64_t total = 10'000'000;
+        fx.dialog->recordSpeedSample(0, total, 0);
+        QVERIFY(fx.dialog->recordSpeedSample(4'000'000, total, 1000));
+        QVERIFY(fx.dialog->recordSpeedSample(5'000'000, total, 2000));
+        QVERIFY(!fx.dialog->recordSpeedSample(1'000'000, total, 3000));   // counter restarted: rebase, no sample
+        QVERIFY(!fx.dialog->recordSpeedSample(2'000'000, total, 4000));   // below the plotted fraction: dropped
+        QVERIFY(fx.dialog->recordSpeedSample(6'000'000, total, 5000));    // advances past it again
+        auto samples = fx.dialog->speedSamples();
+        for(int i = 1; i < samples.size(); ++i)
+            QVERIFY2(samples[i].fraction >= samples[i - 1].fraction, "fraction went backwards");
+        QCOMPARE(samples.last().fraction, 0.6);
+        QCOMPARE(samples.last().bytesPerSecond, 4'000'000.0);             // 1 MB -> ... measured from the rebase point
+        // A different total changes the x scale: the old series is discarded instead of mixed in.
+        QVERIFY(!fx.dialog->recordSpeedSample(7'000'000, 20'000'000, 6000));
+        QVERIFY(fx.dialog->speedSamples().isEmpty());
+        QVERIFY(fx.dialog->recordSpeedSample(9'000'000, 20'000'000, 7000));
+        samples = fx.dialog->speedSamples();
+        QCOMPARE(samples.size(), 1);
+        QCOMPARE(samples[0].fraction, 0.45);
+    }
+
+    // Review C5: the sample vector is bounded; compaction keeps the shape (monotonic x, bytes conserved).
+    void transferDialogSpeedSamplesAreBoundedByDecimation() {
+        TransferDialogFixture fx;
+        QVERIFY(fx.dialog);
+        constexpr std::uint64_t total = 3'000'000;
+        fx.dialog->recordSpeedSample(0, total, 0);
+        for(int i = 1; i <= 3000; ++i)
+            fx.dialog->recordSpeedSample(std::uint64_t(i) * 1000, total, qint64(i) * 100);   // 10 kB/s steadily
+        const auto samples = fx.dialog->speedSamples();
+        QVERIFY2(samples.size() <= 512, qPrintable(QString::number(samples.size())));
+        QVERIFY(samples.size() > 100);
+        double bytes = 0;
+        for(int i = 0; i < samples.size(); ++i) {
+            if(i) QVERIFY(samples[i].fraction >= samples[i - 1].fraction);
+            QVERIFY(qAbs(samples[i].bytesPerSecond - 10'000.0) < 1.0);
+            bytes += samples[i].bytesPerSecond * samples[i].intervalSeconds;
+        }
+        QCOMPARE(samples.last().fraction, 1.0);
+        QVERIFY(qAbs(bytes - 3'000'000.0) < 1.0);                        // compaction conserves the bytes
+    }
+
+    // Review C4: the curve starts at the first REAL sample; nothing is drawn to its left (no invented plateau).
+    void transferDialogSpeedGraphDoesNotInventSeriesLeftOfFirstSample() {
+        TransferDialogFixture fx;
+        QVERIFY(fx.dialog);
+        fx.dialog->setPauseAvailable(true);
+        fx.dialog->show();
+        QTest::mouseClick(fx.child<QPushButton>("transferDetailsButton"), Qt::LeftButton);
+        constexpr std::uint64_t total = 10'000'000;
+        fx.dialog->setPercent(30);
+        fx.dialog->recordSpeedSample(0, total, 0);
+        fx.dialog->recordSpeedSample(1'000'000, total, 1000);           // first real sample at 10 % -> x ~ 40
+        fx.dialog->recordSpeedSample(3'000'000, total, 2000);
+        fx.dialog->applyTransferState(ExplorerTransferController::State::Paused, true);
+        auto* graph = fx.child<QWidget>("transferSpeedGraph");
+        const QImage img = graph->grab().toImage();
+        int left = 0, right = 0;
+        for(int y = 0; y < img.height(); ++y)
+            for(int x = 0; x < img.width(); ++x)
+                if(QColor(img.pixel(x, y)) == QColor(252, 225, 0)) (x < 38 ? left : right)++;
+        QCOMPARE(left, 0);
+        QVERIFY(right > 200);
+    }
+
     void transferDialogSpeedGraphRendersEmptyBaselineThenYellowAreaWhenPaused() {
         TransferDialogFixture fx;
         QVERIFY(fx.dialog);
