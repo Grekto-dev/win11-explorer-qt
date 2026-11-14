@@ -820,12 +820,12 @@ avec un clic gauche, même si aucun gestionnaire de fichiers n&apos;est défini 
     <message>
         <location filename="../main-win.ui" line="297"/>
         <source>Alt+Up</source>
-        <translation>Alt+Haut</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="309"/>
         <source>Alt+Home</source>
-        <translation>Alt+Début</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="425"/>
@@ -1060,7 +1060,7 @@ avec un clic gauche, même si aucun gestionnaire de fichiers n&apos;est défini 
     <message>
         <location filename="../main-win.ui" line="939"/>
         <source>Shift+F2</source>
-        <translation>Maj+F2</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="1027"/>
@@ -1090,7 +1090,7 @@ avec un clic gauche, même si aucun gestionnaire de fichiers n&apos;est défini 
     <message>
         <location filename="../main-win.ui" line="679"/>
         <source>Ctrl+Shift+A</source>
-        <translation>Ctrl+Maj+A</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="688"/>
@@ -1165,7 +1165,7 @@ avec un clic gauche, même si aucun gestionnaire de fichiers n&apos;est défini 
     <message>
         <location filename="../main-win.ui" line="976"/>
         <source>Ctrl+Shift+C</source>
-        <translation>Ctrl+Maj+C</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="987"/>
@@ -1357,7 +1357,7 @@ avec un clic gauche, même si aucun gestionnaire de fichiers n&apos;est défini 
     <message>
         <location filename="../main-win.ui" line="656"/>
         <source>Alt+Left</source>
-        <translation>Alt+Gauche</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="665"/>
@@ -1372,12 +1372,12 @@ avec un clic gauche, même si aucun gestionnaire de fichiers n&apos;est défini 
     <message>
         <location filename="../main-win.ui" line="671"/>
         <source>Alt+Right</source>
-        <translation>Alt+Droite</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="691"/>
         <source>Del</source>
-        <translation>Suppr</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="703"/>
@@ -1407,7 +1407,7 @@ avec un clic gauche, même si aucun gestionnaire de fichiers n&apos;est défini 
     <message>
         <location filename="../main-win.ui" line="799"/>
         <source>Ctrl+Shift+N</source>
-        <translation>Ctrl+Maj+N</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="811"/>
@@ -1437,7 +1437,7 @@ avec un clic gauche, même si aucun gestionnaire de fichiers n&apos;est défini 
     <message>
         <location filename="../main-win.ui" line="727"/>
         <source>Alt+Return</source>
-        <translation>Alt+Retour</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="765"/>

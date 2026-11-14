@@ -59,6 +59,7 @@
 #include <QMenu>
 #include <unistd.h>
 #include <QStyleHints>
+#include <QTranslator>
 #include <QFontMetrics>
 #include <QProcess>
 #include <sys/stat.h>
@@ -1040,6 +1041,46 @@ private Q_SLOTS:
         }
         QVERIFY2(checked >= 20, "too few shortcut messages recognised");
         QVERIFY2(bad.isEmpty(), qPrintable(bad.join(QStringLiteral(", "))));
+    }
+    void noTranslationRewritesAMainWindowShortcut() {
+        const QDir root(QDir(QFileInfo(QString::fromUtf8(__FILE__)).absolutePath()).filePath(QStringLiteral("../pcmanfm")));
+        QFile ui(root.filePath(QStringLiteral("main-win.ui"))); QVERIFY(ui.open(QIODevice::ReadOnly));
+        QSet<QString> shortcuts;
+        { QXmlStreamReader xml(&ui); bool inShortcut = false;
+          while(!xml.atEnd()) { xml.readNext();
+            if(xml.isStartElement() && xml.name() == QLatin1String("property")) inShortcut = xml.attributes().value(QLatin1String("name")) == QLatin1String("shortcut");
+            else if(xml.isStartElement() && inShortcut && xml.name() == QLatin1String("string")) { shortcuts << xml.readElementText(); inShortcut = false; } }
+          QVERIFY2(!xml.hasError(), "main-win.ui unreadable"); }
+        QVERIFY2(shortcuts.size() >= 30, qPrintable(QString::number(shortcuts.size())));
+        const QStringList files = QDir(root.filePath(QStringLiteral("translations"))).entryList({QStringLiteral("*.ts")}, QDir::Files);
+        QVERIFY2(files.size() > 40, qPrintable(QString::number(files.size())));
+        QStringList bad; int seen = 0;
+        for(const auto& name : files) {
+            QFile ts(root.filePath(QStringLiteral("translations/") + name)); QVERIFY2(ts.open(QIODevice::ReadOnly), qPrintable(name));
+            QXmlStreamReader xml(&ts); QString source;
+            while(!xml.atEnd()) { xml.readNext();
+                if(!xml.isStartElement()) continue;
+                if(xml.name() == QLatin1String("source")) source = xml.readElementText();
+                else if(xml.name() == QLatin1String("translation") && shortcuts.contains(source)) {
+                    const QString tr = xml.readElementText(QXmlStreamReader::SkipChildElements); ++seen;
+                    if(!tr.isEmpty() && tr != source) bad << name + QLatin1Char(':') + source + QStringLiteral("->") + tr;
+                } }
+            QVERIFY2(!xml.hasError(), qPrintable(name));
+        }
+        QVERIFY2(seen > 100, qPrintable(QString::number(seen)));
+        QVERIFY2(bad.isEmpty(), qPrintable(QString::number(bad.size()) + QStringLiteral(" translated shortcuts, e.g. ") + bad.mid(0, 6).join(QStringLiteral(", "))));
+    }
+    void compiledPtBrCatalogueKeepsAltUpWorking() {
+        const QString qm = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("../pcmanfm/pcmanfm-qt_pt_BR.qm"));
+        if(!QFileInfo::exists(qm)) QSKIP("pt_BR .qm not generated in this build tree");
+        QTranslator translator; QVERIFY(translator.load(qm));
+        QVERIFY(qApp->installTranslator(&translator));
+        const auto remove = qScopeGuard([&] { qApp->removeTranslator(&translator); });
+        QTemporaryDir folder; QVERIFY(folder.isValid());
+        PCManFM::MainWindow window(Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData()));
+        auto* up = window.findChild<QAction*>(QStringLiteral("actionGoUp")); QVERIFY(up);
+        QCOMPARE(up->shortcut(), QKeySequence(Qt::ALT | Qt::Key_Up));
+        QCOMPARE(window.findChild<QAction*>(QStringLiteral("actionGoBack"))->shortcut(), QKeySequence(Qt::ALT | Qt::Key_Left));
     }
     void windowShortcutsAreValidAndUnique() {
         QTemporaryDir folder; QVERIFY(folder.isValid());

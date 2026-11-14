@@ -848,7 +848,7 @@ venstreklikkes på dem, selv hvis den ikke er defineret som standardfilhåndteri
     <message>
         <location filename="../main-win.ui" line="297"/>
         <source>Alt+Up</source>
-        <translation>Alt+Op</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="306"/>
@@ -953,7 +953,7 @@ venstreklikkes på dem, selv hvis den ikke er defineret som standardfilhåndteri
     <message>
         <location filename="../main-win.ui" line="436"/>
         <source>Ctrl+Shift+1</source>
-        <translation>Ctrl+Skift+1</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="444"/>
@@ -963,7 +963,7 @@ venstreklikkes på dem, selv hvis den ikke er defineret som standardfilhåndteri
     <message>
         <location filename="../main-win.ui" line="447"/>
         <source>Ctrl+Shift+3</source>
-        <translation>Ctrl+Skift+3</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="455"/>
@@ -973,7 +973,7 @@ venstreklikkes på dem, selv hvis den ikke er defineret som standardfilhåndteri
     <message>
         <location filename="../main-win.ui" line="458"/>
         <source>Ctrl+Shift+4</source>
-        <translation>Ctrl+Skift+4</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="466"/>
@@ -983,7 +983,7 @@ venstreklikkes på dem, selv hvis den ikke er defineret som standardfilhåndteri
     <message>
         <location filename="../main-win.ui" line="469"/>
         <source>Ctrl+Shift+2</source>
-        <translation>Ctrl+Skift+2</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="478"/>
@@ -1098,7 +1098,7 @@ venstreklikkes på dem, selv hvis den ikke er defineret som standardfilhåndteri
     <message>
         <location filename="../main-win.ui" line="939"/>
         <source>Shift+F2</source>
-        <translation>Skift+F2</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="1027"/>
@@ -1123,7 +1123,7 @@ venstreklikkes på dem, selv hvis den ikke er defineret som standardfilhåndteri
     <message>
         <location filename="../main-win.ui" line="679"/>
         <source>Ctrl+Shift+A</source>
-        <translation>Ctrl+Skift+A</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="740"/>
@@ -1203,7 +1203,7 @@ venstreklikkes på dem, selv hvis den ikke er defineret som standardfilhåndteri
     <message>
         <location filename="../main-win.ui" line="976"/>
         <source>Ctrl+Shift+C</source>
-        <translation>Ctrl+Skift+C</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="987"/>
@@ -1254,7 +1254,7 @@ venstreklikkes på dem, selv hvis den ikke er defineret som standardfilhåndteri
     <message>
         <location filename="../main-win.ui" line="842"/>
         <source>Ctrl+Shift+K</source>
-        <translation>Ctrl+Skift+K</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="851"/>
@@ -1355,7 +1355,7 @@ venstreklikkes på dem, selv hvis den ikke er defineret som standardfilhåndteri
     <message>
         <location filename="../main-win.ui" line="656"/>
         <source>Alt+Left</source>
-        <translation>Alt+Venstre</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="665"/>
@@ -1370,7 +1370,7 @@ venstreklikkes på dem, selv hvis den ikke er defineret som standardfilhåndteri
     <message>
         <location filename="../main-win.ui" line="671"/>
         <source>Alt+Right</source>
-        <translation>Alt+Højre</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="676"/>
@@ -1415,7 +1415,7 @@ venstreklikkes på dem, selv hvis den ikke er defineret som standardfilhåndteri
     <message>
         <location filename="../main-win.ui" line="727"/>
         <source>Alt+Return</source>
-        <translation>Alt+Retur</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="732"/>
@@ -1445,7 +1445,7 @@ venstreklikkes på dem, selv hvis den ikke er defineret som standardfilhåndteri
     <message>
         <location filename="../main-win.ui" line="799"/>
         <source>Ctrl+Shift+N</source>
-        <translation>Ctrl+Skift+N</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../main-win.ui" line="811"/>
