@@ -119,6 +119,17 @@ não é métrica de fidelidade): 6,6 % / 10,7 % / 12,6 % / 12,2 %.
 - **Linhas de grade verticais**: referência 185/224/263/302/342/381, nosso 185/225/264/304/343/383
   (≤2 px, `igual`). A referência corresponde a 28+39,2·k; o nosso usa 27+39,5·k. Não alterado (≤2 px).
 
+- **Gráfico — curva sem platô à esquerda (revisão C4, diferença registrada)**: a curva agora começa na primeira
+  amostra REAL (nada é desenhado à esquerda dela). A referência Windows tem a curva preenchida desde o canto
+  inferior esquerdo; na captura `paused-32-expanded` a região `grafico_cor_curva` (pixel do canto inferior
+  esquerdo) passou de `igual` (252,225,0) para `diferente` (nosso 75,71,37 = área tingida), porque a primeira
+  amostra do fixture está em 5 % (a observação em 2 % é só a linha de base). Efeito deliberado do contrato (sem
+  série inventada); o restante da comparação ficou idêntico (fração de pixels dRGB>8 inalterada: 6,55 / 10,66 /
+  12,56 / 12,22 %). Não revertido.
+- **Cores da grade (revisão H)**: medido pausado vertical 60,58,40 / horizontal sobre a área tingida 89,83,34.
+  Nenhum alfa único do `blend` reproduz (60,58,40) (R exige a<0,0793, B exige a>0,0795), então o estado pausado
+  usa as cores medidas literalmente; o estado em execução (azul) não tem medição e mantém o `blend` (0,08/0,22).
+
 ### Medido igual
 Cor do fundo (#2C2C2C), borda da janela (#3D3D3D, 1 px), separador (y 120/242, #4D4D4D), borda/trilho/
 preenchimento da barra (cores exatas; x 27..421, y 90..104; preenchimento y 91..103), centro dos glifos
