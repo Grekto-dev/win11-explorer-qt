@@ -30,6 +30,8 @@
 #include <QSignalBlocker>
 #include <QEvent>
 #include <memory>
+#include <atomic>
+#include <QUrl>
 #include <libfm-qt6/appchoosercombobox.h>
 #include <libfm-qt6/pathedit.h>
 #include <QLineEdit>
@@ -57,6 +59,9 @@ Launcher::~Launcher() = default;
 
 namespace {
 int appChooserOverride = -1;
+std::atomic<int> appChooserProbeCount{0};
+std::atomic<int> pathEditForwardedCount{0};
+std::atomic<int> pathEditBlockedCount{0};
 
 // Path of the helper the *loaded* libmenu-cache will exec: it is a string compiled into the
 // library ("/usr/lib/menu-cache/menu-cached" for the sysroot build), so read it from the binary.
@@ -152,6 +157,7 @@ void Launcher::setAppChooserAvailableForTest(int state) {
 }
 
 bool Launcher::appChooserAvailable() {
+    ++appChooserProbeCount;
     if(appChooserOverride >= 0) {
         return appChooserOverride == 1;
     }
@@ -206,7 +212,36 @@ bool Launcher::isMenuCachePath(const Fm::FilePath& path) {
         return false;
     }
     const auto scheme = path.uriScheme();
-    return scheme && strcasecmp(scheme.get(), "menu") == 0;
+    if(!scheme) {
+        return false;
+    }
+    if(strcasecmp(scheme.get(), "menu") == 0) {
+        return true;
+    }
+    // search://<root>[,<root>...]?<options>: libfm's search job enumerates every root
+    // (vfs-search.c: g_file_new_for_commandline_arg + g_file_enumerate_children), so a menu: root
+    // makes the whole search location a menu-cache location.
+    if(strcasecmp(scheme.get(), "search") == 0) {
+        const auto uri = path.uri();
+        if(!uri) {
+            return false;
+        }
+        QString rest = QString::fromUtf8(uri.get()).mid(7); // after "search:"
+        if(rest.startsWith(QLatin1String("//"))) {
+            rest.remove(0, 2);
+        }
+        const int query = rest.indexOf(QLatin1Char('?'));
+        if(query >= 0) {
+            rest.truncate(query);
+        }
+        const QStringList roots = rest.split(QLatin1Char(','));
+        for(const QString& root : roots) {
+            if(isMenuCacheText(QUrl::fromPercentEncoding(root.toUtf8()))) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 bool Launcher::isMenuCacheText(const QString& text) {
@@ -223,6 +258,20 @@ void Launcher::showMenuUnavailableMessage(QWidget* parent) {
                     "(the libmenu-cache helper \"menu-cached\" was not found)."));
 }
 
+bool Launcher::forwardPathEditText(Fm::PathEdit* edit, const QString& text, const char* slot) {
+    ++pathEditForwardedCount;
+    const bool ok = QMetaObject::invokeMethod(edit, slot, Qt::DirectConnection, Q_ARG(QString, text));
+    if(!ok) {
+        qWarning("win11-explorer-qt: Fm::PathEdit slot \"%s(QString)\" not found: address completion is disabled "
+                 "(libfm-qt changed the slot?)", slot);
+    }
+    return ok;
+}
+
+int Launcher::appChooserProbeCountForTest() { return appChooserProbeCount; }
+int Launcher::pathEditForwardedCountForTest() { return pathEditForwardedCount; }
+int Launcher::pathEditBlockedCountForTest() { return pathEditBlockedCount; }
+
 void Launcher::guardPathEdit(Fm::PathEdit* edit) {
     if(!edit || edit->property("explorerMenuGuarded").toBool()) {
         return;
@@ -234,17 +283,23 @@ void Launcher::guardPathEdit(Fm::PathEdit* edit) {
     // every textChanged -> edit connection, the edit has no other one.)
     QObject::disconnect(edit, &QLineEdit::textChanged, edit, nullptr);
     QObject::connect(edit, &QLineEdit::textChanged, edit, [edit](const QString& text) {
-        if(menuCacheUnusable() && isMenuCacheText(text)) {
+        // cheap textual test first: the probe (dlsym + stat, first call reads libmenu-cache) must
+        // not run on every key of an ordinary address
+        if(isMenuCacheText(text) && menuCacheUnusable()) {
+            ++pathEditBlockedCount;
             return; // would reach menu_cache_lookup_sync (abort without menu-cached)
         }
-        QMetaObject::invokeMethod(edit, "onTextChanged", Qt::DirectConnection, Q_ARG(QString, text));
+        forwardPathEditText(edit, text); // failure is reported inside
     });
     // text already there (set before the guard existed): its prefix may be loaded on focus-in
-    if(menuCacheUnusable() && isMenuCacheText(edit->text())) {
+    if(isMenuCacheText(edit->text()) && menuCacheUnusable()) {
         edit->clear();
     }
 }
 
+// NOTE: Fm::FileLauncher::launchPaths is NOT virtual, so this only protects calls made through a
+// Launcher object (every pcmanfm caller does; none uses a bare Fm::FileLauncher::launchPaths: see
+// docs). libfm-qt's own views call launchFiles() with already-queried FileInfos instead.
 bool Launcher::launchPaths(QWidget* parent, const Fm::FilePathList& paths) {
     if(menuCacheUnusable()) {
         Fm::FilePathList allowed;

@@ -66,7 +66,8 @@ public:
     // Non-blocking, PlainText. An empty text selects the generic "chooser unavailable" wording.
     static void showChooserUnavailableMessage(QWidget* parent = nullptr, const QString& text = QString());
     // True for the libmenu-cache backed locations (menu:///applications/...): they need menu-cached.
-    // The scheme is compared case-insensitively.
+    // The scheme is compared case-insensitively. Also true for a search:// location with a menu:
+    // root (the search job enumerates its roots).
     static bool isMenuCachePath(const Fm::FilePath& path);
     // Textual form for typed/CLI text: starts (after leading blanks) with "menu:", any case.
     static bool isMenuCacheText(const QString& text);
@@ -81,7 +82,16 @@ public:
     // editor's own textChanged handler is replaced by one that skips "menu:" text. Installed on
     // every Fm::PathEdit by the application-wide filter (also callable directly).
     static void guardPathEdit(Fm::PathEdit* edit);
-    // Hides FileLauncher::launchPaths: FileInfoJob would query_info a menu:// child (lookup_sync).
+    // Hands \a text to the PathEdit's private slot (default "onTextChanged"); a missing slot would
+    // silently kill the completer, so a failed invoke is reported with qWarning and returns false.
+    static bool forwardPathEditText(Fm::PathEdit* edit, const QString& text, const char* slot = "onTextChanged");
+    // Test observability (process-wide counters): appChooserAvailable() calls, texts handed to
+    // PathEdit's slot, "menu:" texts blocked by the guard.
+    static int appChooserProbeCountForTest();
+    static int pathEditForwardedCountForTest();
+    static int pathEditBlockedCountForTest();
+    // Hides FileLauncher::launchPaths (NOT virtual: calls through Fm::FileLauncher* / a bare
+    // FileLauncher object bypass this filter; keep every caller on Launcher): FileInfoJob would query_info a menu:// child (lookup_sync).
     // Menu locations are dropped (with a message) when menu-cache is unusable.
     bool launchPaths(QWidget* parent, const Fm::FilePathList& paths);
     // D-02: makes the "Open with > Other Applications" entry of any Fm::FileMenu safe (side pane

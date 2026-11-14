@@ -34,6 +34,8 @@
 #include <libfm-qt6/pathbar.h>
 #include <libfm-qt6/pathedit.h>
 #include <libfm-qt6/filepropsdialog.h>
+#include <libfm-qt6/filesearchdialog.h>
+#include <QListWidget>
 #include <libfm-qt6/filemenu.h>
 #include <libfm-qt6/sidepane.h>
 #include <QFileDialog>
@@ -2060,17 +2062,165 @@ private Q_SLOTS:
         edit->clear();
         QTest::keyClicks(edit, folder.path() + QLatin1Char('/'));
         QTRY_VERIFY_WITH_TIMEOUT(edit->completer() && edit->completer()->model()->rowCount() > 0, 3000);
-        // typed one key at a time, as pasted text, and with Tab
+        // ---- review 4: observation that does not depend on menu-cached being absent ----
+        using L = PCManFM::Launcher;
+        // idempotent: Polish/FocusIn already guarded it once; more calls add no second forwarder
+        L::guardPathEdit(edit);
+        L::guardPathEdit(edit);
         edit->clear();
+        int forwarded = L::pathEditForwardedCountForTest();
+        QTest::keyClick(edit, Qt::Key_X);
+        QCOMPARE(L::pathEditForwardedCountForTest(), forwarded + 1); // one key, one forward
+        // an ordinary text never probes the chooser/menu-cache (dlsym + stat per key)
+        edit->clear();
+        const int probes = L::appChooserProbeCountForTest();
+        QTest::keyClicks(edit, QStringLiteral("abc/def"));
+        QCOMPARE(L::appChooserProbeCountForTest(), probes);
+        // 'menu' without ':' is an ordinary relative name: keeps being forwarded
+        edit->clear();
+        forwarded = L::pathEditForwardedCountForTest();
+        int blocked = L::pathEditBlockedCountForTest();
+        QTest::keyClicks(edit, QStringLiteral("menu"));
+        QCOMPARE(L::pathEditForwardedCountForTest(), forwarded + 4);
+        QCOMPARE(L::pathEditBlockedCountForTest(), blocked);
+        // typed one key at a time: "m","me","men","menu" go through, the 16 texts from "menu:" on do not
+        edit->clear();
+        forwarded = L::pathEditForwardedCountForTest();
+        blocked = L::pathEditBlockedCountForTest();
         QTest::keyClicks(edit, QStringLiteral("menu://applications/"));
+        QCOMPARE(L::pathEditForwardedCountForTest(), forwarded + 4);
+        QCOMPARE(L::pathEditBlockedCountForTest(), blocked + 16);
         QTest::keyClick(edit, Qt::Key_Tab);
-        edit->clear();
-        edit->setText(QStringLiteral("menu://applications/"));
-        QTest::keyClick(edit, Qt::Key_Tab);
-        edit->setText(QStringLiteral("MENU://applications/Utility/"));
-        QTest::keyClick(edit, Qt::Key_Tab);
+        // pasted / set texts, any case, with leading blanks, and Tab
+        for(const QString& text : {QStringLiteral("menu://applications/"), QStringLiteral("  MENU://applications/Utility/"),
+                                   QStringLiteral("Menu:"), QStringLiteral("menu:///applications/")}) {
+            edit->clear();
+            forwarded = L::pathEditForwardedCountForTest();
+            blocked = L::pathEditBlockedCountForTest();
+            edit->setText(text);
+            QVERIFY2(L::pathEditBlockedCountForTest() == blocked + 1 && L::pathEditForwardedCountForTest() == forwarded, qPrintable(text));
+            QTest::keyClick(edit, Qt::Key_Tab);
+        }
         QTest::qWait(800); // the enumeration runs in a worker thread: let it (not) happen
         QVERIFY(window->currentPage()->path() == root);
+    }
+    // Review 4 (nit): a renamed/missing slot must not silently kill the completer.
+    void forwardPathEditTextReportsAMissingSlot() {
+        Fm::PathEdit edit;
+        QVERIFY(PCManFM::Launcher::forwardPathEditText(&edit, QStringLiteral("x")));
+        QTest::ignoreMessage(QtWarningMsg, QRegularExpression(QStringLiteral("No such method")));
+        QTest::ignoreMessage(QtWarningMsg, QRegularExpression(QStringLiteral("PathEdit.*onTextChangedGone")));
+        QVERIFY(!PCManFM::Launcher::forwardPathEditText(&edit, QStringLiteral("x"), "onTextChangedGone"));
+    }
+    // Review 4 (medium-low): org.freedesktop.FileManager1.ShowItemProperties -> FileInfoJob on a
+    // menu:// child -> menu_cache_lookup_sync -> abort; any session-bus client could trigger it.
+    void showItemPropertiesRefusesMenuUrisWhenChooserUnavailable_data() {
+        QTest::addColumn<QString>("uri");
+        QTest::newRow("child") << QStringLiteral("menu://applications/Utility");
+        QTest::newRow("root, upper case, blanks") << QStringLiteral("  MENU://applications/");
+        QTest::newRow("triple slash desktop file") << QStringLiteral("menu:///applications/Utility/x.desktop");
+        QTest::newRow("bare scheme") << QStringLiteral("Menu:");
+    }
+    void showItemPropertiesRefusesMenuUrisWhenChooserUnavailable() {
+        QFETCH(QString, uri);
+        const auto restore = qScopeGuard([] { PCManFM::Launcher::setAppChooserAvailableForTest(-1); });
+        PCManFM::Launcher::setAppChooserAvailableForTest(0);
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        const QString local = folder.filePath(QStringLiteral("props4.txt"));
+        QFile f(local);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("x");
+        f.close();
+        auto countProps = [] {
+            int n = 0;
+            for(QWidget* w : QApplication::topLevelWidgets())
+                if(w->inherits("Fm::FilePropsDialog")) ++n;
+            return n;
+        };
+        const int before = countProps();
+        // the menu URI alone: refused with a non-blocking PlainText message, no job, no abort
+        static_cast<PCManFM::Application*>(qApp)->ShowItemProperties({uri}, QString());
+        QMessageBox* box = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((box = findChooserUnavailableBox()) != nullptr, 3000);
+        QCOMPARE(box->textFormat(), Qt::PlainText);
+        QVERIFY(box->windowModality() == Qt::NonModal);
+        box->close();
+        QTest::qWait(800); // FileInfoJob runs in a thread: it must not have been started at all
+        QCOMPARE(countProps(), before);
+        // the ordinary entries of the same call are still served
+        static_cast<PCManFM::Application*>(qApp)->ShowItemProperties({uri, local}, QString());
+        QTRY_VERIFY_WITH_TIMEOUT(countProps() == before + 1, 4000);
+        for(QWidget* w : QApplication::topLevelWidgets()) {
+            if(w->inherits("Fm::FilePropsDialog")) w->close();
+            else if(w->isVisible() && qobject_cast<QMessageBox*>(w)) w->close();
+        }
+    }
+    // Review 4 (medium-low): the Find Files dialog accepted 'menu:' folders; the resulting
+    // search:// job enumerates them (libfm vfs-search -> g_file_enumerate_children on each root).
+    void findFilesDropsMenuRootsWhenChooserUnavailable() {
+        const auto restore = qScopeGuard([] { PCManFM::Launcher::setAppChooserAvailableForTest(-1); });
+        PCManFM::Launcher::setAppChooserAvailableForTest(0);
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        QSet<QWidget*> existing;
+        for(QWidget* w : QApplication::topLevelWidgets()) existing.insert(w);
+        static_cast<PCManFM::Application*>(qApp)->findFiles({QStringLiteral("menu://applications/Utility"), QStringLiteral("  MENU:"), folder.path()});
+        Fm::FileSearchDialog* dlg = nullptr;
+        for(QWidget* w : QApplication::topLevelWidgets())
+            if(!existing.contains(w))
+                if(auto* d = dynamic_cast<Fm::FileSearchDialog*>(w)) dlg = d;
+        QVERIFY(dlg);
+        auto* list = dlg->findChild<QListWidget*>();
+        QVERIFY(list);
+        QStringList items;
+        for(int i = 0; i < list->count(); ++i) items << list->item(i)->text();
+        QCOMPARE(items, QStringList{folder.path()});
+        QMessageBox* box = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((box = findChooserUnavailableBox()) != nullptr, 3000);
+        QCOMPARE(box->textFormat(), Qt::PlainText);
+        box->close();
+        dlg->close();
+    }
+    // Same, bypassing findFiles(): a dialog that already holds a menu root and is accepted.
+    void findFilesAcceptedRefusesMenuSearchRootsWhenChooserUnavailable() {
+        const auto restore = qScopeGuard([] { PCManFM::Launcher::setAppChooserAvailableForTest(-1); });
+        PCManFM::Launcher::setAppChooserAvailableForTest(0);
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        auto root = Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData());
+        QScopedPointer<PCManFM::MainWindow> window(new PCManFM::MainWindow(root));
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window.data()));
+        QTRY_VERIFY(window->currentPage()->path() == root);
+        Fm::FileSearchDialog dlg(QStringList{QStringLiteral("menu://applications/"), folder.path()});
+        QObject::connect(&dlg, SIGNAL(accepted()), qApp, SLOT(onFindFileAccepted()));
+        dlg.accept();
+        QMessageBox* box = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((box = findChooserUnavailableBox()) != nullptr, 3000);
+        QCOMPARE(box->textFormat(), Qt::PlainText);
+        QVERIFY(box->windowModality() == Qt::NonModal);
+        QTest::qWait(1000); // the search folder would be enumerated by a worker thread
+        QVERIFY(window->currentPage()->path() == root);
+        box->close();
+    }
+    // The second instance filters --find-files arguments too (they were forwarded raw).
+    void findFilesCliPathsAreFilteredWhenChooserUnavailable() {
+        const auto restore = qScopeGuard([] { PCManFM::Launcher::setAppChooserAvailableForTest(-1); });
+        PCManFM::Launcher::setAppChooserAvailableForTest(0);
+        bool refused = false;
+        QStringList out = PCManFM::Application::filterFindFilesPaths(
+            {QStringLiteral("menu://applications/"), QStringLiteral("/tmp"), QStringLiteral("  MENU:///applications/X")}, &refused);
+        QVERIFY(refused);
+        QCOMPARE(out, QStringList{QStringLiteral("/tmp")});
+        refused = true;
+        out = PCManFM::Application::filterFindFilesPaths({QStringLiteral("/tmp"), QStringLiteral("menu")}, &refused);
+        QVERIFY(!refused); // "menu" without ':' is a relative name
+        QCOMPARE(out.size(), 2);
+        PCManFM::Launcher::setAppChooserAvailableForTest(1);
+        out = PCManFM::Application::filterFindFilesPaths({QStringLiteral("menu://applications/")}, &refused);
+        QVERIFY(!refused);
+        QCOMPARE(out.size(), 1);
     }
     // Review 3 (medium-high): a CLI/D-Bus argument below menu://applications/ reached
     // FileInfoJob -> query_info -> menu_cache_lookup_sync before any chdir.
