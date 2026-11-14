@@ -56,11 +56,17 @@ def main():
 import os, subprocess, sys, time
 launcher, folder = {launcher!r}, {str(fixture)!r}
 env = dict(os.environ)
-p = subprocess.Popen([launcher, folder], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+# D-03: start from a polluted shell; the process must not carry foreign Qt paths.
+poison = dict(env, QT_PLUGIN_PATH='/nonexistent/plugins', QT_QPA_PLATFORM_PLUGIN_PATH='/nonexistent/platforms')
+p = subprocess.Popen([launcher, folder], env=poison, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 time.sleep(4)
 alive = p.poll() is None
 print('primary alive after 4s:', alive)
 maps = open('/proc/%d/maps' % p.pid).read() if alive else ''
+penv = dict(kv.split('=', 1) for kv in open('/proc/%d/environ' % p.pid).read().split(chr(0)) if '=' in kv) if alive else {{}}
+leak = sorted(k for k in penv if k in ('LD_LIBRARY_PATH', 'QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH', 'QT_STYLE_OVERRIDE'))
+print('foreign/dev env vars in the app process:', leak)
+print('app process env keys:', sorted(penv))
 exe = os.readlink('/proc/%d/exe' % p.pid) if alive else ''
 libs = sorted({{l.split(None, 5)[5].replace(' (deleted)', '') for l in maps.splitlines() if len(l.split(None, 5)) == 6 and '.so' in l.split(None, 5)[5]}})
 print('exe:', exe)
@@ -83,6 +89,7 @@ print('stderr tail:', p.stderr.read()[-600:].replace(chr(10), ' | '))
     out = r.stdout
     ok &= 'primary alive after 4s: True' in out and 'primary exit: 0' in out and 'quit rc: 0' in out
     ok &= 'second instance -n rc: 0' in out
+    ok &= 'foreign/dev env vars in the app process: []' in out
     maps = [l.split('maps:')[1].strip() for l in out.splitlines() if l.strip().startswith('maps:')]
     ok &= all('/.deps' not in m and '/.state' not in m and 'sysroot' not in m for m in maps)
     ok &= any(str(moved) in m for m in maps)
