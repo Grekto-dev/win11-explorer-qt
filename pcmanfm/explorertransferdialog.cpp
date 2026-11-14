@@ -146,6 +146,10 @@ protected:
             p.setBrush(accent);
             p.drawPolygon(poly);
         }
+        // Measured: a 1 px #383838 ring sits just inside the border, over tint and curve alike.
+        p.setPen(kTrack);
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(1, 1, w - 3, h - 3);
         p.setPen(kBorder);
         p.setBrush(Qt::NoBrush);
         p.drawRect(0, 0, w - 1, h - 1);

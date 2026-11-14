@@ -338,6 +338,31 @@ private Q_SLOTS:
         QCOMPARE(QColor(img.pixel(img.width() - 3, img.height() / 2)), QColor(44, 44, 44));   // beyond progress: plain background
     }
 
+    // Measured in frame B_pre_cmd2 (paused 32 %, expanded): the 1 px #575757 graph border has a 1 px
+    // #383838 inner ring on all four sides (graph-local x=1, x=w-2, y=1, y=h-2), also over the tinted area.
+    void transferDialogGraphHasMeasuredInnerRing() {
+        TransferDialogFixture fx;
+        QVERIFY(fx.dialog);
+        fx.dialog->setPauseAvailable(true);
+        fx.dialog->show();
+        QTest::mouseClick(fx.child<QPushButton>("transferDetailsButton"), Qt::LeftButton);
+        constexpr std::uint64_t total = 10'000'000;
+        fx.dialog->setPercent(30);
+        fx.dialog->recordSpeedSample(0, total, 0);
+        fx.dialog->recordSpeedSample(1'000'000, total, 1000);
+        fx.dialog->recordSpeedSample(3'000'000, total, 2000);
+        fx.dialog->applyTransferState(ExplorerTransferController::State::Paused, true);
+        auto* graph = fx.child<QWidget>("transferSpeedGraph");
+        QVERIFY(graph && graph->isVisible());
+        const QImage img = graph->grab().toImage();
+        const QColor ring(56, 56, 56);
+        QCOMPARE(QColor(img.pixel(0, 40)), QColor(87, 87, 87));                 // outer border unchanged
+        QCOMPARE(QColor(img.pixel(1, 40)), ring);                               // left ring, over the tinted area
+        QCOMPARE(QColor(img.pixel(img.width() - 2, 40)), ring);                 // right ring
+        QCOMPARE(QColor(img.pixel(300, 1)), ring);                              // top ring
+        QCOMPARE(QColor(img.pixel(300, img.height() - 2)), ring);               // bottom ring
+    }
+
     void transferDialogKeepsVerbsAndNoPauseForNonCopyOperations() {
         const struct { Fm::FileOperation::Type type; const char* verb; } cases[] = {
             {Fm::FileOperation::Move, "Movendo"}, {Fm::FileOperation::Trash, "Movendo para a lixeira"},
