@@ -119,7 +119,11 @@ protected:
         const bool hasData = !samples_.isEmpty();
         const int plotRight = hasData ? 1 + int(std::clamp(progress_, 0.0, 1.0) * (w - 2) + 0.5) : 1;
         if(hasData) p.fillRect(QRect(1, 1, plotRight - 1, h - 2), blend(kBackground, accent, 0.15));
-        const QColor gridOut = blend(kBackground, accent, 0.08), gridIn = blend(kBackground, accent, 0.22);
+        // Measured (paused/yellow): vertical grid 60,58,40 and horizontal over the tint 89,83,34. No single alpha of
+        // the blend reproduces (60,58,40) (R needs a < .0793, B needs a > .0795), so the measured state uses the
+        // measured colours verbatim; the running (blue) state has no measurement and keeps the blend.
+        const QColor gridOut = yellow_ ? QColor(60, 58, 40) : blend(kBackground, accent, 0.08);
+        const QColor gridIn = yellow_ ? QColor(89, 83, 34) : blend(kBackground, accent, 0.22);
         for(int k = 1; k < 10; ++k) {
             const int x = int(w * k / 10.0 + 0.5);
             p.fillRect(QRect(x, 1, 1, h - 2), x < plotRight ? gridIn : gridOut);

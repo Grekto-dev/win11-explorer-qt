@@ -649,6 +649,25 @@ private Q_SLOTS:
         QCOMPARE(rows, (QList<int>{17, 32, 48, 63}));
     }
 
+    // Review H: measured grid colours (paused): vertical line outside the tint 60,58,40; horizontal line over
+    // the tint 89,83,34 (the old blend gave 61,59,41 / 90,84,34).
+    void transferDialogGraphGridColoursMatchMeasuredWhenPaused() {
+        TransferDialogFixture fx;
+        QVERIFY(fx.dialog);
+        fx.dialog->setPauseAvailable(true);
+        fx.dialog->show();
+        QTest::mouseClick(fx.child<QPushButton>("transferDetailsButton"), Qt::LeftButton);
+        constexpr std::uint64_t total = 10'000'000;
+        fx.dialog->setPercent(30);
+        fx.dialog->recordSpeedSample(0, total, 0);
+        fx.dialog->recordSpeedSample(1'000'000, total, 1000);
+        fx.dialog->applyTransferState(ExplorerTransferController::State::Paused, true);
+        const QImage img = fx.child<QWidget>("transferSpeedGraph")->grab().toImage();
+        QCOMPARE(QColor(img.pixel(5, 17)), QColor(89, 83, 34));                   // horizontal, over the tint
+        const int vx = int(img.width() * 6 / 10.0 + 0.5);                          // vertical, past the tint (30 %)
+        QCOMPARE(QColor(img.pixel(vx, 3)), QColor(60, 58, 40));
+    }
+
     void transferDialogKeepsVerbsAndNoPauseForNonCopyOperations() {
         const struct { Fm::FileOperation::Type type; const char* verb; } cases[] = {
             {Fm::FileOperation::Move, "Movendo"}, {Fm::FileOperation::Trash, "Movendo para a lixeira"},
