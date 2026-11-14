@@ -358,20 +358,11 @@ bool Application::parseCommandLineArgs() {
                 else {
                     // D-04/D-05: expand "~" here and reject missing local paths in the caller,
                     // with a message on stderr and rc!=0, instead of a modal in the server.
-                    QStringList valid;
-                    for(const QString& raw : std::as_const(paths)) {
-                        const QString expanded = expandUserPath(raw);
-                        if(isLocalPathArgument(expanded)) {
-                            const QFileInfo info(QDir(QDir::currentPath()).absoluteFilePath(expanded));
-                            if(!info.exists() && !info.isSymLink()) {
-                                qCritical().noquote() << QStringLiteral("win11-explorer-qt: cannot open '%1': no such file or directory").arg(expanded);
-                                exitCode_ = EXIT_FAILURE;
-                                continue;
-                            }
-                        }
-                        valid.push_back(expanded);
+                    bool anyMissing = false;
+                    paths = validateCliPaths(paths, QDir::currentPath(), &anyMissing);
+                    if(anyMissing) {
+                        exitCode_ = EXIT_FAILURE;
                     }
-                    paths = valid;
                 }
                 if(!paths.isEmpty()) {
                     checkReply(iface.call(QStringLiteral("launchFiles"), QDir::currentPath(), paths, parser.isSet(newWindowOption), reopenLastTabs));
@@ -575,8 +566,45 @@ bool Application::isLocalPathArgument(const QString& path) {
     if(path.startsWith(QLatin1Char('/'))) {
         return true;
     }
-    static const QRegularExpression schemeRe(QStringLiteral("^[A-Za-z][A-Za-z0-9+.-]*:"));
+    // a URI is "scheme:/..." (sftp://, trash:///, file:///); "foo:bar" and "dir/a:/b" are local names
+    static const QRegularExpression schemeRe(QStringLiteral("^[A-Za-z][A-Za-z0-9+.-]*:/"));
     return !schemeRe.match(path).hasMatch();
+}
+
+QStringList Application::validateCliPaths(const QStringList& raw, const QString& cwd, bool* anyMissing) {
+    QStringList valid;
+    for(const QString& r : raw) {
+        const QString expanded = expandUserPath(r); // only to validate; r is what gets forwarded
+        if(isLocalPathArgument(expanded)) {
+            const QFileInfo info(QDir(cwd).absoluteFilePath(expanded));
+            if(!info.exists() && !info.isSymLink()) {
+                qCritical().noquote() << QStringLiteral("win11-explorer-qt: cannot open '%1': no such file or directory").arg(expanded);
+                if(anyMissing) {
+                    *anyMissing = true;
+                }
+                continue;
+            }
+        }
+        valid.push_back(r);
+    }
+    return valid;
+}
+
+Fm::FilePath Application::filePathFromArgument(const QString& expanded, const QString& cwd) {
+    const QByteArray pathName = expanded.toLocal8Bit();
+    if(pathName.startsWith('/')) {
+        return Fm::FilePath::fromLocalPath(pathName.constData());
+    }
+    if(!isLocalPathArgument(expanded)) {
+        return Fm::FilePath::fromUri(pathName.constData());
+    }
+    return Fm::FilePath::fromLocalPath(cwd.toLocal8Bit().constData()).relativePath(pathName.constData());
+}
+
+QMessageBox* Application::makeErrorBox(QWidget* parent, const QString& title, const QString& text) {
+    auto* box = new QMessageBox(QMessageBox::Critical, title, text, QMessageBox::Ok, parent);
+    box->setTextFormat(Qt::PlainText); // GIO messages carry file names / remote text
+    return box;
 }
 
 // Text typed in an address bar: expand "~"/"$VAR", ignore blank input, and only strip the
@@ -614,7 +642,6 @@ void Application::launchFiles(const QString& cwd, const QStringList& paths, bool
 
 void Application::doLaunchFiles(const QString& cwd, const QStringList& paths, bool inNewWindow, bool reopenLastTabs) {
     Fm::FilePathList pathList;
-    Fm::FilePath cwd_path;
     auto _paths = paths;
 
     openingLastTabs_ = reopenLastTabs && settings_.reopenLastTabs() && !settings_.tabPaths().isEmpty();
@@ -625,24 +652,13 @@ void Application::doLaunchFiles(const QString& cwd, const QStringList& paths, bo
     }
 
     for(const QString& it : std::as_const(_paths)) {
-        QByteArray pathName = expandUserPath(it).toLocal8Bit();
-        if(pathName.isEmpty()) {
+        // Expand exactly once: the CLI forwards raw arguments; the saved tab paths are already
+        // final (a "$"/"~" in them is part of a real name).
+        const QString arg = openingLastTabs_ ? it : expandUserPath(it);
+        if(arg.isEmpty()) {
             continue;
         }
-        Fm::FilePath path;
-        if(pathName[0] == '/') { // absolute path
-            path = Fm::FilePath::fromLocalPath(pathName.constData());
-        }
-        else if(pathName.contains(":/")) { // URI
-            path = Fm::FilePath::fromUri(pathName.constData());
-        }
-        else { // basename
-            if(Q_UNLIKELY(!cwd_path)) {
-                cwd_path = Fm::FilePath::fromLocalPath(cwd.toLocal8Bit().constData());
-            }
-            path = cwd_path.relativePath(pathName.constData());
-        }
-        pathList.push_back(std::move(path));
+        pathList.push_back(filePathFromArgument(arg, cwd));
     }
 
     if(!inNewWindow && settings_.singleWindowMode()) {
@@ -701,12 +717,14 @@ void Application::openFolderInTerminal(Fm::FilePath path) {
         Fm::GErrorPtr err;
         auto terminalName = settings_.terminal().toUtf8();
         if(!Fm::launchTerminal(terminalName.constData(), path, err)) {
-            QMessageBox::critical(nullptr, tr("Error"), err.message());
+            QScopedPointer<QMessageBox> box(makeErrorBox(nullptr, tr("Error"), err.message()));
+            box->exec();
         }
     }
     else {
         // show an error message and ask the user to set the command
-        QMessageBox::critical(nullptr, tr("Error"), tr("Terminal emulator is not set."));
+        QScopedPointer<QMessageBox> box(makeErrorBox(nullptr, tr("Error"), tr("Terminal emulator is not set.")));
+        box->exec();
         preferences(QStringLiteral("advanced"));
     }
 }

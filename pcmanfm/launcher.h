@@ -23,6 +23,10 @@
 
 #include <libfm-qt6/filelauncher.h>
 
+namespace Fm {
+class FileMenu;
+}
+
 namespace PCManFM {
 
 class MainWindow;
@@ -58,7 +62,14 @@ public:
     // Installs the application-wide guard that keeps every Fm::AppChooserComboBox ("Customize")
     // from building the libmenu-cache chooser when it is unavailable.
     static void installAppChooserGuard(QObject* app);
-    static void showChooserUnavailableMessage(QWidget* parent = nullptr);
+    // Non-blocking, PlainText. An empty text selects the generic "chooser unavailable" wording.
+    static void showChooserUnavailableMessage(QWidget* parent = nullptr, const QString& text = QString());
+    // True for the libmenu-cache backed locations (menu:///applications/...): they need menu-cached.
+    static bool isMenuCachePath(const Fm::FilePath& path);
+    // D-02: makes the "Open with > Other Applications" entry of any Fm::FileMenu safe (side pane
+    // tree, views, desktop): when the chooser is unavailable it opens an executable picker
+    // instead of libfm-qt's AppChooserDialog. No-op when the chooser is available.
+    static void guardFileMenu(Fm::FileMenu* menu, QWidget* parent);
     // Non-blocking "no application associated" message (never aborts, never nests an event loop).
     static void showNoAppMessage(QWidget* parent = nullptr);
     // Chooser replacement used when appChooserAvailable() is false: pick an executable.

@@ -560,9 +560,10 @@ void TabPage::onFolderError(const Fm::GErrorPtr& err, Fm::Job::ErrorSeverity sev
                 // so the answer must be known on return and an event loop is still nested here.
                 // Make it safe: never touch a destroyed tab or a folder that changed meanwhile.
                 QPointer<TabPage> self(this);
-                const Fm::Folder* folderBefore = folder_.get();
+                const quint64 generationBefore = navGeneration_;
                 const bool mounted = op->wait();
-                if(!self || self->folder_.get() != folderBefore) {
+                // compare the navigation generation, not a raw Folder pointer (reusable address)
+                if(!self || self->navGeneration_ != generationBefore) {
                     response = Fm::Job::ErrorAction::CONTINUE;
                     return;
                 }
@@ -684,8 +685,17 @@ QString TabPage::pathName() {
 
 void TabPage::chdir(Fm::FilePath newPath, bool addHistory) {
     // qDebug() << "TABPAGE CHDIR:" << newPath.toString().get();
-    restorePending_ = false;
-    ++navGeneration_;
+    // Review 2: menu://applications/ is built with menu_cache_lookup_sync, which aborts the whole
+    // process when menu-cached is missing. Refuse the navigation (non-blocking message).
+    if(Launcher::isMenuCachePath(newPath) && !Launcher::appChooserAvailable()) {
+        Launcher::showChooserUnavailableMessage(window(),
+            tr("The Applications view is not available in this environment "
+               "(the libmenu-cache helper \"menu-cached\" was not found)."));
+        if(folder_) {
+            return;
+        }
+        newPath = Fm::FilePath::homeDir(); // a brand new tab must still get a folder
+    }
     if(filterBar_){
         filterBar_->clear();
     }
@@ -698,6 +708,11 @@ void TabPage::chdir(Fm::FilePath newPath, bool addHistory) {
         if (newPath.hasUriScheme("admin") && !canOpenAdmin()) {
             return; // see canOpenAdmin() for a thorough explanation
         }
+    }
+    // Only a real navigation invalidates a pending restore (the early returns above must not).
+    restorePending_ = false;
+    ++navGeneration_;
+    if(folder_) {
 
         // reset the status selected text
         statusText_[StatusTextSelectedFiles] = QString();

@@ -33,6 +33,9 @@
 #include <libfm-qt6/pathbar.h>
 #include <libfm-qt6/pathedit.h>
 #include <libfm-qt6/filepropsdialog.h>
+#include <libfm-qt6/filemenu.h>
+#include <libfm-qt6/sidepane.h>
+#include <QFileDialog>
 #include <libfm-qt6/appchoosercombobox.h>
 #include <libfm-qt6/core/fileinfo.h>
 #include <libfm-qt6/core/folder.h>
@@ -1402,6 +1405,154 @@ private Q_SLOTS:
         QCOMPARE(PCManFM::Application::normalizeTypedPath(QStringLiteral("  ") + folder.filePath(QStringLiteral("plain")) + QStringLiteral("  ")),
                  folder.filePath(QStringLiteral("plain")));
         QVERIFY(PCManFM::Application::normalizeTypedPath(QStringLiteral("   ")).isEmpty());
+    }
+    // ---- phase 4 fix cycle 2 ----
+    // D-02 (review 2, blocking): the side-pane tree menu is a Fm::FileMenu whose "Other Applications"
+    // used to build the libmenu-cache chooser (abort) because nothing guarded it.
+    void sidePaneFileMenuOtherApplicationsDoesNotBuildChooserWhenUnavailable() {
+        const auto restore = qScopeGuard([] { PCManFM::Launcher::setAppChooserAvailableForTest(-1); });
+        PCManFM::Launcher::setAppChooserAvailableForTest(0);
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        const QString file = folder.filePath(QStringLiteral("side.txt"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("hello");
+        f.close();
+        const Fm::FilePath path = Fm::FilePath::fromLocalPath(file.toUtf8().constData());
+        GFileInfo* gi = g_file_query_info(path.gfile().get(), "*", G_FILE_QUERY_INFO_NONE, nullptr, nullptr);
+        QVERIFY(gi);
+        Fm::FileInfoList infos;
+        infos.push_back(std::make_shared<Fm::FileInfo>(Fm::GFileInfoPtr{gi, false}, path, path.parent()));
+        PCManFM::MainWindow window(path.parent());
+        auto* side = window.findChild<Fm::SidePane*>();
+        QVERIFY(side);
+        Fm::FileMenu menu(infos, infos.front(), path.parent());
+        Q_EMIT side->prepareFileMenu(&menu); // what DirTreeView::contextMenuEvent does
+        QAction* openWith = menu.openWithAction();
+        QVERIFY(openWith);
+        bool sawChooser = false;
+        QTimer closer;
+        connect(&closer, &QTimer::timeout, &closer, [&] {
+            for(QWidget* w : QApplication::topLevelWidgets()) {
+                if(w->isVisible() && w->inherits("Fm::AppChooserDialog")) {
+                    sawChooser = true;
+                    w->close();
+                }
+                else if(w->isVisible() && qobject_cast<QFileDialog*>(w)) {
+                    w->close(); // the executable picker that replaces the chooser
+                }
+            }
+        });
+        closer.start(100);
+        openWith->trigger();
+        QVERIFY2(!sawChooser, "AppChooserDialog must not be created from the side-pane menu");
+    }
+    // Review 2 (high): menu://applications/ needs menu-cached too (menu_cache_lookup_sync).
+    void applicationsMenuNavigationIsBlockedWhenChooserUnavailable() {
+        const auto restore = qScopeGuard([] { PCManFM::Launcher::setAppChooserAvailableForTest(-1); });
+        PCManFM::Launcher::setAppChooserAvailableForTest(0);
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        auto root = Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData());
+        QScopedPointer<PCManFM::MainWindow> window(new PCManFM::MainWindow(root));
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window.data()));
+        QTRY_VERIFY(window->currentPage()->path() == root);
+        auto* action = window->findChild<QAction*>(QStringLiteral("actionApplications"));
+        QVERIFY(action);
+        QVERIFY2(!action->isEnabled(), "the Go > Applications entry must be disabled");
+        window->chdir(Fm::FilePath::fromUri("menu://applications/"));  // Go menu / typed address
+        window->chdir(Fm::FilePath::fromUri("menu:///applications/")); // Places panel item
+        window->currentPage()->chdir(Fm::FilePath::fromUri("menu://applications/")); // any other caller
+        QTest::qWait(400);
+        QVERIFY(window->currentPage()->path() == root);
+        QMessageBox* box = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((box = [] {
+            for(QWidget* w : QApplication::topLevelWidgets())
+                if(w->isVisible() && w->objectName() == QLatin1String("explorerChooserUnavailableMessage")) return qobject_cast<QMessageBox*>(w);
+            return static_cast<QMessageBox*>(nullptr);
+        }()) != nullptr, 3000);
+        QCOMPARE(box->textFormat(), Qt::PlainText);
+        QVERIFY(box->windowModality() == Qt::NonModal);
+        box->close();
+    }
+    // C05/B1b: a repeated chdir to the path that just failed must not cancel the restore.
+    void repeatedChdirToTheFailedPathStillRestores() {
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        auto root = Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData());
+        QScopedPointer<PCManFM::MainWindow> window(new PCManFM::MainWindow(root));
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window.data()));
+        QTRY_VERIFY(window->currentPage()->path() == root);
+        QTimer closer;
+        connect(&closer, &QTimer::timeout, &closer, [] {
+            for(QWidget* w : QApplication::topLevelWidgets())
+                if(w->isVisible() && qobject_cast<QMessageBox*>(w)) w->close();
+        });
+        closer.start(200);
+        const auto bad = Fm::FilePath::fromPathStr("/nonexistent/zz-p4-c05-repeat");
+        window->currentPage()->chdir(bad);
+        auto folderPtr = window->currentPage()->folder();
+        QVERIFY(folderPtr);
+        QObject::connect(folderPtr.get(), &Fm::Folder::finishLoading, window.data(), [&] {
+            window->currentPage()->chdir(bad); // redundant: same path, same cycle
+        });
+        QTRY_VERIFY_WITH_TIMEOUT(window->currentPage()->path() == root, 4000);
+    }
+    // D-04 (review 2): one URI/local classification for the CLI validator and the launcher.
+    void commandLineAndLauncherClassifyPathsTheSameWay() {
+        using PCManFM::Application;
+        QVERIFY(Application::isLocalPathArgument(QStringLiteral("foo:bar")));
+        QVERIFY(Application::isLocalPathArgument(QStringLiteral("dir/a:/b")));
+        QVERIFY(!Application::isLocalPathArgument(QStringLiteral("sftp://h/x")));
+        const QString cwd = QStringLiteral("/tmp/p4-cwd");
+        auto str = [](const Fm::FilePath& p) { return QString::fromUtf8(p.toString().get()); };
+        QCOMPARE(str(Application::filePathFromArgument(QStringLiteral("foo:bar"), cwd)), QStringLiteral("/tmp/p4-cwd/foo:bar"));
+        QCOMPARE(str(Application::filePathFromArgument(QStringLiteral("dir/a:/b"), cwd)), QStringLiteral("/tmp/p4-cwd/dir/a:/b"));
+        QCOMPARE(str(Application::filePathFromArgument(QStringLiteral("/mnt/a:/b"), cwd)), QStringLiteral("/mnt/a:/b"));
+        QVERIFY(Application::filePathFromArgument(QStringLiteral("trash:///"), cwd).hasUriScheme("trash"));
+    }
+    // D-05 (review 2): the CLI forwards the raw argument; the launcher expands it exactly once.
+    void commandLineValidatorDoesNotExpandTwice() {
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        qputenv("P4_ONCE_VAR", folder.path().toUtf8());
+        const auto unset = qScopeGuard([] { qunsetenv("P4_ONCE_VAR"); });
+        bool missing = false;
+        const QStringList out = PCManFM::Application::validateCliPaths(
+            {QStringLiteral("$P4_ONCE_VAR"), QStringLiteral("/nonexistent/p4-zz")}, QDir::currentPath(), &missing);
+        QVERIFY(missing);
+        QCOMPARE(out, QStringList{QStringLiteral("$P4_ONCE_VAR")});
+    }
+    // Review 2 (low): blank input in the breadcrumb editor is consumed, not navigated to.
+    void blankInputInTheBreadcrumbEditorIsConsumed() {
+        QTemporaryDir folder;
+        QVERIFY(folder.isValid());
+        auto root = Fm::FilePath::fromLocalPath(folder.path().toUtf8().constData());
+        QScopedPointer<PCManFM::MainWindow> window(new PCManFM::MainWindow(root));
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window.data()));
+        QTRY_VERIFY(window->currentPage()->path() == root);
+        auto* bar = window->findChild<Fm::PathBar*>();
+        QVERIFY(bar);
+        QMetaObject::invokeMethod(bar, "openEditor");
+        Fm::PathEdit* edit = nullptr;
+        QTRY_VERIFY((edit = bar->findChild<Fm::PathEdit*>()) != nullptr);
+        QTest::qWait(100); // the main window installs its filter on the next event-loop turn
+        edit->setText(QStringLiteral("   "));
+        QTest::keyClick(edit, Qt::Key_Return);
+        QTest::qWait(500);
+        QVERIFY(window->currentPage()->path() == root);
+        for(QWidget* w : QApplication::topLevelWidgets())
+            QVERIFY2(!(w->isVisible() && qobject_cast<QMessageBox*>(w)), "no error dialog for blank input");
+    }
+    void errorBoxesNeverInterpretRichText() {
+        QMessageBox* box = PCManFM::Application::makeErrorBox(nullptr, QStringLiteral("Error"), QStringLiteral("<a href=\"x\">name</a>"));
+        QCOMPARE(box->textFormat(), Qt::PlainText);
+        QCOMPARE(box->text(), QStringLiteral("<a href=\"x\">name</a>"));
+        delete box;
     }
     void translationsAreSearchedRelativeToTheBinaryFirst() {
         const QStringList dirs = PCManFM::Application::translationDirs();

@@ -188,7 +188,22 @@ MainWindow::MainWindow(Fm::FilePath path):
     ui.actionSidePane->setChecked(settings.isSidePaneVisible());
     ui.sidePane->setIconSize(QSize(settings.sidePaneIconSize(), settings.sidePaneIconSize()));
     ui.sidePane->setMode(settings.sidePaneMode());
-    ui.sidePane->restoreHiddenPlaces(settings.getHiddenPlaces());
+    {
+        QSet<QString> hiddenPlaces = settings.getHiddenPlaces();
+        if(!Launcher::appChooserAvailable()) {
+            // menu://applications/ needs menu-cached (it would abort without it): hide the entry
+            // (only in this window, the saved list is left alone) and disable Go > Applications.
+            ui.actionApplications->setEnabled(false);
+            ui.actionApplications->setToolTip(tr("Unavailable: the libmenu-cache helper \"menu-cached\" was not found"));
+            hiddenPlaces << QString::fromUtf8(Fm::FilePath::fromUri("menu:///applications/").toString().get())
+                         << QString::fromUtf8(Fm::FilePath::fromUri("menu://applications/").toString().get());
+        }
+        ui.sidePane->restoreHiddenPlaces(hiddenPlaces);
+    }
+    // D-02: the tree's context menu is a Fm::FileMenu too; its "Other Applications" must be guarded
+    connect(ui.sidePane, &Fm::SidePane::prepareFileMenu, this, [this](Fm::FileMenu* menu) {
+        Launcher::guardFileMenu(menu, this);
+    });
     connect(ui.sidePane, &Fm::SidePane::chdirRequested, this, &MainWindow::onSidePaneChdirRequested);
     connect(ui.sidePane, &Fm::SidePane::openFolderInNewWindowRequested, this, &MainWindow::onSidePaneOpenFolderInNewWindowRequested);
     connect(ui.sidePane, &Fm::SidePane::openFolderInNewTabRequested, this, &MainWindow::onSidePaneOpenFolderInNewTabRequested);
@@ -434,7 +449,11 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
             const int key = static_cast<QKeyEvent*>(event)->key();
             if(edit != pathEntry_ && (key == Qt::Key_Return || key == Qt::Key_Enter)) {
                 const QString expanded = Application::normalizeTypedPath(edit->text());
-                if(!expanded.isEmpty() && expanded != edit->text()) {
+                if(expanded.isEmpty()) {
+                    edit->clear(); // blank input: consume it instead of navigating to "<cwd>/   "
+                    return true;
+                }
+                if(expanded != edit->text()) {
                     edit->setText(expanded);
                 }
             }
@@ -2382,7 +2401,8 @@ void MainWindow::on_actionOpenAsRoot_triggered() {
                 GList* uris = g_list_prepend(nullptr, uri.get());
 
                 if(!g_app_info_launch_uris(appInfo.get(), uris, nullptr, &err)) {
-                    QMessageBox::critical(this, tr("Error"), QString::fromUtf8(err->message));
+                    QScopedPointer<QMessageBox> box(Application::makeErrorBox(this, tr("Error"), err.message()));
+                    box->exec();
                 }
 
                 g_list_free(uris);

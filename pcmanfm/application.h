@@ -36,6 +36,8 @@
 #include <libfm-qt6/core/fileinfo.h>
 
 class QScreen;
+class QMessageBox;
+class QWidget;
 
 class QFileSystemWatcher;
 
@@ -92,6 +94,15 @@ public:
     // True for a local path argument; false for a URI ("sftp://...", "trash:///"). A path
     // starting with '/' is always local, even if it contains ":/".
     static bool isLocalPathArgument(const QString& path);
+    // Command-line validation (first or second instance): returns the arguments that may be
+    // forwarded (still UNEXPANDED, the launcher expands them exactly once). Missing local
+    // paths are reported on stderr and flagged through anyMissing.
+    static QStringList validateCliPaths(const QStringList& raw, const QString& cwd, bool* anyMissing = nullptr);
+    // One classification for CLI validation and launching: '/' leading = local absolute;
+    // "scheme:/..." = URI; anything else is relative to cwd (so "foo:bar", "dir/a:/b" are local).
+    static Fm::FilePath filePathFromArgument(const QString& expanded, const QString& cwd);
+    // Error box that never interprets the (untrusted) text as rich text. Caller exec()s/shows it.
+    static QMessageBox* makeErrorBox(QWidget* parent, const QString& title, const QString& text);
     // Address-bar text -> path: expansion + blank input rejected (empty result); surrounding
     // whitespace is kept when the path as typed exists.
     static QString normalizeTypedPath(const QString& typed);

@@ -22,6 +22,9 @@
 #include <QFileInfo>
 #include <QFile>
 #include <QFileDialog>
+#include <QPointer>
+#include <QAction>
+#include <libfm-qt6/filemenu.h>
 #include <QMessageBox>
 #include <QComboBox>
 #include <QSignalBlocker>
@@ -174,16 +177,37 @@ void Launcher::showNoAppMessage(QWidget* parent) {
     box->show(); // non-blocking on purpose
 }
 
-void Launcher::showChooserUnavailableMessage(QWidget* parent) {
+void Launcher::showChooserUnavailableMessage(QWidget* parent, const QString& text) {
     auto* box = new QMessageBox(QMessageBox::Information, QObject::tr("Application chooser unavailable"),
-                                QObject::tr("The application chooser is not available in this environment "
-                                            "(the libmenu-cache helper \"menu-cached\" was not found)."),
+                                !text.isEmpty() ? text
+                                : QObject::tr("The application chooser is not available in this environment "
+                                              "(the libmenu-cache helper \"menu-cached\" was not found)."),
                                 QMessageBox::Ok, parent);
     box->setTextFormat(Qt::PlainText);
     box->setAttribute(Qt::WA_DeleteOnClose);
     box->setObjectName(QStringLiteral("explorerChooserUnavailableMessage"));
     box->setWindowModality(Qt::NonModal);
     box->show();
+}
+
+bool Launcher::isMenuCachePath(const Fm::FilePath& path) {
+    return path && path.hasUriScheme("menu");
+}
+
+void Launcher::guardFileMenu(Fm::FileMenu* menu, QWidget* parent) {
+    if(!menu || appChooserAvailable()) {
+        return;
+    }
+    if(QAction* openWith = menu->openWithAction()) {
+        QObject::disconnect(openWith, SIGNAL(triggered(bool)), menu, nullptr);
+        const Fm::FileInfoList targets = menu->files();
+        QPointer<QWidget> owner(parent);
+        QObject::connect(openWith, &QAction::triggered, openWith, [owner, targets] {
+            if(auto app = pickApplicationWithoutMenuCache(owner.data())) {
+                Launcher(nullptr).launchWithApp(nullptr, app.get(), targets.paths());
+            }
+        });
+    }
 }
 
 Fm::GAppInfoPtr Launcher::pickApplicationWithoutMenuCache(QWidget* parent) {

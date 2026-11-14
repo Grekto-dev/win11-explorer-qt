@@ -244,17 +244,7 @@ void View::prepareFileMenu(Fm::FileMenu* menu) {
 
     // D-02: "Other Applications" opens the libmenu-cache based chooser, which aborts the
     // process when its helper is missing; fall back to an executable picker in that case.
-    if(!Launcher::appChooserAvailable()) {
-        if(QAction* openWith = menu->openWithAction()) {
-            QObject::disconnect(openWith, SIGNAL(triggered(bool)), menu, nullptr);
-            const Fm::FileInfoList targets = menu->files();
-            connect(openWith, &QAction::triggered, this, [this, targets] {
-                if(auto app = Launcher::pickApplicationWithoutMenuCache(window())) {
-                    Launcher(nullptr).launchWithApp(nullptr, app.get(), targets.paths());
-                }
-            });
-        }
-    }
+    Launcher::guardFileMenu(menu, window());
 
     // add some more menu items for dirs
     bool all_native = true;
