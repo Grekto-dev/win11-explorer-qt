@@ -363,6 +363,29 @@ private Q_SLOTS:
         QCOMPARE(QColor(img.pixel(300, img.height() - 2)), ring);               // bottom ring
     }
 
+    // Measured (B_pre_cmd2): four interior horizontal grid lines at graph-local y 17, 32, 48, 63 (outside
+    // the progress tint), none directly under the top/bottom rings (the old layout drew 6 lines every 15 px
+    // starting at y=2, i.e. extra lines at y=2 and y=77 and a 1 px shifted 3rd/4th line).
+    void transferDialogGraphHorizontalGridMatchesMeasuredRows() {
+        TransferDialogFixture fx;
+        QVERIFY(fx.dialog);
+        fx.dialog->setPauseAvailable(true);
+        fx.dialog->show();
+        QTest::mouseClick(fx.child<QPushButton>("transferDetailsButton"), Qt::LeftButton);
+        constexpr std::uint64_t total = 10'000'000;
+        fx.dialog->setPercent(30);
+        fx.dialog->recordSpeedSample(0, total, 0);
+        fx.dialog->recordSpeedSample(1'000'000, total, 1000);
+        fx.dialog->applyTransferState(ExplorerTransferController::State::Paused, true);
+        auto* graph = fx.child<QWidget>("transferSpeedGraph");
+        QVERIFY(graph && graph->isVisible());
+        const QImage img = graph->grab().toImage();
+        QList<int> rows;                                    // column 300: right of the tint, between vertical lines
+        for(int y = 2; y < img.height() - 2; ++y)
+            if(QColor(img.pixel(300, y)) != QColor(44, 44, 44)) rows << y;
+        QCOMPARE(rows, (QList<int>{17, 32, 48, 63}));
+    }
+
     void transferDialogKeepsVerbsAndNoPauseForNonCopyOperations() {
         const struct { Fm::FileOperation::Type type; const char* verb; } cases[] = {
             {Fm::FileOperation::Move, "Movendo"}, {Fm::FileOperation::Trash, "Movendo para a lixeira"},

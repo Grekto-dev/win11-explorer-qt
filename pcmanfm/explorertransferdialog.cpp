@@ -9,6 +9,7 @@
 #include <QPainterPath>
 #include <QVBoxLayout>
 #include <algorithm>
+#include <cmath>
 
 // Geometry/colours measured from the Windows 11 copy dialog; see
 // docs/fidelity/transfer-dialog-measurements.md. 96 DPI, device pixel ratio 1.
@@ -123,7 +124,9 @@ protected:
             const int x = int(w * k / 10.0 + 0.5);
             p.fillRect(QRect(x, 1, 1, h - 2), x < plotRight ? gridIn : gridOut);
         }
-        for(int y = 2; y < h - 1; y += 15) {
+        // Measured: 4 interior rows dividing the span between the two rings (y=1 and y=h-2) into 5 cells.
+        for(int k = 1; k < 5; ++k) {
+            const int y = int(std::lround(1.5 + (h - 3) * k / 5.0));
             p.fillRect(QRect(1, y, plotRight - 1, 1), gridIn);
             p.fillRect(QRect(plotRight, y, w - 1 - plotRight, 1), gridOut);
         }
